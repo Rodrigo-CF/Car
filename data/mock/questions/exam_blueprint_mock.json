@@ -1,0 +1,12 @@
+{
+  "questionCount": 70,
+  "timeLimitSec": 3600,
+  "passThresholdPct": 80,
+  "topicDistribution": {
+    "signals": 18,
+    "right_of_way": 16,
+    "sanctions": 12,
+    "road_safety": 12,
+    "vehicle_basics": 12
+  }
+}

@@ -1,0 +1,9 @@
+ruleId,routeId,triggerKey,severity,points,failImmediately,threshold,messageEs,messageEn
+R-ALL-001,ALL,red_light_crossed,critical,0,true,cross_stop_line_on_red,Pasaste luz roja,You crossed on red
+R-ALL-002,ALL,speed_over_limit,minor,4,false,over_limit_by_>5kmh_for_>2s,Exceso de velocidad,Speed limit exceeded
+R-ALL-003,ALL,missing_turn_signal,minor,5,false,signal_not_active_3s_before_turn,Direccional tardia o ausente,Signal missing or late
+R-ALL-004,ALL,roundabout_no_yield_left,critical,0,true,no_yield_to_left_vehicle,No cediste en ovalo,No yield in roundabout
+R-A-005,A,parallel_parking_outside_box,critical,0,true,final_pose_outside_tolerance,Fallo estacionamiento paralelo,Parallel parking failed
+R-A-006,A,diagonal_parking_bad_angle,minor,6,false,angle_error_>10deg,Angulo incorrecto en diagonal,Incorrect diagonal angle
+R-B-007,B,parallel_parking_too_many_corrections,minor,5,false,corrections_>2,Demasiadas maniobras en paralelo,Too many parallel corrections
+R-B-008,B,diagonal_parking_time_exceeded,minor,4,false,time_>45s,Demora excesiva en diagonal,Diagonal parking too slow

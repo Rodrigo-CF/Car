@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Peru Driving Prep MVP Mock</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="ambient" aria-hidden="true">
+      <span class="blob blob-a"></span>
+      <span class="blob blob-b"></span>
+      <span class="blob blob-c"></span>
+    </div>
+
+    <header class="hero">
+      <div>
+        <p class="eyebrow">PRIVATE TRAINING PLATFORM</p>
+        <h1>Peru Driving Prep</h1>
+        <p class="hero-sub">Theory drills + Route A/B simulator with independent leaderboards.</p>
+      </div>
+      <div class="hero-side">
+        <p id="auth-state" class="auth-pill">Not authenticated</p>
+        <button id="logout-btn" class="btn btn-ghost" disabled>Logout</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="card auth-card" id="auth-card">
+        <div class="card-head">
+          <h2>Account Access</h2>
+          <p>Create an account or sign in to save attempts.</p>
+        </div>
+
+        <p id="auth-feedback" class="auth-feedback hidden"></p>
+
+        <div id="auth-guest">
+          <div class="grid-two">
+            <div class="sub-card">
+              <h3>Create Account</h3>
+              <input id="reg-username" placeholder="Username" autocomplete="username" />
+              <input id="reg-email" placeholder="Email" autocomplete="email" />
+              <input id="reg-password" type="password" placeholder="Password" autocomplete="new-password" />
+              <button id="register-btn" class="btn">Register</button>
+            </div>
+            <div class="sub-card">
+              <h3>Sign In</h3>
+              <input id="login-email" placeholder="Email" autocomplete="email" />
+              <input id="login-password" type="password" placeholder="Password" autocomplete="current-password" />
+              <button id="login-btn" class="btn">Login</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="auth-user" class="auth-user hidden">
+          <h3>You are logged in</h3>
+          <p id="auth-user-copy" class="auth-user-copy">Welcome back.</p>
+          <p class="auth-user-note">You can now start theory exams and driving sessions.</p>
+        </div>
+      </section>
+
+      <section class="card theory-card">
+        <div class="card-head">
+          <h2>Theory Mock Exam</h2>
+          <p>70 random questions from the configured pool.</p>
+        </div>
+        <div class="button-row">
+          <button id="start-exam" class="btn">Create Exam</button>
+          <button id="submit-random-exam" class="btn btn-soft">Submit Random Answers</button>
+          <button id="submit-perfect-exam" class="btn btn-soft">Submit Perfect Answers</button>
+        </div>
+        <pre id="exam-output"></pre>
+      </section>
+
+      <section class="card sim-card">
+        <div class="card-head">
+          <h2>Route Simulator</h2>
+          <p>First-person by default. Press <strong>C</strong> to switch camera view. Traffic light cycles automatically every 30s.</p>
+        </div>
+
+        <div class="sim-layout">
+          <div class="sim-controls">
+            <label for="route-select">Route</label>
+            <select id="route-select">
+              <option value="A">Route A</option>
+              <option value="B">Route B</option>
+            </select>
+
+            <div class="button-row button-row-compact">
+              <button id="start-sim" class="btn">Start Session</button>
+              <button id="finish-sim" class="btn btn-soft">Finish Session</button>
+            </div>
+
+            <div class="button-row button-row-compact">
+              <button id="toggle-light" class="btn btn-soft">Manual Light Override</button>
+              <button id="yield-fail" class="btn btn-soft">Trigger Ovalo No-Yield</button>
+            </div>
+
+            <div class="button-row button-row-compact sim-penalty-tools">
+              <span id="sim-penalty-total" class="status-line sim-penalty-total">Penalidad acumulada: -0 pts</span>
+              <button id="reset-penalty" class="btn btn-soft btn-tight">Reset Penalidad</button>
+            </div>
+
+            <div class="kbd-grid">
+              <p><strong>W/S</strong> accelerate/brake</p>
+              <p><strong>A/D</strong> steer</p>
+              <p><strong>Q/E</strong> indicators</p>
+              <p><strong>Space</strong> handbrake</p>
+              <p><strong>C</strong> camera switch</p>
+              <p><strong>R</strong> reset position</p>
+              <p><strong>P</strong> validate parallel</p>
+              <p><strong>O</strong> validate diagonal</p>
+            </div>
+
+            <details class="mapper-panel">
+              <summary>Route A Mapper (Image-Based)</summary>
+              <p class="mapper-note">
+                Upload your official map image, set scale from a known distance (default two-lane width = 7m), trace the centerline, place checkpoints, and apply as Route A.
+              </p>
+              <input id="mapper-image-file" type="file" accept="image/*" />
+              <div class="mapper-grid">
+                <label for="mapper-lane-width">Scale reference (meters)</label>
+                <input id="mapper-lane-width" type="number" min="0.1" step="0.1" value="7" />
+              </div>
+              <div class="button-row button-row-compact">
+                <button id="mapper-scale-mode" class="btn btn-soft">1) Set Scale</button>
+                <button id="mapper-path-mode" class="btn btn-soft">2) Trace Path</button>
+              </div>
+              <div class="button-row button-row-compact">
+                <button id="mapper-new-segment" class="btn btn-soft">Path: New Segment</button>
+                <span class="mapper-inline-note">Use when you need to branch without connecting with a line. New points auto-snap to existing nodes.</span>
+              </div>
+              <div class="mapper-grid">
+                <label for="mapper-checkpoint-type">Checkpoint type</label>
+                <select id="mapper-checkpoint-type">
+                  <option value="speed_zone">Speed Zone (max speed)</option>
+                  <option value="traffic_light">Traffic Light</option>
+                  <option value="stop_line">Stop Line (per lane)</option>
+                  <option value="roundabout">Roundabout</option>
+                  <option value="parking_parallel">Parking: Parallel</option>
+                  <option value="parking_diagonal">Parking: Diagonal</option>
+                  <option value="speed_bump">Speed Bump (per lane)</option>
+                  <option value="tree">Tree / Decor</option>
+                </select>
+              </div>
+              <p id="mapper-checkpoint-help" class="mapper-help">
+                Select a checkpoint type, click "Place Checkpoint", then click its position on the map.
+              </p>
+              <div id="mapper-traffic-fields" class="mapper-grid hidden">
+                <div>
+                  <label for="mapper-traffic-facing">Traffic light orientation</label>
+                  <select id="mapper-traffic-facing">
+                    <option value="with_path">Follow path direction</option>
+                    <option value="reverse">Reverse path direction</option>
+                  </select>
+                </div>
+              </div>
+              <div id="mapper-lane-fields" class="mapper-grid mapper-grid-two hidden">
+                <div>
+                  <label for="mapper-lane-side">Lane side</label>
+                  <select id="mapper-lane-side">
+                    <option value="left">Left</option>
+                    <option value="right" selected>Right</option>
+                  </select>
+                </div>
+                <div>
+                  <label for="mapper-lane-count">Lanes</label>
+                  <select id="mapper-lane-count">
+                    <option value="1">1</option>
+                    <option value="2" selected>2</option>
+                    <option value="3">3</option>
+                    <option value="4">4</option>
+                  </select>
+                </div>
+              </div>
+              <div id="mapper-parking-fields" class="mapper-grid mapper-grid-two hidden">
+                <div>
+                  <label for="mapper-parking-slots">Parking slots</label>
+                  <input id="mapper-parking-slots" type="number" min="1" step="1" value="3" />
+                </div>
+                <div>
+                  <label for="mapper-parking-angle">Diagonal angle (deg)</label>
+                  <input id="mapper-parking-angle" type="number" min="10" max="80" step="1" value="45" />
+                </div>
+              </div>
+              <div class="button-row button-row-compact">
+                <button id="mapper-place-checkpoint" class="btn btn-soft">Place Checkpoint</button>
+                <button id="mapper-undo" class="btn btn-soft">Undo</button>
+              </div>
+              <div class="button-row button-row-compact">
+                <button id="mapper-clear" class="btn btn-soft">Clear All</button>
+                <button id="mapper-apply-route" class="btn">Apply to Route A</button>
+              </div>
+              <div class="button-row button-row-compact">
+                <button id="mapper-download-json" class="btn btn-soft">Download JSON</button>
+                <button id="mapper-import-json" class="btn btn-soft">Import JSON</button>
+              </div>
+              <input id="mapper-import-json-file" type="file" accept=".json,application/json" class="hidden" />
+              <canvas id="mapper-canvas" class="mapper-canvas" width="420" height="420"></canvas>
+              <p id="mapper-status" class="status-line">Mapper: upload an image to begin.</p>
+              <pre id="mapper-json"></pre>
+            </details>
+
+            <p id="sim-state" class="status-line">Session: idle</p>
+            <p id="car-state" class="status-line">Car: --</p>
+            <pre id="sim-output"></pre>
+          </div>
+
+          <div class="sim-viewport">
+            <canvas id="sim-gl-canvas" width="960" height="540"></canvas>
+            <canvas id="sim-canvas" width="960" height="540"></canvas>
+            <div id="sim-penalty-card" class="sim-penalty-card hidden" role="alert"></div>
+            <div id="sim-hud" class="sim-hud">
+              <span id="hud-speed">Speed: 0.0 km/h</span>
+              <span id="hud-signal">Signal: off</span>
+              <span id="hud-light">Light: RED</span>
+              <span id="hud-cam">Cam: first</span>
+              <span id="hud-penalty">Penalties: -0 pts</span>
+            </div>
+            <canvas id="mini-map-canvas" class="mini-map-canvas" width="210" height="150"></canvas>
+            <p id="sim-webgl-status" class="sim-webgl-status hidden"></p>
+          </div>
+        </div>
+      </section>
+
+      <section class="card board-card">
+        <div class="card-head">
+          <h2>Leaderboards</h2>
+          <p>Theory and simulation ranking are independent.</p>
+        </div>
+        <div class="grid-two">
+          <div class="sub-card">
+            <div class="table-head">
+              <h3>Theory Ranking</h3>
+              <button id="load-theory" class="btn btn-soft">Refresh</button>
+            </div>
+            <table id="theory-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>User</th>
+                  <th>Score</th>
+                  <th>Time(s)</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+
+          <div class="sub-card">
+            <div class="table-head">
+              <h3>Simulation Ranking</h3>
+              <button id="load-sim" class="btn btn-soft">Refresh</button>
+            </div>
+            <table id="sim-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>User</th>
+                  <th>Route</th>
+                  <th>Score</th>
+                  <th>Crit</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="card profile-card">
+        <div class="card-head">
+          <h2>Profile</h2>
+          <p>Best scores and attempt histories are tracked independently.</p>
+        </div>
+        <button id="load-profile" class="btn btn-soft">Load Profile</button>
+        <pre id="profile-output"></pre>
+      </section>
+    </main>
+
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+        }
+      }
+    </script>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

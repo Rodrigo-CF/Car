@@ -1,0 +1,12 @@
+{
+  "routeId": "B",
+  "unit": "meters",
+  "startPose": { "x": 10, "y": 52, "headingDeg": 90 },
+  "checkpoints": [
+    { "id": "B_TL_01", "type": "traffic_light", "x": 10, "y": 30, "meta": { "mustStopOnRed": true } },
+    { "id": "B_SP_01", "type": "speed_zone", "x": 28, "y": 18, "meta": { "limitKmh": 25 } },
+    { "id": "B_RB_01", "type": "roundabout", "x": 60, "y": 20, "meta": { "yieldLeft": true } },
+    { "id": "B_PK_PAR", "type": "parking_parallel", "x": 84, "y": 42, "meta": { "boxL": 6.0, "boxW": 2.4, "maxCorrections": 2 } },
+    { "id": "B_PK_DIA", "type": "parking_diagonal", "x": 116, "y": 56, "meta": { "boxL": 5.0, "boxW": 2.5, "angleDeg": 60 } }
+  ]
+}

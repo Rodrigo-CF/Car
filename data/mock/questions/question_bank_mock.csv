@@ -1,0 +1,11 @@
+question_id,topic,stem_es,stem_en,opt_a,opt_b,opt_c,opt_d,correct_option,image_path
+Q001,signals,"¿Que indica una luz roja?","What does a red light mean?","Detenerse","Acelerar","Doblar","Ignorar",A,
+Q002,right_of_way,"En un ovalo, ¿a quien cedes?","In a roundabout, who has priority?","Al que entra","Al que viene por izquierda","Al peaton","Nadie",B,
+Q003,road_safety,"Limite en zona escolar?","School zone speed limit?","20 km/h","30 km/h","60 km/h","80 km/h",B,
+Q004,sanctions,"Cruzar en rojo es:","Crossing on red is:","Permitido","Falta leve","Falta grave","Opcional",C,
+Q005,vehicle_basics,"Antes de girar debes:","Before turning you must:","Usar direccional","Acelerar","Tocar bocina","Apagar luces",A,
+Q006,signals,"Luz amarilla intermitente:","Flashing yellow means:","Pase libre","Precaucion","Detenerse total","Retroceder",B,
+Q007,right_of_way,"Paso peatonal sin semaforo:","Unsignalized crosswalk:","Prioridad vehiculo","Prioridad peaton","Sin prioridad","Depende",B,
+Q008,road_safety,"Distancia de seguridad:","Safe following distance:","1 segundo","2 segundos o mas","0.5 segundos","No importa",B,
+Q009,sanctions,"Sin cinturón:","No seatbelt:","Sin sancion","Advertencia","Infraccion","Recomendacion",C,
+Q010,vehicle_basics,"Revisar frenos:","Check brakes:","Nunca","Solo lluvia","Antes de conducir","Solo viaje largo",C,

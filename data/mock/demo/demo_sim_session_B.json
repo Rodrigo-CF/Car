@@ -1,0 +1,10 @@
+{
+  "route_id": "B",
+  "events": [
+    { "triggerKey": "red_light_crossed", "atMs": 9000, "meta": { "checkpoint": "B_TL_01" } }
+  ],
+  "expected": {
+    "critical_fail": true,
+    "fail_reason": "red_light_crossed"
+  }
+}

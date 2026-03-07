@@ -1,0 +1,11 @@
+{
+  "route_id": "A",
+  "events": [
+    { "triggerKey": "missing_turn_signal", "atMs": 12000, "meta": { "checkpoint": "A_RB_01" } },
+    { "triggerKey": "speed_over_limit", "atMs": 18000, "meta": { "checkpoint": "A_SP_01", "speed": 37 } }
+  ],
+  "expected": {
+    "critical_fail": false,
+    "score_pct": 91
+  }
+}
