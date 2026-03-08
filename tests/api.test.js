@@ -5,6 +5,7 @@ import { createStore } from "../src/lib/store.js";
 import { registerUser } from "../src/lib/auth.js";
 import { createExamAttempt, submitExamAttempt } from "../src/lib/exam.js";
 import { startSimSession, appendSimEvents, finishSimSession } from "../src/lib/sim.js";
+import { publishRouteMap } from "../src/lib/maps.js";
 import {
   buildTheoryLeaderboard,
   buildSimulationLeaderboard,
@@ -168,4 +169,65 @@ test("profile exposes separate best scores and histories", () => {
   assert.ok(Array.isArray(profile.theoryHistory));
   assert.ok(Array.isArray(profile.simulationHistory));
   assert.ok(!Object.hasOwn(profile, "combinedScore"));
+});
+
+test("first registered user becomes creator, and publishing is creator-only", () => {
+  const store = createStore();
+  const creator = createAuthedUser(store, "creator", "creator@test.com");
+  const player = createAuthedUser(store, "player", "player@test.com");
+
+  assert.equal(creator.is_creator, true);
+  assert.equal(player.is_creator, false);
+
+  const denied = publishRouteMap(store, player, {
+    route_id: "A",
+    name: "A custom",
+    route: store.routes.A,
+  });
+  assert.equal(denied.status, 403);
+});
+
+test("published route is the global route used by new simulation sessions", () => {
+  const store = createStore();
+  const creator = createAuthedUser(store, "creator2", "creator2@test.com");
+  const player = createAuthedUser(store, "player2", "player2@test.com");
+
+  const customRouteA = JSON.parse(JSON.stringify(store.routes.A));
+  customRouteA.startPose = { x: 321, y: -77, headingDeg: 123 };
+  customRouteA.path = [
+    { x: 321, y: -77 },
+    { x: 336, y: -77 },
+    { x: 350, y: -70 },
+  ];
+  customRouteA.checkpoints = [
+    {
+      id: "A_TL_CUSTOM",
+      type: "traffic_light",
+      x: 336,
+      y: -77,
+      meta: { mustStopOnRed: true, facing: "with_path" },
+    },
+    {
+      id: "A_SL_CUSTOM",
+      type: "stop_line",
+      x: 333,
+      y: -77,
+      meta: { lane: 1, laneCount: 2, lineWidthM: 0.26, trafficLightId: "A_TL_CUSTOM" },
+    },
+  ];
+
+  const published = publishRouteMap(store, creator, {
+    route_id: "A",
+    name: "Global Route A",
+    route: customRouteA,
+  });
+
+  assert.equal(published.status, 201);
+
+  const started = startSimSession(store, player, { route_id: "A" });
+  assert.equal(started.status, 201);
+  assert.equal(started.data.route.startPose.x, 321);
+  assert.equal(started.data.route.startPose.headingDeg, 123);
+  assert.equal(started.data.route.path.length, 3);
+  assert.equal(started.data.route.checkpoints[0].id, "A_TL_CUSTOM");
 });

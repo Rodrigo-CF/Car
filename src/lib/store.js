@@ -6,6 +6,7 @@ import { RULES } from "../data/mock-rules.js";
 
 export function createStore() {
   return {
+    creatorUserId: null,
     users: [],
     authTokens: new Map(),
     questionBank: buildQuestionBank(200),
@@ -14,6 +15,11 @@ export function createStore() {
     simActiveSessions: new Map(),
     simSessions: [],
     routes: ROUTES,
+    maps: [],
+    activeRouteMaps: {
+      A: null,
+      B: null,
+    },
     rules: RULES,
     examConfig: {
       questionCount: 70,

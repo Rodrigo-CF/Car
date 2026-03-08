@@ -386,6 +386,13 @@ pre {
   color: #b8cfda;
 }
 
+.mapper-inline-note {
+  margin: 0;
+  align-self: center;
+  line-height: 1.2;
+  color: #aac3cf;
+}
+
 .mapper-grid {
   display: grid;
   gap: 6px;

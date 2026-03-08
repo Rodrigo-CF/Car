@@ -1,12 +1,16 @@
 import { generateId } from "./store.js";
+import { resolveRoute } from "./maps.js";
 
 function rulesForRoute(store, routeId) {
   return store.rules.filter((rule) => rule.routeId === "ALL" || rule.routeId === routeId);
 }
 
 export function startSimSession(store, user, payload) {
-  const routeId = payload.route_id;
-  if (!routeId || !store.routes[routeId]) {
+  const routeId = String(payload.route_id || "")
+    .trim()
+    .toUpperCase();
+  const activeRoute = resolveRoute(store, routeId);
+  if (!routeId || !activeRoute) {
     return { status: 400, error: "invalid route_id" };
   }
 
@@ -23,7 +27,7 @@ export function startSimSession(store, user, payload) {
     status: 201,
     data: {
       session_id: sessionId,
-      route: store.routes[routeId],
+      route: activeRoute,
     },
   };
 }

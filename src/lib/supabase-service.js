@@ -1,0 +1,780 @@
+import { hashPassword, makeToken, generateId } from "./store.js";
+import { selectExamQuestions } from "../data/mock-questions.js";
+
+const SUPPORTED_ROUTE_IDS = new Set(["A", "B"]);
+
+function normalizeRouteId(routeId) {
+  const normalized = String(routeId || "")
+    .trim()
+    .toUpperCase();
+  return SUPPORTED_ROUTE_IDS.has(normalized) ? normalized : null;
+}
+
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function publicUser(user) {
+  return {
+    user_id: user.user_id,
+    username: user.username,
+    email: user.email,
+    is_creator: Boolean(user.is_creator),
+    created_at: user.created_at,
+  };
+}
+
+function rulesForRoute(store, routeId) {
+  return store.rules.filter((rule) => rule.routeId === "ALL" || rule.routeId === routeId);
+}
+
+function validateRouteShape(route, routeId) {
+  if (!route || typeof route !== "object") {
+    return "route is required";
+  }
+  if (!route.startPose || typeof route.startPose !== "object") {
+    return "route.startPose is required";
+  }
+  if (
+    !Number.isFinite(Number(route.startPose.x)) ||
+    !Number.isFinite(Number(route.startPose.y)) ||
+    !Number.isFinite(Number(route.startPose.headingDeg))
+  ) {
+    return "route.startPose must include numeric x, y and headingDeg";
+  }
+  if (!Array.isArray(route.path) || route.path.length < 2) {
+    return "route.path must include at least 2 points";
+  }
+  if (!Array.isArray(route.checkpoints)) {
+    return "route.checkpoints must be an array";
+  }
+  if (route.routeId && String(route.routeId).toUpperCase() !== routeId) {
+    return "route.routeId must match route_id";
+  }
+  return null;
+}
+
+function mapMetadata(record) {
+  return {
+    map_id: record.map_id,
+    route_id: record.route_id,
+    name: record.name,
+    version: record.version,
+    created_by: record.created_by,
+    created_at: record.created_at,
+    published_at: record.published_at,
+  };
+}
+
+function asArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function parseSupabaseError(payload, fallback) {
+  if (!payload || typeof payload !== "object") {
+    return fallback;
+  }
+  return payload.message || payload.error || payload.hint || fallback;
+}
+
+function unique(values) {
+  return [...new Set(values)];
+}
+
+export function createSupabaseService(store) {
+  const url = String(process.env.SUPABASE_URL || "").trim();
+  const serviceRoleKey = String(process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
+
+  if (!url || !serviceRoleKey) {
+    return null;
+  }
+
+  const restBase = `${url.replace(/\/+$/, "")}/rest/v1`;
+  const baseHeaders = {
+    apikey: serviceRoleKey,
+    Authorization: `Bearer ${serviceRoleKey}`,
+    "Content-Type": "application/json",
+  };
+  const creatorEmail = String(process.env.CREATOR_EMAIL || "")
+    .trim()
+    .toLowerCase();
+
+  async function request(path, { method = "GET", params = null, body = undefined, prefer = null } = {}) {
+    const requestUrl = new URL(`${restBase}/${path}`);
+    if (params) {
+      for (const [key, value] of Object.entries(params)) {
+        if (value == null || value === "") {
+          continue;
+        }
+        requestUrl.searchParams.append(key, String(value));
+      }
+    }
+
+    const headers = { ...baseHeaders };
+    if (prefer) {
+      headers.Prefer = prefer;
+    }
+
+    const response = await fetch(requestUrl, {
+      method,
+      headers,
+      body: body == null ? undefined : JSON.stringify(body),
+    });
+
+    const text = await response.text();
+    const payload = text ? JSON.parse(text) : null;
+
+    if (!response.ok) {
+      const error = new Error(parseSupabaseError(payload, `supabase ${response.status}`));
+      error.status = response.status;
+      throw error;
+    }
+
+    return payload;
+  }
+
+  async function selectRows(table, filters = {}, options = {}) {
+    const { select = "*", order = null, limit = null } = options;
+    const params = { select, ...filters };
+    if (order) {
+      params.order = order;
+    }
+    if (Number.isFinite(limit) && Number(limit) > 0) {
+      params.limit = Math.max(1, Math.floor(Number(limit)));
+    }
+    const rows = await request(table, { params });
+    return asArray(rows);
+  }
+
+  async function insertRows(table, rows, options = {}) {
+    const { upsert = false, onConflict = null, returning = true } = options;
+    const preferParts = [];
+    if (upsert) {
+      preferParts.push("resolution=merge-duplicates");
+    }
+    preferParts.push(returning ? "return=representation" : "return=minimal");
+    const params = {};
+    if (onConflict) {
+      params.on_conflict = onConflict;
+    }
+    const payload = await request(table, {
+      method: "POST",
+      params,
+      body: rows,
+      prefer: preferParts.join(","),
+    });
+    return asArray(payload);
+  }
+
+  async function patchRows(table, filters, values, options = {}) {
+    const { returning = true } = options;
+    const payload = await request(table, {
+      method: "PATCH",
+      params: filters,
+      body: values,
+      prefer: returning ? "return=representation" : "return=minimal",
+    });
+    return asArray(payload);
+  }
+
+  async function deleteRows(table, filters) {
+    await request(table, {
+      method: "DELETE",
+      params: filters,
+      prefer: "return=minimal",
+    });
+  }
+
+  async function mapUsernames(userIds) {
+    const ids = unique(userIds.filter(Boolean));
+    if (!ids.length) {
+      return new Map();
+    }
+    const rows = await selectRows(
+      "app_users",
+      {
+        user_id: `in.(${ids.join(",")})`,
+      },
+      { select: "user_id,username" },
+    );
+    const map = new Map();
+    for (const row of rows) {
+      map.set(row.user_id, row.username);
+    }
+    return map;
+  }
+
+  async function resolveRoute(routeId) {
+    const normalizedRouteId = normalizeRouteId(routeId);
+    if (!normalizedRouteId) {
+      return null;
+    }
+
+    const activeRows = await selectRows(
+      "active_route_maps",
+      { route_id: `eq.${normalizedRouteId}` },
+      { select: "route_id,map_id,updated_at", limit: 1 },
+    );
+
+    if (activeRows.length > 0 && activeRows[0].map_id) {
+      const mapRows = await selectRows("maps", { map_id: `eq.${activeRows[0].map_id}` }, { select: "*", limit: 1 });
+      if (mapRows.length > 0 && mapRows[0].route) {
+        return cloneJson(mapRows[0].route);
+      }
+    }
+
+    return store.routes[normalizedRouteId] ? cloneJson(store.routes[normalizedRouteId]) : null;
+  }
+
+  async function getActiveRoutePayload(routeId) {
+    const normalizedRouteId = normalizeRouteId(routeId);
+    if (!normalizedRouteId) {
+      return null;
+    }
+
+    const route = await resolveRoute(normalizedRouteId);
+    if (!route) {
+      return null;
+    }
+
+    const activeRows = await selectRows(
+      "active_route_maps",
+      { route_id: `eq.${normalizedRouteId}` },
+      { select: "route_id,map_id,updated_at", limit: 1 },
+    );
+    const active = activeRows[0];
+    let map = null;
+    if (active?.map_id) {
+      const mapRows = await selectRows("maps", { map_id: `eq.${active.map_id}` }, { select: "*", limit: 1 });
+      if (mapRows.length) {
+        map = mapMetadata(mapRows[0]);
+      }
+    }
+
+    return {
+      route_id: normalizedRouteId,
+      source: map ? "published_map" : "default_mock",
+      map,
+      route,
+    };
+  }
+
+  async function getAllActiveRoutesPayload() {
+    return {
+      routes: {
+        A: await getActiveRoutePayload("A"),
+        B: await getActiveRoutePayload("B"),
+      },
+    };
+  }
+
+  return {
+    enabled: true,
+
+    async registerUser(payload) {
+      try {
+        const { username, email, password } = payload ?? {};
+        if (!username || !email || !password) {
+          return { status: 400, error: "username, email and password are required" };
+        }
+
+        const normalizedEmail = String(email).trim().toLowerCase();
+        const normalizedUsername = String(username).trim();
+        if (!normalizedUsername) {
+          return { status: 400, error: "username, email and password are required" };
+        }
+
+        const duplicated = await selectRows(
+          "app_users",
+          {
+            or: `(email.eq.${normalizedEmail},username.eq.${normalizedUsername})`,
+          },
+          { select: "user_id", limit: 1 },
+        );
+        if (duplicated.length) {
+          return { status: 409, error: "username or email already exists" };
+        }
+
+        const firstUser = await selectRows("app_users", {}, { select: "user_id", order: "created_at.asc", limit: 1 });
+        const isCreator = creatorEmail ? creatorEmail === normalizedEmail : firstUser.length === 0;
+        const user = {
+          user_id: generateId("usr"),
+          username: normalizedUsername,
+          email: normalizedEmail,
+          is_creator: isCreator,
+          password_hash: hashPassword(password),
+          created_at: new Date().toISOString(),
+        };
+
+        const [created] = await insertRows("app_users", [user], { returning: true });
+        const token = makeToken();
+        await insertRows(
+          "auth_tokens",
+          [
+            {
+              token,
+              user_id: created.user_id,
+              created_at: new Date().toISOString(),
+            },
+          ],
+          { returning: false },
+        );
+
+        return {
+          status: 201,
+          data: {
+            token,
+            user: publicUser(created),
+          },
+        };
+      } catch (error) {
+        return { status: Number(error.status) || 500, error: error.message || "internal server error" };
+      }
+    },
+
+    async loginUser(payload) {
+      try {
+        const { email, password } = payload ?? {};
+        if (!email || !password) {
+          return { status: 400, error: "email and password are required" };
+        }
+
+        const normalizedEmail = String(email).trim().toLowerCase();
+        const passwordHash = hashPassword(password);
+
+        const users = await selectRows(
+          "app_users",
+          {
+            email: `eq.${normalizedEmail}`,
+            password_hash: `eq.${passwordHash}`,
+          },
+          { select: "*", limit: 1 },
+        );
+        if (!users.length) {
+          return { status: 401, error: "invalid credentials" };
+        }
+
+        const user = users[0];
+        const token = makeToken();
+        await insertRows(
+          "auth_tokens",
+          [{ token, user_id: user.user_id, created_at: new Date().toISOString() }],
+          { returning: false },
+        );
+
+        return {
+          status: 200,
+          data: {
+            token,
+            user: publicUser(user),
+          },
+        };
+      } catch (error) {
+        return { status: Number(error.status) || 500, error: error.message || "internal server error" };
+      }
+    },
+
+    async authenticate(req) {
+      try {
+        const authHeader = req.headers.authorization;
+        if (!authHeader?.startsWith("Bearer ")) {
+          return null;
+        }
+        const token = authHeader.slice("Bearer ".length);
+        const tokenRows = await selectRows("auth_tokens", { token: `eq.${token}` }, { select: "token,user_id", limit: 1 });
+        if (!tokenRows.length) {
+          return null;
+        }
+        const userRows = await selectRows("app_users", { user_id: `eq.${tokenRows[0].user_id}` }, { select: "*", limit: 1 });
+        return userRows[0] ?? null;
+      } catch {
+        return null;
+      }
+    },
+
+    async createExamAttempt(user) {
+      const selectedQuestions = selectExamQuestions(store.questionBank, store.examConfig.questionCount);
+      const draftId = generateId("exam_draft");
+      const now = new Date().toISOString();
+
+      await insertRows(
+        "exam_drafts",
+        [
+          {
+            attempt_id: draftId,
+            user_id: user.user_id,
+            question_ids: selectedQuestions.map((question) => question.id),
+            started_at: now,
+          },
+        ],
+        { returning: false },
+      );
+
+      const questions = selectedQuestions.map((question) => ({
+        id: question.id,
+        topic: question.topic,
+        stemEs: question.stemEs,
+        stemEn: question.stemEn,
+        optionsEs: question.optionsEs,
+        optionsEn: question.optionsEn,
+        debugCorrectOption: question.correctOption,
+      }));
+
+      return {
+        attempt_id: draftId,
+        config: store.examConfig,
+        questions,
+      };
+    },
+
+    async submitExamAttempt(user, attemptId, payload) {
+      try {
+        const draftRows = await selectRows(
+          "exam_drafts",
+          {
+            attempt_id: `eq.${attemptId}`,
+            user_id: `eq.${user.user_id}`,
+          },
+          { select: "*", limit: 1 },
+        );
+        if (!draftRows.length) {
+          return { status: 404, error: "exam attempt not found" };
+        }
+
+        const draft = draftRows[0];
+        const answers = payload?.answers ?? {};
+        const durationSec = Number(payload?.duration_sec) > 0 ? Number(payload.duration_sec) : 0;
+
+        const questions = asArray(draft.question_ids)
+          .map((id) => store.questionBank.find((question) => question.id === id))
+          .filter(Boolean);
+
+        let correctCount = 0;
+        for (const question of questions) {
+          if (answers[question.id] === question.correctOption) {
+            correctCount += 1;
+          }
+        }
+
+        const total = questions.length;
+        const scorePct = total > 0 ? Number(((correctCount / total) * 100).toFixed(2)) : 0;
+        const attemptRecord = {
+          attempt_id: generateId("exam_attempt"),
+          draft_id: draft.attempt_id,
+          user_id: user.user_id,
+          score_pct: scorePct,
+          correct_count: correctCount,
+          duration_sec: durationSec,
+          passed: scorePct >= store.examConfig.passThresholdPct,
+          created_at: new Date().toISOString(),
+        };
+
+        await insertRows("exam_attempts", [attemptRecord], { returning: false });
+        await deleteRows("exam_drafts", { attempt_id: `eq.${attemptId}` });
+
+        return {
+          status: 200,
+          data: attemptRecord,
+        };
+      } catch (error) {
+        return { status: Number(error.status) || 500, error: error.message || "internal server error" };
+      }
+    },
+
+    async startSimSession(user, payload) {
+      try {
+        const routeId = normalizeRouteId(payload?.route_id);
+        const route = await resolveRoute(routeId);
+        if (!routeId || !route) {
+          return { status: 400, error: "invalid route_id" };
+        }
+
+        const sessionId = generateId("sim_active");
+        await insertRows(
+          "sim_active_sessions",
+          [
+            {
+              session_id: sessionId,
+              user_id: user.user_id,
+              route_id: routeId,
+              events: [],
+              started_at: new Date().toISOString(),
+            },
+          ],
+          { returning: false },
+        );
+
+        return {
+          status: 201,
+          data: {
+            session_id: sessionId,
+            route,
+          },
+        };
+      } catch (error) {
+        return { status: Number(error.status) || 500, error: error.message || "internal server error" };
+      }
+    },
+
+    async appendSimEvents(user, sessionId, payload) {
+      try {
+        const rows = await selectRows(
+          "sim_active_sessions",
+          {
+            session_id: `eq.${sessionId}`,
+            user_id: `eq.${user.user_id}`,
+          },
+          { select: "*", limit: 1 },
+        );
+        if (!rows.length) {
+          return { status: 404, error: "sim session not found" };
+        }
+
+        const session = rows[0];
+        const incoming = asArray(payload?.events).map((event) => ({
+          triggerKey: event.triggerKey,
+          atMs: Number(event.atMs) || 0,
+          meta: event.meta ?? {},
+        }));
+        const mergedEvents = [...asArray(session.events), ...incoming];
+
+        await patchRows(
+          "sim_active_sessions",
+          { session_id: `eq.${sessionId}` },
+          { events: mergedEvents },
+          { returning: false },
+        );
+
+        return {
+          status: 202,
+          data: {
+            accepted: incoming.length,
+            total_events: mergedEvents.length,
+          },
+        };
+      } catch (error) {
+        return { status: Number(error.status) || 500, error: error.message || "internal server error" };
+      }
+    },
+
+    async finishSimSession(user, sessionId, payload) {
+      try {
+        const rows = await selectRows(
+          "sim_active_sessions",
+          {
+            session_id: `eq.${sessionId}`,
+            user_id: `eq.${user.user_id}`,
+          },
+          { select: "*", limit: 1 },
+        );
+        if (!rows.length) {
+          return { status: 404, error: "sim session not found" };
+        }
+
+        const session = rows[0];
+        const durationSec = Number(payload?.duration_sec) > 0 ? Number(payload.duration_sec) : 0;
+        const activeRules = rulesForRoute(store, session.route_id);
+
+        let score = 100;
+        let criticalFail = false;
+        let failReason = null;
+        const penalties = [];
+
+        for (const event of asArray(session.events)) {
+          const matched = activeRules.filter((rule) => rule.triggerKey === event.triggerKey);
+          for (const rule of matched) {
+            if (rule.severity === "critical" || rule.failImmediately) {
+              criticalFail = true;
+              failReason = failReason ?? rule.triggerKey;
+            } else {
+              score = Math.max(0, score - rule.points);
+            }
+            penalties.push({
+              ruleId: rule.ruleId,
+              triggerKey: rule.triggerKey,
+              severity: rule.severity,
+              points: rule.points,
+              messageEs: rule.messageEs,
+              messageEn: rule.messageEn,
+            });
+          }
+          if (criticalFail) {
+            break;
+          }
+        }
+
+        const record = {
+          session_id: generateId("sim_session"),
+          user_id: user.user_id,
+          route_id: session.route_id,
+          score_pct: score,
+          critical_fail: criticalFail,
+          fail_reason: failReason,
+          duration_sec: durationSec,
+          created_at: new Date().toISOString(),
+          penalties,
+        };
+
+        await insertRows("sim_sessions", [record], { returning: false });
+        await deleteRows("sim_active_sessions", { session_id: `eq.${sessionId}` });
+
+        return { status: 200, data: record };
+      } catch (error) {
+        return { status: Number(error.status) || 500, error: error.message || "internal server error" };
+      }
+    },
+
+    async buildTheoryLeaderboard(limit = 50) {
+      const rows = await selectRows(
+        "exam_attempts",
+        {},
+        {
+          select: "attempt_id,user_id,score_pct,correct_count,duration_sec,passed,created_at",
+          order: "score_pct.desc,duration_sec.asc",
+          limit: Number(limit) || 50,
+        },
+      );
+      const usernames = await mapUsernames(rows.map((row) => row.user_id));
+      return rows.map((row, idx) => ({
+        rank: idx + 1,
+        user_id: row.user_id,
+        username: usernames.get(row.user_id) ?? "unknown",
+        score_pct: Number(row.score_pct),
+        correct_count: Number(row.correct_count),
+        duration_sec: Number(row.duration_sec),
+        passed: Boolean(row.passed),
+        created_at: row.created_at,
+      }));
+    },
+
+    async buildSimulationLeaderboard(limit = 50) {
+      const rows = await selectRows(
+        "sim_sessions",
+        {},
+        {
+          select: "session_id,user_id,route_id,score_pct,critical_fail,fail_reason,duration_sec,created_at",
+          order: "score_pct.desc,critical_fail.asc,duration_sec.asc",
+          limit: Number(limit) || 50,
+        },
+      );
+      const usernames = await mapUsernames(rows.map((row) => row.user_id));
+      return rows.map((row, idx) => ({
+        rank: idx + 1,
+        user_id: row.user_id,
+        username: usernames.get(row.user_id) ?? "unknown",
+        route_id: row.route_id,
+        score_pct: Number(row.score_pct),
+        critical_fail: Boolean(row.critical_fail),
+        fail_reason: row.fail_reason,
+        duration_sec: Number(row.duration_sec),
+        created_at: row.created_at,
+      }));
+    },
+
+    async buildUserProfile(userId) {
+      const theoryHistory = await selectRows(
+        "exam_attempts",
+        { user_id: `eq.${userId}` },
+        {
+          select: "attempt_id,user_id,score_pct,correct_count,duration_sec,passed,created_at",
+          order: "created_at.desc",
+          limit: 100,
+        },
+      );
+      const simulationHistory = await selectRows(
+        "sim_sessions",
+        { user_id: `eq.${userId}` },
+        {
+          select: "session_id,user_id,route_id,score_pct,critical_fail,fail_reason,duration_sec,created_at",
+          order: "created_at.desc",
+          limit: 100,
+        },
+      );
+      const bestTheoryScore = theoryHistory.reduce(
+        (best, current) => (Number(current.score_pct) > best ? Number(current.score_pct) : best),
+        0,
+      );
+      const bestSimulationScore = simulationHistory.reduce(
+        (best, current) => (Number(current.score_pct) > best ? Number(current.score_pct) : best),
+        0,
+      );
+      return {
+        bestTheoryScore,
+        bestSimulationScore,
+        theoryHistory,
+        simulationHistory,
+      };
+    },
+
+    async publishRouteMap(user, payload) {
+      try {
+        if (!user?.is_creator) {
+          return { status: 403, error: "creator permissions required" };
+        }
+
+        const routeId = normalizeRouteId(payload?.route_id);
+        if (!routeId) {
+          return { status: 400, error: "invalid route_id" };
+        }
+
+        const route = cloneJson(payload?.route);
+        const shapeError = validateRouteShape(route, routeId);
+        if (shapeError) {
+          return { status: 400, error: shapeError };
+        }
+        route.routeId = routeId;
+        route.unit = route.unit || "meters";
+
+        const lastVersion = await selectRows(
+          "maps",
+          { route_id: `eq.${routeId}` },
+          { select: "version", order: "version.desc", limit: 1 },
+        );
+        const version = (Number(lastVersion[0]?.version) || 0) + 1;
+        const defaultName = `Route ${routeId} v${version}`;
+        const providedName = String(payload?.name || "").trim();
+        const now = new Date().toISOString();
+
+        const mapRecord = {
+          map_id: generateId("map"),
+          route_id: routeId,
+          name: (providedName || defaultName).slice(0, 120),
+          version,
+          route,
+          created_by: user.user_id,
+          created_at: now,
+          published_at: now,
+        };
+
+        const [created] = await insertRows("maps", [mapRecord], { returning: true });
+        await insertRows(
+          "active_route_maps",
+          [{ route_id: routeId, map_id: created.map_id, updated_at: now }],
+          {
+            upsert: true,
+            onConflict: "route_id",
+            returning: false,
+          },
+        );
+
+        return {
+          status: 201,
+          data: {
+            map: mapMetadata(created),
+            route: cloneJson(created.route),
+          },
+        };
+      } catch (error) {
+        return { status: Number(error.status) || 500, error: error.message || "internal server error" };
+      }
+    },
+
+    async getActiveRoutePayload(routeId) {
+      return getActiveRoutePayload(routeId);
+    },
+
+    async getAllActiveRoutesPayload() {
+      return getAllActiveRoutesPayload();
+    },
+  };
+}

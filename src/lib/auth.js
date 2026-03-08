@@ -8,6 +8,9 @@ export function registerUser(store, payload) {
 
   const normalizedEmail = String(email).trim().toLowerCase();
   const normalizedUsername = String(username).trim();
+  const creatorEmail = String(process.env.CREATOR_EMAIL || "")
+    .trim()
+    .toLowerCase();
 
   const duplicated = store.users.find(
     (user) => user.email === normalizedEmail || user.username === normalizedUsername,
@@ -17,15 +20,26 @@ export function registerUser(store, payload) {
     return { error: "username or email already exists", status: 409 };
   }
 
+  let isCreator = false;
+  if (!store.creatorUserId) {
+    if (!creatorEmail || creatorEmail === normalizedEmail) {
+      isCreator = true;
+    }
+  }
+
   const user = {
     user_id: generateId("usr"),
     username: normalizedUsername,
     email: normalizedEmail,
+    is_creator: isCreator,
     password_hash: hashPassword(password),
     created_at: new Date().toISOString(),
   };
 
   store.users.push(user);
+  if (isCreator) {
+    store.creatorUserId = user.user_id;
+  }
 
   const token = makeToken();
   store.authTokens.set(token, user.user_id);
@@ -88,6 +102,7 @@ export function publicUser(user) {
     user_id: user.user_id,
     username: user.username,
     email: user.email,
+    is_creator: Boolean(user.is_creator),
     created_at: user.created_at,
   };
 }

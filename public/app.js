@@ -72,6 +72,8 @@ const state = {
       dashDisplayMode: "overlay",
       dashDisplayTargetMesh: null,
       dashDisplayTargetName: "",
+      remotePlayersGroup: null,
+      remotePlayerMarkers: new Map(),
     },
   },
   mapper: {
@@ -86,6 +88,21 @@ const state = {
     checkpointsPx: [],
     pendingCheckpointType: null,
     routeOverrideA: null,
+  },
+  multiplayer: {
+    configLoaded: false,
+    enabled: false,
+    url: "",
+    anonKey: "",
+    lib: null,
+    client: null,
+    channel: null,
+    roomId: "",
+    connected: false,
+    peers: new Map(),
+    lastBroadcastAt: 0,
+    broadcastEveryMs: 120,
+    heartbeatTimer: null,
   },
   keys: new Set(),
 };
@@ -135,6 +152,7 @@ const HUD_UPDATE_INTERVAL_IDLE_MS = 300;
 const MINIMAP_UPDATE_INTERVAL_ACTIVE_MS = 100;
 const MINIMAP_UPDATE_INTERVAL_IDLE_MS = 450;
 const ROUTE_BOUNDS_MARGIN_METERS = 14;
+const MULTIPLAYER_PEER_TTL_MS = 30000;
 const MAPPER_STORAGE_KEY = "routeA_override_v1";
 const MAPPER_SNAP_CANVAS_PX = 10;
 const PARALLEL_PARK_BOX_L_M = 6.2;
@@ -166,6 +184,10 @@ const dom = {
   theoryTableBody: document.querySelector("#theory-table tbody"),
   simTableBody: document.querySelector("#sim-table tbody"),
   routeSelect: document.querySelector("#route-select"),
+  multiplayerRoom: document.querySelector("#multiplayer-room"),
+  multiplayerJoinBtn: document.querySelector("#multiplayer-join"),
+  multiplayerLeaveBtn: document.querySelector("#multiplayer-leave"),
+  multiplayerStatus: document.querySelector("#multiplayer-status"),
   glCanvas: document.querySelector("#sim-gl-canvas"),
   canvas: document.querySelector("#sim-canvas"),
   miniMapCanvas: document.querySelector("#mini-map-canvas"),
@@ -198,9 +220,11 @@ const dom = {
   mapperUndo: document.querySelector("#mapper-undo"),
   mapperClear: document.querySelector("#mapper-clear"),
   mapperApplyRoute: document.querySelector("#mapper-apply-route"),
+  mapperPublishRoute: document.querySelector("#mapper-publish-route"),
   mapperDownloadJson: document.querySelector("#mapper-download-json"),
   mapperImportJson: document.querySelector("#mapper-import-json"),
   mapperImportJsonFile: document.querySelector("#mapper-import-json-file"),
+  mapperPanel: document.querySelector("#mapper-panel"),
   mapperCanvas: document.querySelector("#mapper-canvas"),
   mapperStatus: document.querySelector("#mapper-status"),
   mapperJson: document.querySelector("#mapper-json"),
@@ -1162,14 +1186,59 @@ function updateAuthState() {
     dom.logoutBtn.disabled = true;
     dom.authGuest.classList.remove("hidden");
     dom.authUser.classList.add("hidden");
+    if (dom.mapperPanel) {
+      dom.mapperPanel.classList.add("hidden");
+    }
+    if (dom.mapperPublishRoute) {
+      dom.mapperPublishRoute.disabled = true;
+    }
+    if (dom.multiplayerRoom) {
+      dom.multiplayerRoom.disabled = true;
+    }
+    if (dom.multiplayerJoinBtn) {
+      dom.multiplayerJoinBtn.disabled = true;
+    }
+    if (dom.multiplayerLeaveBtn) {
+      dom.multiplayerLeaveBtn.disabled = true;
+    }
+    setMultiplayerStatus("login required.");
     return;
   }
 
-  dom.authState.textContent = `Logged in as ${state.user.username}`;
+  dom.authState.textContent = `Logged in as ${state.user.username}${state.user.is_creator ? " (creator)" : ""}`;
   dom.logoutBtn.disabled = false;
   dom.authGuest.classList.add("hidden");
   dom.authUser.classList.remove("hidden");
   dom.authUserCopy.textContent = `Welcome, ${state.user.username}. Your account is active.`;
+  if (dom.mapperPanel) {
+    dom.mapperPanel.classList.toggle("hidden", !state.user.is_creator);
+  }
+  if (dom.mapperPublishRoute) {
+    dom.mapperPublishRoute.disabled = !state.user.is_creator;
+  }
+  if (dom.multiplayerRoom) {
+    dom.multiplayerRoom.disabled = false;
+    if (!dom.multiplayerRoom.value.trim()) {
+      dom.multiplayerRoom.value = defaultMultiplayerRoomId(dom.routeSelect?.value || "A");
+    }
+  }
+  const multiplayerAvailable = !state.multiplayer.configLoaded || state.multiplayer.enabled;
+  if (dom.multiplayerRoom) {
+    dom.multiplayerRoom.disabled = !multiplayerAvailable;
+  }
+  if (dom.multiplayerJoinBtn) {
+    dom.multiplayerJoinBtn.disabled = !multiplayerAvailable;
+  }
+  if (dom.multiplayerLeaveBtn) {
+    dom.multiplayerLeaveBtn.disabled = !state.multiplayer.connected;
+  }
+  if (!multiplayerAvailable) {
+    setMultiplayerStatus("disabled (missing server config).", true);
+  } else if (state.multiplayer.connected && state.multiplayer.roomId) {
+    setMultiplayerStatus(`connected to "${state.multiplayer.roomId}".`);
+  } else {
+    setMultiplayerStatus("ready.");
+  }
 }
 
 function setAuth(authData) {
@@ -1204,6 +1273,7 @@ function clearAuth() {
   state.sim.bumpAxleContacts = {};
   state.sim.bumpAxleHitAtMs = {};
   state.sim.stopLineContacts = {};
+  leaveMultiplayerRoom({ silent: true }).catch(() => {});
   if (state.sim.three.ready) {
     clearThreeGroup(state.sim.three.routeGroup);
   }
@@ -1236,6 +1306,311 @@ async function api(path, options = {}) {
   }
 
   return payload;
+}
+
+function sanitizeRoomId(rawValue) {
+  const normalized = String(rawValue || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  return normalized.slice(0, 40);
+}
+
+function defaultMultiplayerRoomId(routeId = dom.routeSelect?.value || "A") {
+  const safeRoute = String(routeId || "A").toLowerCase();
+  return `route-${safeRoute}-public`;
+}
+
+function setMultiplayerStatus(message, isError = false) {
+  if (!dom.multiplayerStatus) {
+    return;
+  }
+  dom.multiplayerStatus.textContent = `Multiplayer: ${message}`;
+  dom.multiplayerStatus.style.color = isError ? "#ffdce0" : "#d0e8f2";
+}
+
+function removeRemotePlayerMarker(peerId) {
+  const markers = state.sim.three.remotePlayerMarkers;
+  const group = state.sim.three.remotePlayersGroup;
+  const marker = markers?.get(peerId);
+  if (!marker) {
+    return;
+  }
+  if (group) {
+    group.remove(marker);
+  }
+  markers.delete(peerId);
+}
+
+function clearRemotePlayerMarkers() {
+  if (state.sim.three.remotePlayerMarkers) {
+    for (const peerId of state.sim.three.remotePlayerMarkers.keys()) {
+      removeRemotePlayerMarker(peerId);
+    }
+    state.sim.three.remotePlayerMarkers.clear();
+  }
+}
+
+function clearMultiplayerPeers() {
+  state.multiplayer.peers.clear();
+  clearRemotePlayerMarkers();
+}
+
+function pruneMultiplayerPeers(nowMs = Date.now()) {
+  for (const [peerId, peer] of state.multiplayer.peers.entries()) {
+    if (nowMs - Number(peer.lastSeenMs || 0) > MULTIPLAYER_PEER_TTL_MS) {
+      state.multiplayer.peers.delete(peerId);
+      removeRemotePlayerMarker(peerId);
+    }
+  }
+}
+
+function peersForActiveRoute(nowMs = Date.now()) {
+  pruneMultiplayerPeers(nowMs);
+  const routeId = state.sim.route?.routeId;
+  if (!routeId) {
+    return [];
+  }
+  const peers = [];
+  for (const peer of state.multiplayer.peers.values()) {
+    if (!Number.isFinite(peer.x) || !Number.isFinite(peer.y)) {
+      continue;
+    }
+    if (routeId && peer.route_id !== routeId) {
+      continue;
+    }
+    peers.push(peer);
+  }
+  return peers;
+}
+
+async function loadRealtimeConfig() {
+  if (state.multiplayer.configLoaded) {
+    return state.multiplayer.enabled;
+  }
+
+  state.multiplayer.configLoaded = true;
+  try {
+    const payload = await api("/v1/config/realtime");
+    state.multiplayer.enabled = Boolean(payload?.enabled);
+    state.multiplayer.url = payload?.url || "";
+    state.multiplayer.anonKey = payload?.anon_key || "";
+    if (!state.multiplayer.enabled) {
+      setMultiplayerStatus("disabled (missing server config).");
+    }
+    return state.multiplayer.enabled;
+  } catch {
+    state.multiplayer.enabled = false;
+    setMultiplayerStatus("unavailable.");
+    return false;
+  }
+}
+
+async function loadSupabaseRealtimeLib() {
+  if (state.multiplayer.lib) {
+    return state.multiplayer.lib;
+  }
+  const lib = await import("@supabase/supabase-js");
+  state.multiplayer.lib = lib;
+  return lib;
+}
+
+async function ensureMultiplayerClient() {
+  const available = await loadRealtimeConfig();
+  if (!available || !state.multiplayer.url || !state.multiplayer.anonKey) {
+    throw new Error("Multiplayer is not configured on the server.");
+  }
+  if (state.multiplayer.client) {
+    return state.multiplayer.client;
+  }
+
+  const lib = await loadSupabaseRealtimeLib();
+  state.multiplayer.client = lib.createClient(state.multiplayer.url, state.multiplayer.anonKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+    realtime: {
+      params: { eventsPerSecond: 18 },
+    },
+  });
+  return state.multiplayer.client;
+}
+
+async function leaveMultiplayerRoom(options = {}) {
+  const { silent = false } = options;
+  const mp = state.multiplayer;
+  if (mp.client && mp.channel) {
+    try {
+      await mp.client.removeChannel(mp.channel);
+    } catch {
+      // ignore disconnect errors
+    }
+  }
+  mp.channel = null;
+  mp.connected = false;
+  mp.roomId = "";
+  mp.lastBroadcastAt = 0;
+  if (mp.heartbeatTimer) {
+    clearInterval(mp.heartbeatTimer);
+    mp.heartbeatTimer = null;
+  }
+  clearMultiplayerPeers();
+  if (dom.multiplayerLeaveBtn) {
+    dom.multiplayerLeaveBtn.disabled = true;
+  }
+  if (!silent) {
+    setMultiplayerStatus("disconnected.");
+  }
+}
+
+async function joinMultiplayerRoom(roomInput = "") {
+  if (!state.user) {
+    throw new Error("Login first");
+  }
+  const client = await ensureMultiplayerClient();
+  const roomId = sanitizeRoomId(roomInput || dom.multiplayerRoom?.value || defaultMultiplayerRoomId());
+  if (!roomId) {
+    throw new Error("Set a valid room id.");
+  }
+
+  if (state.multiplayer.connected && state.multiplayer.roomId === roomId) {
+    setMultiplayerStatus(`connected to "${roomId}".`);
+    return roomId;
+  }
+
+  await leaveMultiplayerRoom({ silent: true });
+  state.multiplayer.roomId = roomId;
+  if (dom.multiplayerRoom) {
+    dom.multiplayerRoom.value = roomId;
+  }
+
+  const channel = client.channel(`drive-room:${roomId}`, {
+    config: {
+      broadcast: {
+        self: false,
+        ack: false,
+      },
+    },
+  });
+
+  channel.on("broadcast", { event: "pose" }, ({ payload }) => {
+    if (!payload || payload.user_id === state.user?.user_id) {
+      return;
+    }
+    const peerX = Number(payload.x);
+    const peerY = Number(payload.y);
+    if (!Number.isFinite(peerX) || !Number.isFinite(peerY)) {
+      return;
+    }
+
+    state.multiplayer.peers.set(payload.user_id, {
+      user_id: payload.user_id,
+      username: payload.username || "player",
+      route_id: payload.route_id || "",
+      x: peerX,
+      y: peerY,
+      headingDeg: Number(payload.headingDeg) || 0,
+      speedKmh: Number(payload.speedKmh) || 0,
+      lastSeenMs: Date.now(),
+    });
+  });
+
+  state.multiplayer.channel = channel;
+  setMultiplayerStatus(`connecting to "${roomId}"...`);
+
+  await new Promise((resolve, reject) => {
+    let settled = false;
+    const timeout = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(new Error("Multiplayer connection timeout."));
+    }, 5000);
+
+    channel.subscribe((status) => {
+      if (status === "SUBSCRIBED") {
+        state.multiplayer.connected = true;
+        if (!settled) {
+          settled = true;
+          clearTimeout(timeout);
+          resolve();
+        }
+        return;
+      }
+      if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+        state.multiplayer.connected = false;
+        if (status === "CLOSED") {
+          setMultiplayerStatus("disconnected.");
+        } else {
+          setMultiplayerStatus(`channel error (${status}).`, true);
+        }
+        if (!settled) {
+          settled = true;
+          clearTimeout(timeout);
+          reject(new Error(`Realtime channel error (${status}).`));
+        }
+      }
+    });
+  });
+
+  setMultiplayerStatus(`connected to "${roomId}".`);
+  if (dom.multiplayerLeaveBtn) {
+    dom.multiplayerLeaveBtn.disabled = false;
+  }
+  if (state.multiplayer.heartbeatTimer) {
+    clearInterval(state.multiplayer.heartbeatTimer);
+  }
+  state.multiplayer.heartbeatTimer = setInterval(() => {
+    // Keep publishing even if animation frames are throttled on background tabs.
+    broadcastLocalPose(Date.now());
+  }, 320);
+  return roomId;
+}
+
+async function ensureMultiplayerRoomForRoute(routeId) {
+  const candidate = sanitizeRoomId(dom.multiplayerRoom?.value || "") || defaultMultiplayerRoomId(routeId);
+  if (dom.multiplayerRoom && !dom.multiplayerRoom.value.trim()) {
+    dom.multiplayerRoom.value = candidate;
+  }
+  if (!state.multiplayer.connected || state.multiplayer.roomId !== candidate) {
+    await joinMultiplayerRoom(candidate);
+  }
+}
+
+function broadcastLocalPose(nowMs = Date.now()) {
+  const mp = state.multiplayer;
+  if (!mp.connected || !mp.channel || !state.user || !state.sim.sessionId || !state.sim.route || !state.sim.car) {
+    return;
+  }
+  if (nowMs - mp.lastBroadcastAt < mp.broadcastEveryMs) {
+    return;
+  }
+  mp.lastBroadcastAt = nowMs;
+
+  const payload = {
+    user_id: state.user.user_id,
+    username: state.user.username,
+    route_id: state.sim.route.routeId,
+    x: Number(state.sim.car.x.toFixed(3)),
+    y: Number(state.sim.car.y.toFixed(3)),
+    headingDeg: Number(state.sim.car.headingDeg.toFixed(3)),
+    speedKmh: Number(state.sim.car.speedKmh.toFixed(3)),
+    sentAtMs: Date.now(),
+  };
+
+  const sent = mp.channel.send({
+    type: "broadcast",
+    event: "pose",
+    payload,
+  });
+  if (sent && typeof sent.catch === "function") {
+    sent.catch(() => {});
+  }
 }
 
 function renderTableRows(body, rows, columns) {
@@ -3122,6 +3497,26 @@ function drawMiniMapOverlay() {
     ctxMini.fill();
   }
 
+  const peers = peersForActiveRoute();
+  for (const peer of peers) {
+    const p = mp(peer);
+    const heading = toRadians(peer.headingDeg || 0);
+    const size = 5;
+    ctxMini.fillStyle = "#75d7ff";
+    ctxMini.beginPath();
+    ctxMini.moveTo(p.x + Math.cos(-heading) * size, p.y + Math.sin(-heading) * size);
+    ctxMini.lineTo(
+      p.x + Math.cos(-heading + 2.4) * (size * 0.78),
+      p.y + Math.sin(-heading + 2.4) * (size * 0.78),
+    );
+    ctxMini.lineTo(
+      p.x + Math.cos(-heading - 2.4) * (size * 0.78),
+      p.y + Math.sin(-heading - 2.4) * (size * 0.78),
+    );
+    ctxMini.closePath();
+    ctxMini.fill();
+  }
+
   if (state.sim.car) {
     const p = mp(state.sim.car);
     const heading = toRadians(state.sim.car.headingDeg);
@@ -3164,6 +3559,12 @@ function maybeUpdateOverlays(nowMs) {
   if (nowMs - lastMiniMapOverlayMs >= mapInterval) {
     drawMiniMapOverlay();
     lastMiniMapOverlayMs = nowMs;
+  }
+
+  if (state.multiplayer.connected && state.multiplayer.roomId) {
+    const peers = peersForActiveRoute(nowMs);
+    const suffix = peers.length === 1 ? "player" : "players";
+    setMultiplayerStatus(`connected to "${state.multiplayer.roomId}" (${peers.length} other ${suffix}).`);
   }
 }
 
@@ -4481,6 +4882,8 @@ async function initThreeEngine() {
 
     const routeGroup = new THREE.Group();
     scene.add(routeGroup);
+    const remotePlayersGroup = new THREE.Group();
+    scene.add(remotePlayersGroup);
 
     const carMarker = new THREE.Group();
     const carBody = new THREE.Mesh(
@@ -4500,6 +4903,8 @@ async function initThreeEngine() {
     three.scene = scene;
     three.camera = camera;
     three.routeGroup = routeGroup;
+    three.remotePlayersGroup = remotePlayersGroup;
+    three.remotePlayerMarkers = new Map();
     three.carMarker = carMarker;
     three.vehicleModelRoot = null;
     three.vehicleFootprintLocal = null;
@@ -4572,6 +4977,129 @@ async function initThreeEngine() {
     dom.canvas.style.opacity = "1";
     // eslint-disable-next-line no-console
     console.error(error);
+  }
+}
+
+function peerColorHex(peerId = "") {
+  let hash = 0;
+  for (let i = 0; i < peerId.length; i += 1) {
+    hash = (hash << 5) - hash + peerId.charCodeAt(i);
+    hash |= 0;
+  }
+  const hue = Math.abs(hash) % 360;
+  const s = 72;
+  const l = 54;
+  // HSL to RGB
+  const c = (1 - Math.abs((2 * l) / 100 - 1)) * (s / 100);
+  const hp = hue / 60;
+  const x = c * (1 - Math.abs((hp % 2) - 1));
+  let r1 = 0;
+  let g1 = 0;
+  let b1 = 0;
+  if (hp >= 0 && hp < 1) {
+    r1 = c;
+    g1 = x;
+  } else if (hp < 2) {
+    r1 = x;
+    g1 = c;
+  } else if (hp < 3) {
+    g1 = c;
+    b1 = x;
+  } else if (hp < 4) {
+    g1 = x;
+    b1 = c;
+  } else if (hp < 5) {
+    r1 = x;
+    b1 = c;
+  } else {
+    r1 = c;
+    b1 = x;
+  }
+  const m = l / 100 - c / 2;
+  const r = Math.round((r1 + m) * 255);
+  const g = Math.round((g1 + m) * 255);
+  const b = Math.round((b1 + m) * 255);
+  return (r << 16) + (g << 8) + b;
+}
+
+function createRemotePlayerMarker(THREE, peerId) {
+  const marker = new THREE.Group();
+  marker.name = `remote-${peerId}`;
+  marker.userData.kind = "fallback";
+  marker.userData.yawOffset = 0;
+
+  const templateModel = state.sim.three.vehicleModelRoot;
+  if (templateModel) {
+    const modelClone = templateModel.clone(true);
+    modelClone.name = `${templateModel.name || "vehicle-model"}-peer-${peerId}`;
+    modelClone.traverse((node) => {
+      if (!node.isMesh) {
+        return;
+      }
+      const nodeName = (node.name || "").toLowerCase();
+      // Remote cars should always render complete exterior, regardless of local first-person visibility toggles.
+      node.visible = !BLOCKER_HINT_REGEX.test(nodeName);
+      node.castShadow = false;
+      node.receiveShadow = false;
+      node.frustumCulled = false;
+    });
+    marker.add(modelClone);
+    marker.userData.kind = "model";
+    marker.userData.yawOffset = Number(state.sim.three.vehicleYawOffsetRad || 0);
+    return marker;
+  }
+
+  const color = peerColorHex(peerId);
+  const body = new THREE.Mesh(
+    new THREE.BoxGeometry(1.62, 0.58, 0.9),
+    new THREE.MeshStandardMaterial({ color, roughness: 0.65 }),
+  );
+  body.position.y = 0.47;
+  marker.add(body);
+
+  const nose = new THREE.Mesh(
+    new THREE.BoxGeometry(0.42, 0.22, 0.74),
+    new THREE.MeshStandardMaterial({ color: 0xa5f0ff, roughness: 0.55 }),
+  );
+  nose.position.set(0.62, 0.58, 0);
+  marker.add(nose);
+
+  return marker;
+}
+
+function syncThreeRemotePlayers() {
+  const three = state.sim.three;
+  if (!three.ready || !three.lib || !three.remotePlayersGroup || !three.remotePlayerMarkers) {
+    return;
+  }
+
+  const visiblePeers = peersForActiveRoute();
+  const keep = new Set();
+  const wantsModelMarkers = Boolean(three.vehicleModelRoot);
+  for (const peer of visiblePeers) {
+    keep.add(peer.user_id);
+    let marker = three.remotePlayerMarkers.get(peer.user_id);
+    if (marker && wantsModelMarkers && marker.userData?.kind !== "model") {
+      removeRemotePlayerMarker(peer.user_id);
+      marker = null;
+    }
+    if (!marker) {
+      marker = createRemotePlayerMarker(three.lib, peer.user_id);
+      three.remotePlayerMarkers.set(peer.user_id, marker);
+      three.remotePlayersGroup.add(marker);
+    }
+    marker.visible = true;
+    marker.position.set(peer.x, 0, -peer.y);
+    marker.rotation.order = "YXZ";
+    const yawOffset = Number(marker.userData?.yawOffset || 0);
+    marker.rotation.set(0, toRadians(peer.headingDeg || 0) + yawOffset, 0);
+  }
+
+  for (const peerId of three.remotePlayerMarkers.keys()) {
+    if (keep.has(peerId)) {
+      continue;
+    }
+    removeRemotePlayerMarker(peerId);
   }
 }
 
@@ -4779,6 +5307,7 @@ function updateThreeScene(dt = 1 / 60) {
     three.dashDisplayTargetMesh.visible = Boolean(car) && state.sim.camera === "first";
   }
   drawDashDisplaySpeed(car?.speedKmh ?? 0);
+  syncThreeRemotePlayers();
 
   renderer.render(scene, camera);
   return true;
@@ -5623,6 +6152,24 @@ function drawThirdPersonScene() {
     ctx.fill();
   }
 
+  for (const peer of peersForActiveRoute()) {
+    const peerPos = worldToThirdPersonCanvas(peer.x, peer.y);
+    const peerHeading = toRadians(peer.headingDeg || 0);
+    const mode = externalCameraMode(state.sim.camera);
+    const viewYaw = externalCameraYawFor2D(mode, toRadians(state.sim.car.headingDeg || 0));
+    const carLengthPeer = 14;
+    const carWidthPeer = 9;
+
+    ctx.save();
+    ctx.translate(peerPos.x, peerPos.y);
+    ctx.rotate(-(peerHeading - viewYaw));
+    ctx.fillStyle = "#0b3d57";
+    ctx.fillRect(-carLengthPeer / 2, -carWidthPeer / 2, carLengthPeer, carWidthPeer);
+    ctx.fillStyle = "#8fe8ff";
+    ctx.fillRect(carLengthPeer / 4, -carWidthPeer / 2, carLengthPeer / 4, carWidthPeer);
+    ctx.restore();
+  }
+
   const car = state.sim.car;
   const carPos = worldToThirdPersonCanvas(car.x, car.y);
   const heading = toRadians(car.headingDeg);
@@ -6343,6 +6890,11 @@ function frame(now) {
     dom.carState.textContent = "Car: --";
   }
 
+  if (state.multiplayer.connected) {
+    broadcastLocalPose(now);
+    pruneMultiplayerPeers(now);
+  }
+
   const renderedThree = updateThreeScene(dt);
   if (!renderedThree) {
     drawSimulation();
@@ -6432,6 +6984,11 @@ async function startSimulation() {
   hidePenaltyCard();
   updateHudOverlay();
   drawMiniMapOverlay();
+  try {
+    await ensureMultiplayerRoomForRoute(routeId);
+  } catch (error) {
+    setMultiplayerStatus(error.message, true);
+  }
 }
 
 async function finishSimulation() {
@@ -6705,6 +7262,45 @@ function bindRouteMapperUi() {
     }
   });
 
+  dom.mapperPublishRoute.addEventListener("click", async () => {
+    if (!state.token) {
+      alert("Login first.");
+      return;
+    }
+    if (!state.user?.is_creator) {
+      alert("Only the creator account can publish global maps.");
+      return;
+    }
+
+    let route = state.mapper.routeOverrideA;
+    if (!route) {
+      try {
+        route = mapperBuildRouteAFromCanvas();
+      } catch (error) {
+        alert(error.message);
+        return;
+      }
+    }
+
+    try {
+      const result = await api("/v1/maps/publish", {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({
+          route_id: "A",
+          name: `Route A ${new Date().toISOString().slice(0, 10)}`,
+          route,
+        }),
+      });
+      setMapperStatus(
+        `Route A published globally (map ${result.map.map_id}, v${result.map.version}). All players now receive it.`,
+      );
+      dom.mapperJson.textContent = formatJson(result.route);
+    } catch (error) {
+      alert(error.message);
+    }
+  });
+
   dom.mapperDownloadJson.addEventListener("click", () => {
     let route = state.mapper.routeOverrideA;
     if (!route) {
@@ -6808,6 +7404,44 @@ function bindUi() {
     sendSimEvent("roundabout_no_yield_left", { source: "manual" });
   });
 
+  if (dom.multiplayerRoom) {
+    dom.multiplayerRoom.addEventListener("input", () => {
+      dom.multiplayerRoom.dataset.manual = "1";
+    });
+  }
+  if (dom.routeSelect) {
+    dom.routeSelect.addEventListener("change", () => {
+      if (!dom.multiplayerRoom) {
+        return;
+      }
+      const isManual = dom.multiplayerRoom.dataset.manual === "1";
+      if (!isManual || !dom.multiplayerRoom.value.trim()) {
+        dom.multiplayerRoom.value = defaultMultiplayerRoomId(dom.routeSelect.value);
+      }
+    });
+  }
+  if (dom.multiplayerJoinBtn) {
+    dom.multiplayerJoinBtn.addEventListener("click", () => {
+      const roomId = dom.multiplayerRoom?.value || "";
+      joinMultiplayerRoom(roomId).catch((error) => {
+        setMultiplayerStatus(error.message, true);
+        alert(error.message);
+      });
+    });
+  }
+  if (dom.multiplayerLeaveBtn) {
+    dom.multiplayerLeaveBtn.addEventListener("click", () => {
+      leaveMultiplayerRoom().catch((error) => {
+        setMultiplayerStatus(error.message, true);
+      });
+    });
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+      broadcastLocalPose(Date.now());
+    }
+  });
+
   document
     .querySelector("#load-theory")
     .addEventListener("click", () => loadTheoryLeaderboard().catch((error) => alert(error.message)));
@@ -6825,4 +7459,5 @@ updateAuthState();
 bindUi();
 syncCanvasSize();
 initThreeEngine();
+loadRealtimeConfig().then(() => updateAuthState());
 requestAnimationFrame(frame);
