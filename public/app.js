@@ -153,6 +153,10 @@ const MINIMAP_UPDATE_INTERVAL_ACTIVE_MS = 100;
 const MINIMAP_UPDATE_INTERVAL_IDLE_MS = 450;
 const ROUTE_BOUNDS_MARGIN_METERS = 14;
 const MULTIPLAYER_PEER_TTL_MS = 30000;
+const MULTIPLAYER_COLLISION_STALE_MS = 2500;
+const MULTIPLAYER_COLLISION_BUFFER_M = 0.22;
+const MULTIPLAYER_SPAWN_LATERAL_SPACING_M = 2.45;
+const MULTIPLAYER_SPAWN_LONGITUDINAL_SPACING_M = 3.2;
 const MAPPER_STORAGE_KEY = "routeA_override_v1";
 const MAPPER_SNAP_CANVAS_PX = 10;
 const PARALLEL_PARK_BOX_L_M = 6.2;
@@ -1384,6 +1388,234 @@ function peersForActiveRoute(nowMs = Date.now()) {
     peers.push(peer);
   }
   return peers;
+}
+
+function hashStringToInt(input = "") {
+  let hash = 0;
+  for (let i = 0; i < input.length; i += 1) {
+    hash = (hash << 5) - hash + input.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash);
+}
+
+function rotateLocalOffsetToRoute(localX, localZ, yawRad) {
+  return {
+    x: Math.cos(yawRad) * localX + Math.sin(yawRad) * localZ,
+    y: Math.sin(yawRad) * localX - Math.cos(yawRad) * localZ,
+  };
+}
+
+function buildCarCollisionBoxForPose(x, y, headingDeg) {
+  const heading = toRadians(headingDeg || 0);
+  const footprint = state.sim.three.vehicleFootprintLocal;
+  const hasModelFootprint = Boolean(state.sim.three.vehicleModelRoot && footprint);
+  const yawOffset = hasModelFootprint ? Number(state.sim.three.vehicleYawOffsetRad || 0) : 0;
+  const yaw = heading + yawOffset;
+
+  const forward = { x: Math.cos(yaw), y: Math.sin(yaw) };
+  const right = { x: Math.sin(yaw), y: -Math.cos(yaw) };
+
+  if (!hasModelFootprint) {
+    const fallbackCenterOffset = 1.05;
+    return {
+      center: {
+        x: x + Math.cos(heading) * fallbackCenterOffset,
+        y: y + Math.sin(heading) * fallbackCenterOffset,
+      },
+      forward: { x: Math.cos(heading), y: Math.sin(heading) },
+      right: { x: Math.sin(heading), y: -Math.cos(heading) },
+      halfLength: 2.2,
+      halfWidth: 1.03,
+    };
+  }
+
+  const rawHalfLen = Math.abs(footprint.maxX - footprint.minX) * 0.5;
+  const rawHalfWid = Math.abs(footprint.maxZ - footprint.minZ) * 0.5;
+  const halfLength = Math.max(1.72, Math.min(2.82, rawHalfLen * 0.98));
+  const halfWidth = Math.max(0.88, Math.min(1.35, rawHalfWid * 0.98));
+  const centerLocalX = (footprint.minX + footprint.maxX) * 0.5;
+  const centerLocalZ = (footprint.minZ + footprint.maxZ) * 0.5;
+  const centerOffset = rotateLocalOffsetToRoute(centerLocalX, centerLocalZ, yaw);
+
+  return {
+    center: {
+      x: x + centerOffset.x,
+      y: y + centerOffset.y,
+    },
+    forward,
+    right,
+    halfLength,
+    halfWidth,
+  };
+}
+
+function localCarCollisionRadiusMeters() {
+  const box = buildCarCollisionBoxForPose(0, 0, 0);
+  return Math.hypot(box.halfLength, box.halfWidth);
+}
+
+function projectCollisionBoxOnAxis(box, axis) {
+  const centerProj = box.center.x * axis.x + box.center.y * axis.y;
+  const radius =
+    Math.abs(box.forward.x * axis.x + box.forward.y * axis.y) * box.halfLength +
+    Math.abs(box.right.x * axis.x + box.right.y * axis.y) * box.halfWidth;
+  return {
+    min: centerProj - radius,
+    max: centerProj + radius,
+  };
+}
+
+function collisionBoxesOverlapInfo(a, b) {
+  const rawAxes = [a.forward, a.right, b.forward, b.right];
+  let bestAxis = null;
+  let bestOverlap = Number.POSITIVE_INFINITY;
+
+  for (const rawAxis of rawAxes) {
+    const len = Math.hypot(rawAxis.x, rawAxis.y);
+    if (len < 0.000001) {
+      continue;
+    }
+    const axis = { x: rawAxis.x / len, y: rawAxis.y / len };
+    const pa = projectCollisionBoxOnAxis(a, axis);
+    const pb = projectCollisionBoxOnAxis(b, axis);
+    const overlap = Math.min(pa.max, pb.max) - Math.max(pa.min, pb.min);
+    if (overlap <= 0) {
+      return null;
+    }
+    if (overlap < bestOverlap) {
+      bestOverlap = overlap;
+      bestAxis = axis;
+    }
+  }
+
+  if (!bestAxis) {
+    return null;
+  }
+
+  const dir = {
+    x: a.center.x - b.center.x,
+    y: a.center.y - b.center.y,
+  };
+  if (dir.x * bestAxis.x + dir.y * bestAxis.y < 0) {
+    bestAxis = { x: -bestAxis.x, y: -bestAxis.y };
+  }
+
+  return {
+    overlap: bestOverlap,
+    axis: bestAxis,
+  };
+}
+
+function computeSpawnPose(route) {
+  const start = route?.startPose;
+  if (!start || !Number.isFinite(start.x) || !Number.isFinite(start.y) || !Number.isFinite(start.headingDeg)) {
+    return null;
+  }
+
+  const heading = toRadians(start.headingDeg);
+  const forward = { x: Math.cos(heading), y: Math.sin(heading) };
+  const left = { x: -Math.sin(heading), y: Math.cos(heading) };
+  const hash = hashStringToInt(state.user?.user_id || state.user?.username || "player");
+  const laneOptions = [-2, -1, 0, 1, 2];
+  const rowOptions = [0, 1, 2, 3];
+  const preferredLane = laneOptions[hash % laneOptions.length];
+  const preferredRow = rowOptions[Math.floor(hash / laneOptions.length) % rowOptions.length];
+
+  const combos = [];
+  for (const row of rowOptions) {
+    for (const lane of laneOptions) {
+      const score =
+        Math.abs(lane - preferredLane) * 1.25 +
+        Math.abs(row - preferredRow) * 0.9 +
+        Math.abs(lane) * 0.14 +
+        row * 0.08;
+      combos.push({ lane, row, score });
+    }
+  }
+  combos.sort((a, b) => a.score - b.score);
+
+  const nowMs = Date.now();
+  const peers = peersForActiveRoute(nowMs).filter(
+    (peer) => nowMs - Number(peer.lastSeenMs || 0) <= MULTIPLAYER_COLLISION_STALE_MS,
+  );
+  const fallbackMinSep = localCarCollisionRadiusMeters() * 2 + MULTIPLAYER_COLLISION_BUFFER_M;
+
+  for (const combo of combos) {
+    const offsetLeft = combo.lane * MULTIPLAYER_SPAWN_LATERAL_SPACING_M;
+    const offsetBack = combo.row * MULTIPLAYER_SPAWN_LONGITUDINAL_SPACING_M;
+    const x = start.x + left.x * offsetLeft - forward.x * offsetBack;
+    const y = start.y + left.y * offsetLeft - forward.y * offsetBack;
+    const candidateBox = buildCarCollisionBoxForPose(x, y, start.headingDeg);
+
+    const occupied = peers.some((peer) => {
+      const quickFar = Math.hypot(x - peer.x, y - peer.y) > fallbackMinSep * 1.7;
+      if (quickFar) {
+        return false;
+      }
+      const peerBox = buildCarCollisionBoxForPose(peer.x, peer.y, Number(peer.headingDeg) || start.headingDeg);
+      return Boolean(collisionBoxesOverlapInfo(candidateBox, peerBox));
+    });
+    if (!occupied) {
+      return { x, y, headingDeg: start.headingDeg };
+    }
+  }
+
+  return { x: start.x, y: start.y, headingDeg: start.headingDeg };
+}
+
+function resolvePeerSolidCollisions(prevX, prevY) {
+  if (!state.sim.car || !state.sim.route) {
+    return;
+  }
+
+  const nowMs = Date.now();
+  const peers = peersForActiveRoute(nowMs).filter(
+    (peer) => nowMs - Number(peer.lastSeenMs || 0) <= MULTIPLAYER_COLLISION_STALE_MS,
+  );
+  if (!peers.length) {
+    return;
+  }
+
+  const car = state.sim.car;
+  let x = car.x;
+  let y = car.y;
+  let hadCollision = false;
+  let maxPenetration = 0;
+  let localBox = buildCarCollisionBoxForPose(x, y, car.headingDeg);
+
+  for (const peer of peers) {
+    const peerBox = buildCarCollisionBoxForPose(peer.x, peer.y, Number(peer.headingDeg) || 0);
+    const overlapInfo = collisionBoxesOverlapInfo(localBox, peerBox);
+    if (!overlapInfo) {
+      continue;
+    }
+
+    hadCollision = true;
+    const penetration = overlapInfo.overlap + MULTIPLAYER_COLLISION_BUFFER_M * 0.35;
+    maxPenetration = Math.max(maxPenetration, penetration);
+    x += overlapInfo.axis.x * penetration;
+    y += overlapInfo.axis.y * penetration;
+    localBox = buildCarCollisionBoxForPose(x, y, car.headingDeg);
+  }
+
+  if (!hadCollision) {
+    return;
+  }
+
+  car.x = x;
+  car.y = y;
+  if (maxPenetration > Math.max(localBox.halfWidth, localBox.halfLength) * 0.55) {
+    car.x = prevX;
+    car.y = prevY;
+    car.speedKmh = 0;
+    return;
+  }
+
+  const speedSign = Math.sign(car.speedKmh);
+  const speedAbs = Math.abs(car.speedKmh);
+  const damped = Math.max(0, speedAbs - maxPenetration * 26);
+  car.speedKmh = damped < 0.8 ? 0 : speedSign * damped;
 }
 
 async function loadRealtimeConfig() {
@@ -6667,6 +6899,15 @@ function frame(now) {
       routeBounds.minY - ROUTE_BOUNDS_MARGIN_METERS,
       Math.min(routeBounds.maxY + ROUTE_BOUNDS_MARGIN_METERS, state.sim.car.y),
     );
+    resolvePeerSolidCollisions(prevCarX, prevCarY);
+    state.sim.car.x = Math.max(
+      routeBounds.minX - ROUTE_BOUNDS_MARGIN_METERS,
+      Math.min(routeBounds.maxX + ROUTE_BOUNDS_MARGIN_METERS, state.sim.car.x),
+    );
+    state.sim.car.y = Math.max(
+      routeBounds.minY - ROUTE_BOUNDS_MARGIN_METERS,
+      Math.min(routeBounds.maxY + ROUTE_BOUNDS_MARGIN_METERS, state.sim.car.y),
+    );
 
     const nowMs = Date.now();
     let bumpSupportTarget = 0;
@@ -6924,15 +7165,23 @@ async function startSimulation() {
     ? JSON.parse(JSON.stringify(state.mapper.routeOverrideA))
     : startPayload.route;
 
-  state.sim.sessionId = startPayload.session_id;
+  try {
+    await ensureMultiplayerRoomForRoute(routeId);
+  } catch (error) {
+    setMultiplayerStatus(error.message, true);
+  }
+
   state.sim.route = activeRoute;
   state.sim.routePath = buildRoutePath(activeRoute);
   state.sim.routeDensePath = densifyPath(state.sim.routePath, 2.1);
   state.sim.routeBounds = computeRouteBounds(state.sim.routeDensePath);
+  const spawnPose = computeSpawnPose(activeRoute) || activeRoute.startPose;
+
+  state.sim.sessionId = startPayload.session_id;
   state.sim.car = {
-    x: activeRoute.startPose.x,
-    y: activeRoute.startPose.y,
-    headingDeg: activeRoute.startPose.headingDeg,
+    x: spawnPose.x,
+    y: spawnPose.y,
+    headingDeg: spawnPose.headingDeg,
     speedKmh: 0,
   };
 
@@ -6984,11 +7233,6 @@ async function startSimulation() {
   hidePenaltyCard();
   updateHudOverlay();
   drawMiniMapOverlay();
-  try {
-    await ensureMultiplayerRoomForRoute(routeId);
-  } catch (error) {
-    setMultiplayerStatus(error.message, true);
-  }
 }
 
 async function finishSimulation() {
