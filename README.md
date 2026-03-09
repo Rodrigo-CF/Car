@@ -37,6 +37,10 @@ To enable persistent storage (required for Vercel production), configure Supabas
    - `SIM_CLEANUP_MIN_INTERVAL_SEC` (optional; default `60` = throttles cleanup in request path)
    - `SIM_KEEPALIVE_INTERVAL_SEC` (optional; default `30`)
    - `SIM_INPUT_IDLE_TIMEOUT_SEC` (optional; default `900` = 15 minutes)
+   - `MULTIPLAYER_PEER_TTL_SEC` (optional; default `30`)
+   - `MULTIPLAYER_COLLISION_STALE_SEC` (optional; default `10`)
+   - `MULTIPLAYER_TAB_HIDDEN_AFK_SEC` (optional; default `10`)
+   - `MULTIPLAYER_INPUT_IDLE_AFK_SEC` (optional; default `180`)
 
 When `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` are present, the API automatically uses Supabase.
 Otherwise it falls back to in-memory mode.
@@ -52,6 +56,10 @@ export SIM_ACTIVE_TTL_SEC="900"
 export SIM_CLEANUP_MIN_INTERVAL_SEC="60"
 export SIM_KEEPALIVE_INTERVAL_SEC="30"
 export SIM_INPUT_IDLE_TIMEOUT_SEC="900"
+export MULTIPLAYER_PEER_TTL_SEC="30"
+export MULTIPLAYER_COLLISION_STALE_SEC="10"
+export MULTIPLAYER_TAB_HIDDEN_AFK_SEC="10"
+export MULTIPLAYER_INPUT_IDLE_AFK_SEC="180"
 npm start
 ```
 
@@ -93,6 +101,11 @@ select cron.unschedule('cleanup-sim-active-every-30m');
 - stale rows auto-cleaned by API logic (throttled, mainly on `start`) using `SIM_ACTIVE_TTL_SEC`
 - client keepalive interval configurable by `SIM_KEEPALIVE_INTERVAL_SEC` (default 30s)
 - simulation auto-abandons after `SIM_INPUT_IDLE_TIMEOUT_SEC` with no simulator keyboard input
+- multiplayer peer presence configurable by:
+  - `MULTIPLAYER_PEER_TTL_SEC` (hide peer after stale timeout)
+  - `MULTIPLAYER_COLLISION_STALE_SEC` (peer still visible but non-solid / AFK after this)
+  - `MULTIPLAYER_TAB_HIDDEN_AFK_SEC` (AFK when browser tab stays hidden)
+  - `MULTIPLAYER_INPUT_IDLE_AFK_SEC` (AFK when no simulator input)
 - manual cleanup endpoint for creator:
   - `POST /v1/admin/cleanup/sim-active` with optional body `{ "ttl_sec": 900 }`
 

@@ -81,6 +81,8 @@ const state = {
       dashDisplayTargetName: "",
       remotePlayersGroup: null,
       remotePlayerMarkers: new Map(),
+      remoteAfkLabelMaterial: null,
+      remoteAfkLabelTexture: null,
     },
   },
   mapper: {
@@ -110,6 +112,10 @@ const state = {
     lastBroadcastAt: 0,
     broadcastEveryMs: 120,
     heartbeatTimer: null,
+    peerTtlMs: 0,
+    collisionStaleMs: 0,
+    tabHiddenAfkMs: 0,
+    inputIdleAfkMs: 0,
   },
   keys: new Set(),
 };
@@ -162,7 +168,9 @@ const SIM_KEEPALIVE_INTERVAL_DEFAULT_MS = 30 * 1000;
 const SIM_INPUT_IDLE_TIMEOUT_DEFAULT_MS = 15 * 60 * 1000;
 const ROUTE_BOUNDS_MARGIN_METERS = 14;
 const MULTIPLAYER_PEER_TTL_MS = 30000;
-const MULTIPLAYER_COLLISION_STALE_MS = 2500;
+const MULTIPLAYER_COLLISION_STALE_MS = 10000;
+const MULTIPLAYER_TAB_HIDDEN_AFK_MS = 10000;
+const MULTIPLAYER_INPUT_IDLE_AFK_MS = 3 * 60 * 1000;
 const MULTIPLAYER_COLLISION_BUFFER_M = 0.22;
 const MULTIPLAYER_SPAWN_LATERAL_SPACING_M = 2.45;
 const MULTIPLAYER_SPAWN_LONGITUDINAL_SPACING_M = 3.2;
@@ -1400,6 +1408,58 @@ function peerRenderPose(peer) {
   };
 }
 
+function multiplayerPeerTtlMs() {
+  const value = Number(state.multiplayer.peerTtlMs);
+  if (Number.isFinite(value) && value > 0) {
+    return Math.max(5000, value);
+  }
+  return MULTIPLAYER_PEER_TTL_MS;
+}
+
+function multiplayerCollisionStaleMs() {
+  const ttl = multiplayerPeerTtlMs();
+  const value = Number(state.multiplayer.collisionStaleMs);
+  const fallback = MULTIPLAYER_COLLISION_STALE_MS;
+  const base = Number.isFinite(value) && value > 0 ? value : fallback;
+  return Math.max(1000, Math.min(ttl, base));
+}
+
+function multiplayerTabHiddenAfkMs() {
+  const ttl = multiplayerPeerTtlMs();
+  const value = Number(state.multiplayer.tabHiddenAfkMs);
+  const fallback = MULTIPLAYER_TAB_HIDDEN_AFK_MS;
+  const base = Number.isFinite(value) && value > 0 ? value : fallback;
+  return Math.max(1000, Math.min(ttl, base));
+}
+
+function multiplayerInputIdleAfkMs() {
+  const value = Number(state.multiplayer.inputIdleAfkMs);
+  if (Number.isFinite(value) && value > 0) {
+    return Math.max(10 * 1000, value);
+  }
+  return MULTIPLAYER_INPUT_IDLE_AFK_MS;
+}
+
+function peerPresenceState(peer, nowMs = Date.now()) {
+  const ageMs = Math.max(0, nowMs - Number(peer?.lastSeenMs || 0));
+  const hiddenSinceMs = Number(peer?.hiddenSinceMs || 0);
+  const hiddenAfk = Boolean(peer?.isHidden) && hiddenSinceMs > 0 && nowMs - hiddenSinceMs >= multiplayerTabHiddenAfkMs();
+  const inputIdleAfk = Boolean(peer?.isInputIdle);
+  const collisionStaleMs = multiplayerCollisionStaleMs();
+  const peerTtlMs = multiplayerPeerTtlMs();
+
+  if (ageMs > peerTtlMs) {
+    return "offline";
+  }
+  if (hiddenAfk || inputIdleAfk || ageMs > collisionStaleMs) {
+    return "afk";
+  }
+  if (ageMs <= collisionStaleMs) {
+    return "active";
+  }
+  return "afk";
+}
+
 function updateMultiplayerPeerRenderStates(dtSec, nowMs = Date.now()) {
   if (!Number.isFinite(dtSec) || dtSec <= 0 || !state.multiplayer.peers.size) {
     return;
@@ -1461,8 +1521,9 @@ function updateMultiplayerPeerRenderStates(dtSec, nowMs = Date.now()) {
 }
 
 function pruneMultiplayerPeers(nowMs = Date.now()) {
+  const ttlMs = multiplayerPeerTtlMs();
   for (const [peerId, peer] of state.multiplayer.peers.entries()) {
-    if (nowMs - Number(peer.lastSeenMs || 0) > MULTIPLAYER_PEER_TTL_MS) {
+    if (nowMs - Number(peer.lastSeenMs || 0) > ttlMs) {
       state.multiplayer.peers.delete(peerId);
       removeRemotePlayerMarker(peerId);
     }
@@ -1634,9 +1695,7 @@ function computeSpawnPose(route) {
   combos.sort((a, b) => a.score - b.score);
 
   const nowMs = Date.now();
-  const peers = peersForActiveRoute(nowMs).filter(
-    (peer) => nowMs - Number(peer.lastSeenMs || 0) <= MULTIPLAYER_COLLISION_STALE_MS,
-  );
+  const peers = peersForActiveRoute(nowMs).filter((peer) => peerPresenceState(peer, nowMs) === "active");
   const fallbackMinSep = localCarCollisionRadiusMeters() * 2 + MULTIPLAYER_COLLISION_BUFFER_M;
 
   for (const combo of combos) {
@@ -1668,9 +1727,7 @@ function resolvePeerSolidCollisions(prevX, prevY) {
   }
 
   const nowMs = Date.now();
-  const peers = peersForActiveRoute(nowMs).filter(
-    (peer) => nowMs - Number(peer.lastSeenMs || 0) <= MULTIPLAYER_COLLISION_STALE_MS,
-  );
+  const peers = peersForActiveRoute(nowMs).filter((peer) => peerPresenceState(peer, nowMs) === "active");
   if (!peers.length) {
     return;
   }
@@ -1739,6 +1796,17 @@ async function loadRealtimeConfig() {
     } else {
       state.sim.inputIdleTimeoutMs = SIM_INPUT_IDLE_TIMEOUT_DEFAULT_MS;
     }
+    const peerTtlSec = Number(payload?.multiplayer_peer_ttl_sec);
+    state.multiplayer.peerTtlMs = Number.isFinite(peerTtlSec) && peerTtlSec > 0 ? Math.max(5, peerTtlSec) * 1000 : 0;
+    const collisionStaleSec = Number(payload?.multiplayer_collision_stale_sec);
+    state.multiplayer.collisionStaleMs =
+      Number.isFinite(collisionStaleSec) && collisionStaleSec > 0 ? Math.max(1, collisionStaleSec) * 1000 : 0;
+    const hiddenAfkSec = Number(payload?.multiplayer_tab_hidden_afk_sec);
+    state.multiplayer.tabHiddenAfkMs =
+      Number.isFinite(hiddenAfkSec) && hiddenAfkSec > 0 ? Math.max(1, hiddenAfkSec) * 1000 : 0;
+    const inputIdleAfkSec = Number(payload?.multiplayer_input_idle_afk_sec);
+    state.multiplayer.inputIdleAfkMs =
+      Number.isFinite(inputIdleAfkSec) && inputIdleAfkSec > 0 ? Math.max(10, inputIdleAfkSec) * 1000 : 0;
     if (!state.multiplayer.enabled) {
       setMultiplayerStatus("disabled (missing server config).");
     }
@@ -1851,6 +1919,9 @@ async function joinMultiplayerRoom(roomInput = "") {
     const nowMs = Date.now();
     const headingDeg = Number(payload.headingDeg) || 0;
     const speedKmh = Number(payload.speedKmh) || 0;
+    const hiddenFlag = Boolean(payload.hidden);
+    const inputIdleFlag = Boolean(payload.input_idle);
+    const remoteLastInputAtMs = Number(payload.last_input_at_ms) || 0;
     const existing = state.multiplayer.peers.get(payload.user_id);
     if (!existing) {
       state.multiplayer.peers.set(payload.user_id, {
@@ -1861,6 +1932,10 @@ async function joinMultiplayerRoom(roomInput = "") {
         y: peerY,
         headingDeg,
         speedKmh,
+        isHidden: hiddenFlag,
+        hiddenSinceMs: hiddenFlag ? nowMs : 0,
+        isInputIdle: inputIdleFlag,
+        lastInputAtMs: remoteLastInputAtMs,
         velX: 0,
         velY: 0,
         headingVelDeg: 0,
@@ -1885,6 +1960,16 @@ async function joinMultiplayerRoom(roomInput = "") {
     existing.y = peerY;
     existing.headingDeg = headingDeg;
     existing.speedKmh = speedKmh;
+    if (hiddenFlag) {
+      if (!existing.isHidden) {
+        existing.hiddenSinceMs = nowMs;
+      }
+    } else {
+      existing.hiddenSinceMs = 0;
+    }
+    existing.isHidden = hiddenFlag;
+    existing.isInputIdle = inputIdleFlag;
+    existing.lastInputAtMs = remoteLastInputAtMs;
     existing.velX = Number.isFinite(existing.velX) ? existing.velX * 0.45 + instVelX * 0.55 : instVelX;
     existing.velY = Number.isFinite(existing.velY) ? existing.velY * 0.45 + instVelY * 0.55 : instVelY;
     existing.headingVelDeg = Number.isFinite(existing.headingVelDeg)
@@ -1964,12 +2049,21 @@ async function ensureMultiplayerRoomForRoute(routeId) {
   }
 }
 
-function broadcastLocalPose(nowMs = Date.now()) {
+function isLocalInputIdleForPresence(nowMs = Date.now()) {
+  const lastInputAt = Number(state.sim.lastInputAt || 0);
+  if (!lastInputAt) {
+    return true;
+  }
+  return nowMs - lastInputAt >= multiplayerInputIdleAfkMs();
+}
+
+function broadcastLocalPose(nowMs = Date.now(), options = {}) {
+  const force = Boolean(options.force);
   const mp = state.multiplayer;
   if (!mp.connected || !mp.channel || !state.user || !state.sim.sessionId || !state.sim.route || !state.sim.car) {
     return;
   }
-  if (nowMs - mp.lastBroadcastAt < mp.broadcastEveryMs) {
+  if (!force && nowMs - mp.lastBroadcastAt < mp.broadcastEveryMs) {
     return;
   }
   mp.lastBroadcastAt = nowMs;
@@ -1982,6 +2076,9 @@ function broadcastLocalPose(nowMs = Date.now()) {
     y: Number(state.sim.car.y.toFixed(3)),
     headingDeg: Number(state.sim.car.headingDeg.toFixed(3)),
     speedKmh: Number(state.sim.car.speedKmh.toFixed(3)),
+    hidden: document.hidden ? 1 : 0,
+    input_idle: isLocalInputIdleForPresence(nowMs) ? 1 : 0,
+    last_input_at_ms: Number(state.sim.lastInputAt || 0),
     sentAtMs: Date.now(),
   };
 
@@ -3879,13 +3976,15 @@ function drawMiniMapOverlay() {
     ctxMini.fill();
   }
 
-  const peers = peersForActiveRoute();
+  const nowMs = Date.now();
+  const peers = peersForActiveRoute(nowMs);
   for (const peer of peers) {
     const pose = peerRenderPose(peer);
+    const presence = peerPresenceState(peer, nowMs);
     const p = mp(pose);
     const heading = toRadians(pose.headingDeg || 0);
     const size = 5;
-    ctxMini.fillStyle = "#75d7ff";
+    ctxMini.fillStyle = presence === "afk" ? "#ffd166" : "#75d7ff";
     ctxMini.beginPath();
     ctxMini.moveTo(p.x + Math.cos(-heading) * size, p.y + Math.sin(-heading) * size);
     ctxMini.lineTo(
@@ -3946,8 +4045,11 @@ function maybeUpdateOverlays(nowMs) {
 
   if (state.multiplayer.connected && state.multiplayer.roomId) {
     const peers = peersForActiveRoute(nowMs);
+    const active = peers.filter((peer) => peerPresenceState(peer, nowMs) === "active").length;
+    const afk = Math.max(0, peers.length - active);
     const suffix = peers.length === 1 ? "player" : "players";
-    setMultiplayerStatus(`connected to "${state.multiplayer.roomId}" (${peers.length} other ${suffix}).`);
+    const extra = afk > 0 ? `, ${afk} afk` : "";
+    setMultiplayerStatus(`connected to "${state.multiplayer.roomId}" (${peers.length} other ${suffix}: ${active} active${extra}).`);
   }
 }
 
@@ -5288,6 +5390,8 @@ async function initThreeEngine() {
     three.routeGroup = routeGroup;
     three.remotePlayersGroup = remotePlayersGroup;
     three.remotePlayerMarkers = new Map();
+    three.remoteAfkLabelMaterial = null;
+    three.remoteAfkLabelTexture = null;
     three.carMarker = carMarker;
     three.vehicleModelRoot = null;
     three.vehicleFootprintLocal = null;
@@ -5405,6 +5509,69 @@ function peerColorHex(peerId = "") {
   return (r << 16) + (g << 8) + b;
 }
 
+function ensureRemoteAfkLabelMaterial(THREE) {
+  if (state.sim.three.remoteAfkLabelMaterial) {
+    return state.sim.three.remoteAfkLabelMaterial;
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = 256;
+  canvas.height = 96;
+  const ctx2d = canvas.getContext("2d");
+  if (!ctx2d) {
+    return null;
+  }
+
+  const radius = 14;
+  const w = canvas.width - 8;
+  const h = canvas.height - 8;
+  const x = 4;
+  const y = 4;
+  ctx2d.clearRect(0, 0, canvas.width, canvas.height);
+  ctx2d.fillStyle = "rgba(12, 19, 27, 0.86)";
+  ctx2d.beginPath();
+  ctx2d.moveTo(x + radius, y);
+  ctx2d.lineTo(x + w - radius, y);
+  ctx2d.quadraticCurveTo(x + w, y, x + w, y + radius);
+  ctx2d.lineTo(x + w, y + h - radius);
+  ctx2d.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
+  ctx2d.lineTo(x + radius, y + h);
+  ctx2d.quadraticCurveTo(x, y + h, x, y + h - radius);
+  ctx2d.lineTo(x, y + radius);
+  ctx2d.quadraticCurveTo(x, y, x + radius, y);
+  ctx2d.closePath();
+  ctx2d.fill();
+
+  ctx2d.strokeStyle = "rgba(255, 211, 116, 0.95)";
+  ctx2d.lineWidth = 4;
+  ctx2d.stroke();
+
+  ctx2d.fillStyle = "#ffd166";
+  ctx2d.font = "700 44px Sora, sans-serif";
+  ctx2d.textAlign = "center";
+  ctx2d.textBaseline = "middle";
+  ctx2d.fillText("AFK", canvas.width / 2, canvas.height / 2 + 2);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.generateMipmaps = false;
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.needsUpdate = true;
+
+  const material = new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true,
+    depthTest: false,
+    depthWrite: false,
+    toneMapped: false,
+  });
+  material.sizeAttenuation = true;
+
+  state.sim.three.remoteAfkLabelTexture = texture;
+  state.sim.three.remoteAfkLabelMaterial = material;
+  return material;
+}
+
 function createRemotePlayerMarker(THREE, peerId) {
   const marker = new THREE.Group();
   marker.name = `remote-${peerId}`;
@@ -5429,23 +5596,34 @@ function createRemotePlayerMarker(THREE, peerId) {
     marker.add(modelClone);
     marker.userData.kind = "model";
     marker.userData.yawOffset = Number(state.sim.three.vehicleYawOffsetRad || 0);
-    return marker;
+  } else {
+    const color = peerColorHex(peerId);
+    const body = new THREE.Mesh(
+      new THREE.BoxGeometry(1.62, 0.58, 0.9),
+      new THREE.MeshStandardMaterial({ color, roughness: 0.65 }),
+    );
+    body.position.y = 0.47;
+    marker.add(body);
+
+    const nose = new THREE.Mesh(
+      new THREE.BoxGeometry(0.42, 0.22, 0.74),
+      new THREE.MeshStandardMaterial({ color: 0xa5f0ff, roughness: 0.55 }),
+    );
+    nose.position.set(0.62, 0.58, 0);
+    marker.add(nose);
   }
 
-  const color = peerColorHex(peerId);
-  const body = new THREE.Mesh(
-    new THREE.BoxGeometry(1.62, 0.58, 0.9),
-    new THREE.MeshStandardMaterial({ color, roughness: 0.65 }),
-  );
-  body.position.y = 0.47;
-  marker.add(body);
-
-  const nose = new THREE.Mesh(
-    new THREE.BoxGeometry(0.42, 0.22, 0.74),
-    new THREE.MeshStandardMaterial({ color: 0xa5f0ff, roughness: 0.55 }),
-  );
-  nose.position.set(0.62, 0.58, 0);
-  marker.add(nose);
+  const afkMaterial = ensureRemoteAfkLabelMaterial(THREE);
+  if (afkMaterial) {
+    const afkLabel = new THREE.Sprite(afkMaterial);
+    afkLabel.name = `remote-${peerId}-afk`;
+    afkLabel.center.set(0.5, 0);
+    afkLabel.position.set(0, 1.1, 0);
+    afkLabel.scale.set(1.5, 0.56, 1);
+    afkLabel.visible = false;
+    marker.add(afkLabel);
+    marker.userData.afkLabel = afkLabel;
+  }
 
   return marker;
 }
@@ -5456,11 +5634,13 @@ function syncThreeRemotePlayers() {
     return;
   }
 
-  const visiblePeers = peersForActiveRoute();
+  const nowMs = Date.now();
+  const visiblePeers = peersForActiveRoute(nowMs);
   const keep = new Set();
   const wantsModelMarkers = Boolean(three.vehicleModelRoot);
   for (const peer of visiblePeers) {
     const pose = peerRenderPose(peer);
+    const presence = peerPresenceState(peer, nowMs);
     keep.add(peer.user_id);
     let marker = three.remotePlayerMarkers.get(peer.user_id);
     if (marker && wantsModelMarkers && marker.userData?.kind !== "model") {
@@ -5477,6 +5657,9 @@ function syncThreeRemotePlayers() {
     marker.rotation.order = "YXZ";
     const yawOffset = Number(marker.userData?.yawOffset || 0);
     marker.rotation.set(0, toRadians(pose.headingDeg || 0) + yawOffset, 0);
+    if (marker.userData?.afkLabel) {
+      marker.userData.afkLabel.visible = presence === "afk";
+    }
   }
 
   for (const peerId of three.remotePlayerMarkers.keys()) {
@@ -6536,8 +6719,10 @@ function drawThirdPersonScene() {
     ctx.fill();
   }
 
-  for (const peer of peersForActiveRoute()) {
+  const nowMs = Date.now();
+  for (const peer of peersForActiveRoute(nowMs)) {
     const pose = peerRenderPose(peer);
+    const presence = peerPresenceState(peer, nowMs);
     const peerPos = worldToThirdPersonCanvas(pose.x, pose.y);
     const peerHeading = toRadians(pose.headingDeg || 0);
     const mode = externalCameraMode(state.sim.camera);
@@ -6548,11 +6733,31 @@ function drawThirdPersonScene() {
     ctx.save();
     ctx.translate(peerPos.x, peerPos.y);
     ctx.rotate(-(peerHeading - viewYaw));
-    ctx.fillStyle = "#0b3d57";
+    ctx.fillStyle = presence === "afk" ? "#4a4630" : "#0b3d57";
     ctx.fillRect(-carLengthPeer / 2, -carWidthPeer / 2, carLengthPeer, carWidthPeer);
-    ctx.fillStyle = "#8fe8ff";
+    ctx.fillStyle = presence === "afk" ? "#ffd89b" : "#8fe8ff";
     ctx.fillRect(carLengthPeer / 4, -carWidthPeer / 2, carLengthPeer / 4, carWidthPeer);
     ctx.restore();
+
+    if (presence === "afk") {
+      ctx.save();
+      const label = "AFK";
+      ctx.font = "700 11px Sora, sans-serif";
+      const labelWidth = Math.ceil(ctx.measureText(label).width) + 10;
+      const labelHeight = 15;
+      const lx = Math.round(peerPos.x - labelWidth / 2);
+      const ly = Math.round(peerPos.y - carWidthPeer - 18);
+      ctx.fillStyle = "rgba(10, 18, 28, 0.86)";
+      ctx.fillRect(lx, ly, labelWidth, labelHeight);
+      ctx.strokeStyle = "rgba(255, 209, 102, 0.92)";
+      ctx.lineWidth = 1.2;
+      ctx.strokeRect(lx + 0.5, ly + 0.5, labelWidth - 1, labelHeight - 1);
+      ctx.fillStyle = "#ffd166";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(label, lx + labelWidth / 2, ly + labelHeight / 2 + 0.3);
+      ctx.restore();
+    }
   }
 
   const car = state.sim.car;
@@ -7728,6 +7933,7 @@ window.addEventListener("keyup", (event) => {
 window.addEventListener("blur", () => {
   state.keys.clear();
   state.sim.lastSignal = null;
+  broadcastLocalPose(Date.now(), { force: true });
 });
 
 window.addEventListener("resize", syncCanvasSize);
@@ -8045,9 +8251,7 @@ function bindUi() {
     });
   }
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) {
-      broadcastLocalPose(Date.now());
-    }
+    broadcastLocalPose(Date.now(), { force: true });
   });
 
   document

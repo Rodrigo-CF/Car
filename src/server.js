@@ -124,12 +124,34 @@ export function createAppServer(store = createStore()) {
         const rawIdleTimeoutSec = Number(process.env.SIM_INPUT_IDLE_TIMEOUT_SEC || 900);
         const simInputIdleTimeoutSec =
           Number.isFinite(rawIdleTimeoutSec) && rawIdleTimeoutSec > 0 ? Math.max(60, rawIdleTimeoutSec) : 900;
+        const rawPeerTtlSec = Number(process.env.MULTIPLAYER_PEER_TTL_SEC || 30);
+        const multiplayerPeerTtlSec =
+          Number.isFinite(rawPeerTtlSec) && rawPeerTtlSec > 0 ? Math.max(5, rawPeerTtlSec) : 30;
+        const rawCollisionStaleSec = Number(process.env.MULTIPLAYER_COLLISION_STALE_SEC || 10);
+        const multiplayerCollisionStaleSec =
+          Number.isFinite(rawCollisionStaleSec) && rawCollisionStaleSec > 0
+            ? Math.max(1, Math.min(multiplayerPeerTtlSec, rawCollisionStaleSec))
+            : Math.min(multiplayerPeerTtlSec, 10);
+        const rawHiddenAfkSec = Number(process.env.MULTIPLAYER_TAB_HIDDEN_AFK_SEC || 10);
+        const multiplayerTabHiddenAfkSec =
+          Number.isFinite(rawHiddenAfkSec) && rawHiddenAfkSec > 0
+            ? Math.max(1, Math.min(multiplayerPeerTtlSec, rawHiddenAfkSec))
+            : Math.min(multiplayerPeerTtlSec, 10);
+        const rawInputIdleAfkSec = Number(process.env.MULTIPLAYER_INPUT_IDLE_AFK_SEC || 180);
+        const multiplayerInputIdleAfkSec =
+          Number.isFinite(rawInputIdleAfkSec) && rawInputIdleAfkSec > 0
+            ? Math.max(10, Math.min(simInputIdleTimeoutSec, rawInputIdleAfkSec))
+            : Math.min(simInputIdleTimeoutSec, 180);
         sendJson(res, 200, {
           enabled: Boolean(url && anonKey),
           url,
           anon_key: anonKey,
           sim_keepalive_interval_sec: simKeepAliveIntervalSec,
           sim_input_idle_timeout_sec: simInputIdleTimeoutSec,
+          multiplayer_peer_ttl_sec: multiplayerPeerTtlSec,
+          multiplayer_collision_stale_sec: multiplayerCollisionStaleSec,
+          multiplayer_tab_hidden_afk_sec: multiplayerTabHiddenAfkSec,
+          multiplayer_input_idle_afk_sec: multiplayerInputIdleAfkSec,
         });
         return;
       }
