@@ -166,6 +166,11 @@ const MULTIPLAYER_COLLISION_STALE_MS = 2500;
 const MULTIPLAYER_COLLISION_BUFFER_M = 0.22;
 const MULTIPLAYER_SPAWN_LATERAL_SPACING_M = 2.45;
 const MULTIPLAYER_SPAWN_LONGITUDINAL_SPACING_M = 3.2;
+const MULTIPLAYER_REMOTE_SMOOTH_RATE = 12;
+const MULTIPLAYER_REMOTE_HEADING_SMOOTH_RATE = 14;
+const MULTIPLAYER_REMOTE_MAX_EXTRAPOLATE_MS = 180;
+const MULTIPLAYER_REMOTE_MAX_SPEED_MPS = 24;
+const MULTIPLAYER_REMOTE_SNAP_DISTANCE_M = 16;
 const MAPPER_STORAGE_KEY = "routeA_override_v1";
 const MAPPER_SNAP_CANVAS_PX = 10;
 const PARALLEL_PARK_BOX_L_M = 6.2;
@@ -1377,6 +1382,84 @@ function clearMultiplayerPeers() {
   clearRemotePlayerMarkers();
 }
 
+function signedHeadingDeltaDeg(fromDeg, toDeg) {
+  let delta = normalizeHeading(toDeg) - normalizeHeading(fromDeg);
+  if (delta > 180) {
+    delta -= 360;
+  } else if (delta < -180) {
+    delta += 360;
+  }
+  return delta;
+}
+
+function peerRenderPose(peer) {
+  return {
+    x: Number.isFinite(peer?.renderX) ? peer.renderX : peer?.x,
+    y: Number.isFinite(peer?.renderY) ? peer.renderY : peer?.y,
+    headingDeg: Number.isFinite(peer?.renderHeadingDeg) ? peer.renderHeadingDeg : peer?.headingDeg || 0,
+  };
+}
+
+function updateMultiplayerPeerRenderStates(dtSec, nowMs = Date.now()) {
+  if (!Number.isFinite(dtSec) || dtSec <= 0 || !state.multiplayer.peers.size) {
+    return;
+  }
+
+  const alphaPos = 1 - Math.exp(-MULTIPLAYER_REMOTE_SMOOTH_RATE * dtSec);
+  const alphaHeading = 1 - Math.exp(-MULTIPLAYER_REMOTE_HEADING_SMOOTH_RATE * dtSec);
+
+  for (const peer of state.multiplayer.peers.values()) {
+    if (!Number.isFinite(peer.x) || !Number.isFinite(peer.y)) {
+      continue;
+    }
+
+    if (!Number.isFinite(peer.renderX) || !Number.isFinite(peer.renderY)) {
+      peer.renderX = peer.x;
+      peer.renderY = peer.y;
+    }
+    if (!Number.isFinite(peer.renderHeadingDeg)) {
+      peer.renderHeadingDeg = Number.isFinite(peer.headingDeg) ? peer.headingDeg : 0;
+    }
+
+    const ageMs = Math.max(0, nowMs - Number(peer.lastSeenMs || nowMs));
+    const extrapolateSec = Math.min(MULTIPLAYER_REMOTE_MAX_EXTRAPOLATE_MS, ageMs) / 1000;
+
+    let velX = Number(peer.velX) || 0;
+    let velY = Number(peer.velY) || 0;
+    const velMag = Math.hypot(velX, velY);
+    if (velMag > MULTIPLAYER_REMOTE_MAX_SPEED_MPS) {
+      const factor = MULTIPLAYER_REMOTE_MAX_SPEED_MPS / Math.max(0.001, velMag);
+      velX *= factor;
+      velY *= factor;
+    } else if (velMag < 0.12 && Number.isFinite(peer.speedKmh)) {
+      const speedMps = Math.min(MULTIPLAYER_REMOTE_MAX_SPEED_MPS, Math.max(0, (peer.speedKmh * 1000) / 3600));
+      const heading = toRadians(peer.headingDeg || 0);
+      velX = Math.cos(heading) * speedMps;
+      velY = Math.sin(heading) * speedMps;
+    }
+
+    const targetX = peer.x + velX * extrapolateSec;
+    const targetY = peer.y + velY * extrapolateSec;
+    if (Math.hypot(targetX - peer.renderX, targetY - peer.renderY) > MULTIPLAYER_REMOTE_SNAP_DISTANCE_M) {
+      peer.renderX = targetX;
+      peer.renderY = targetY;
+    } else {
+      peer.renderX += (targetX - peer.renderX) * alphaPos;
+      peer.renderY += (targetY - peer.renderY) * alphaPos;
+    }
+
+    const predictedHeading = normalizeHeading(
+      (peer.headingDeg || 0) + (Number(peer.headingVelDeg) || 0) * extrapolateSec,
+    );
+    const headingDelta = signedHeadingDeltaDeg(peer.renderHeadingDeg, predictedHeading);
+    if (Math.abs(headingDelta) > 95) {
+      peer.renderHeadingDeg = predictedHeading;
+    } else {
+      peer.renderHeadingDeg = normalizeHeading(peer.renderHeadingDeg + headingDelta * alphaHeading);
+    }
+  }
+}
+
 function pruneMultiplayerPeers(nowMs = Date.now()) {
   for (const [peerId, peer] of state.multiplayer.peers.entries()) {
     if (nowMs - Number(peer.lastSeenMs || 0) > MULTIPLAYER_PEER_TTL_MS) {
@@ -1765,17 +1848,57 @@ async function joinMultiplayerRoom(roomInput = "") {
     if (!Number.isFinite(peerX) || !Number.isFinite(peerY)) {
       return;
     }
+    const nowMs = Date.now();
+    const headingDeg = Number(payload.headingDeg) || 0;
+    const speedKmh = Number(payload.speedKmh) || 0;
+    const existing = state.multiplayer.peers.get(payload.user_id);
+    if (!existing) {
+      state.multiplayer.peers.set(payload.user_id, {
+        user_id: payload.user_id,
+        username: payload.username || "player",
+        route_id: payload.route_id || "",
+        x: peerX,
+        y: peerY,
+        headingDeg,
+        speedKmh,
+        velX: 0,
+        velY: 0,
+        headingVelDeg: 0,
+        renderX: peerX,
+        renderY: peerY,
+        renderHeadingDeg: headingDeg,
+        lastSeenMs: nowMs,
+      });
+      return;
+    }
 
-    state.multiplayer.peers.set(payload.user_id, {
-      user_id: payload.user_id,
-      username: payload.username || "player",
-      route_id: payload.route_id || "",
-      x: peerX,
-      y: peerY,
-      headingDeg: Number(payload.headingDeg) || 0,
-      speedKmh: Number(payload.speedKmh) || 0,
-      lastSeenMs: Date.now(),
-    });
+    const dtSec = Math.max(0.016, (nowMs - Number(existing.lastSeenMs || nowMs)) / 1000);
+    const instVelX = (peerX - Number(existing.x || peerX)) / dtSec;
+    const instVelY = (peerY - Number(existing.y || peerY)) / dtSec;
+    const headingDeltaDeg = signedHeadingDeltaDeg(Number(existing.headingDeg || headingDeg), headingDeg);
+    const instHeadingVel = headingDeltaDeg / dtSec;
+
+    existing.user_id = payload.user_id;
+    existing.username = payload.username || existing.username || "player";
+    existing.route_id = payload.route_id || "";
+    existing.x = peerX;
+    existing.y = peerY;
+    existing.headingDeg = headingDeg;
+    existing.speedKmh = speedKmh;
+    existing.velX = Number.isFinite(existing.velX) ? existing.velX * 0.45 + instVelX * 0.55 : instVelX;
+    existing.velY = Number.isFinite(existing.velY) ? existing.velY * 0.45 + instVelY * 0.55 : instVelY;
+    existing.headingVelDeg = Number.isFinite(existing.headingVelDeg)
+      ? existing.headingVelDeg * 0.45 + instHeadingVel * 0.55
+      : instHeadingVel;
+    if (!Number.isFinite(existing.renderX) || !Number.isFinite(existing.renderY)) {
+      existing.renderX = peerX;
+      existing.renderY = peerY;
+    }
+    if (!Number.isFinite(existing.renderHeadingDeg)) {
+      existing.renderHeadingDeg = headingDeg;
+    }
+    existing.lastSeenMs = nowMs;
+    state.multiplayer.peers.set(payload.user_id, existing);
   });
 
   state.multiplayer.channel = channel;
@@ -3758,8 +3881,9 @@ function drawMiniMapOverlay() {
 
   const peers = peersForActiveRoute();
   for (const peer of peers) {
-    const p = mp(peer);
-    const heading = toRadians(peer.headingDeg || 0);
+    const pose = peerRenderPose(peer);
+    const p = mp(pose);
+    const heading = toRadians(pose.headingDeg || 0);
     const size = 5;
     ctxMini.fillStyle = "#75d7ff";
     ctxMini.beginPath();
@@ -5336,6 +5460,7 @@ function syncThreeRemotePlayers() {
   const keep = new Set();
   const wantsModelMarkers = Boolean(three.vehicleModelRoot);
   for (const peer of visiblePeers) {
+    const pose = peerRenderPose(peer);
     keep.add(peer.user_id);
     let marker = three.remotePlayerMarkers.get(peer.user_id);
     if (marker && wantsModelMarkers && marker.userData?.kind !== "model") {
@@ -5348,10 +5473,10 @@ function syncThreeRemotePlayers() {
       three.remotePlayersGroup.add(marker);
     }
     marker.visible = true;
-    marker.position.set(peer.x, 0, -peer.y);
+    marker.position.set(pose.x, 0, -pose.y);
     marker.rotation.order = "YXZ";
     const yawOffset = Number(marker.userData?.yawOffset || 0);
-    marker.rotation.set(0, toRadians(peer.headingDeg || 0) + yawOffset, 0);
+    marker.rotation.set(0, toRadians(pose.headingDeg || 0) + yawOffset, 0);
   }
 
   for (const peerId of three.remotePlayerMarkers.keys()) {
@@ -6412,8 +6537,9 @@ function drawThirdPersonScene() {
   }
 
   for (const peer of peersForActiveRoute()) {
-    const peerPos = worldToThirdPersonCanvas(peer.x, peer.y);
-    const peerHeading = toRadians(peer.headingDeg || 0);
+    const pose = peerRenderPose(peer);
+    const peerPos = worldToThirdPersonCanvas(pose.x, pose.y);
+    const peerHeading = toRadians(pose.headingDeg || 0);
     const mode = externalCameraMode(state.sim.camera);
     const viewYaw = externalCameraYawFor2D(mode, toRadians(state.sim.car.headingDeg || 0));
     const carLengthPeer = 14;
@@ -7360,6 +7486,7 @@ function frame(now) {
     broadcastLocalPose(now);
     pruneMultiplayerPeers(now);
   }
+  updateMultiplayerPeerRenderStates(dt, now);
 
   const renderedThree = updateThreeScene(dt);
   if (!renderedThree) {
