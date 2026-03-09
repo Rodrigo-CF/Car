@@ -33,6 +33,7 @@ To enable persistent storage (required for Vercel production), configure Supabas
    - `SUPABASE_ANON_KEY`
    - `SUPABASE_SERVICE_ROLE_KEY`
    - `CREATOR_EMAIL` (optional but recommended; only this email can publish global maps)
+   - `SIM_ACTIVE_TTL_SEC` (optional; default `900` = 15 minutes)
 
 When `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` are present, the API automatically uses Supabase.
 Otherwise it falls back to in-memory mode.
@@ -44,6 +45,7 @@ export SUPABASE_URL="https://<your-project>.supabase.co"
 export SUPABASE_ANON_KEY="<publishable-key>"
 export SUPABASE_SERVICE_ROLE_KEY="<secret-key>"
 export CREATOR_EMAIL="you@example.com"
+export SIM_ACTIVE_TTL_SEC="900"
 npm start
 ```
 
@@ -56,6 +58,16 @@ This repo includes:
 - [`api/index.js`](/Users/rodrigocf/Documents/Car/api/index.js): serverless adapter for the Node app
 
 In Vercel Project Settings -> Environment Variables, add the same four variables above.
+
+### Active simulation session lifecycle
+
+`sim_active_sessions` now enforces one active row per user and supports stale cleanup:
+
+- `last_seen_at` heartbeat timestamp
+- unique active session per user (`uq_sim_active_sessions_user_id`)
+- stale rows auto-cleaned by API logic (on start/append) using `SIM_ACTIVE_TTL_SEC`
+- manual cleanup endpoint for creator:
+  - `POST /v1/admin/cleanup/sim-active` with optional body `{ "ttl_sec": 900 }`
 
 ## Keyboard controls (simulation)
 

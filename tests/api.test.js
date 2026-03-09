@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { createStore } from "../src/lib/store.js";
 import { registerUser } from "../src/lib/auth.js";
 import { createExamAttempt, submitExamAttempt } from "../src/lib/exam.js";
-import { startSimSession, appendSimEvents, finishSimSession } from "../src/lib/sim.js";
+import { startSimSession, appendSimEvents, finishSimSession, cleanupSimActiveSessions } from "../src/lib/sim.js";
 import { publishRouteMap } from "../src/lib/maps.js";
 import {
   buildTheoryLeaderboard,
@@ -230,4 +230,36 @@ test("published route is the global route used by new simulation sessions", () =
   assert.equal(started.data.route.startPose.headingDeg, 123);
   assert.equal(started.data.route.path.length, 3);
   assert.equal(started.data.route.checkpoints[0].id, "A_TL_CUSTOM");
+});
+
+test("sim active sessions keep at most one active session per user", () => {
+  const store = createStore();
+  const user = createAuthedUser(store, "active_one", "active_one@test.com");
+
+  const first = startSimSession(store, user, { route_id: "A" });
+  const second = startSimSession(store, user, { route_id: "A" });
+
+  assert.equal(first.status, 201);
+  assert.equal(second.status, 201);
+  assert.equal(store.simActiveSessions.size, 1);
+  assert.ok(!store.simActiveSessions.has(first.data.session_id));
+  assert.ok(store.simActiveSessions.has(second.data.session_id));
+});
+
+test("stale sim active sessions are cleanup-able", () => {
+  const store = createStore();
+  const user = createAuthedUser(store, "active_cleanup", "active_cleanup@test.com");
+  const started = startSimSession(store, user, { route_id: "A" });
+  assert.equal(started.status, 201);
+
+  const session = store.simActiveSessions.get(started.data.session_id);
+  assert.ok(session);
+  const tenMinutesAgo = Date.now() - 10 * 60 * 1000;
+  session.last_seen_at = tenMinutesAgo;
+  session.started_at = tenMinutesAgo;
+
+  const cleanup = cleanupSimActiveSessions(store, 300);
+  assert.equal(cleanup.status, 200);
+  assert.equal(cleanup.data.removed, 1);
+  assert.equal(store.simActiveSessions.size, 0);
 });

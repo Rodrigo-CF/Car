@@ -7,7 +7,7 @@ import { createStore } from "./lib/store.js";
 import { sendJson, sendText, readJsonBody, getPathParts } from "./lib/http.js";
 import { registerUser, loginUser, authenticate } from "./lib/auth.js";
 import { createExamAttempt, submitExamAttempt, updateExamConfig } from "./lib/exam.js";
-import { startSimSession, appendSimEvents, finishSimSession } from "./lib/sim.js";
+import { startSimSession, appendSimEvents, finishSimSession, cleanupSimActiveSessions } from "./lib/sim.js";
 import { publishRouteMap, getActiveRoutePayload, getAllActiveRoutesPayload } from "./lib/maps.js";
 import { createSupabaseService } from "./lib/supabase-service.js";
 import {
@@ -207,6 +207,23 @@ export function createAppServer(store = createStore()) {
           is_creator: Boolean(user.is_creator),
           ...profile,
         });
+        return;
+      }
+
+      if (req.method === "POST" && reqUrl.pathname === "/v1/admin/cleanup/sim-active") {
+        if (!user.is_creator) {
+          sendJson(res, 403, { error: "creator permissions required" });
+          return;
+        }
+        const payload = await readJsonBody(req);
+        const result = supabaseService
+          ? await supabaseService.cleanupStaleActiveSessions(payload?.ttl_sec)
+          : cleanupSimActiveSessions(store, payload?.ttl_sec);
+        if (result.error) {
+          sendJson(res, result.status, { error: result.error });
+          return;
+        }
+        sendJson(res, result.status, result.data);
         return;
       }
 

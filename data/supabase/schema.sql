@@ -46,10 +46,58 @@ create table if not exists sim_active_sessions (
   user_id text not null references app_users(user_id) on delete cascade,
   route_id text not null,
   events jsonb not null default '[]'::jsonb,
-  started_at timestamptz not null default now()
+  started_at timestamptz not null default now(),
+  last_seen_at timestamptz not null default now()
 );
 
 create index if not exists idx_sim_active_sessions_user_id on sim_active_sessions(user_id);
+create index if not exists idx_sim_active_sessions_last_seen_at on sim_active_sessions(last_seen_at desc);
+
+-- Migration-safe upgrades for existing projects:
+alter table if exists sim_active_sessions
+  add column if not exists last_seen_at timestamptz;
+
+update sim_active_sessions
+set last_seen_at = coalesce(last_seen_at, started_at, now())
+where last_seen_at is null;
+
+alter table if exists sim_active_sessions
+  alter column last_seen_at set default now();
+
+alter table if exists sim_active_sessions
+  alter column last_seen_at set not null;
+
+-- Keep only the newest active session per user before enforcing uniqueness.
+with ranked as (
+  select
+    session_id,
+    row_number() over (
+      partition by user_id
+      order by coalesce(last_seen_at, started_at) desc, started_at desc, session_id desc
+    ) as rn
+  from sim_active_sessions
+)
+delete from sim_active_sessions s
+using ranked r
+where s.session_id = r.session_id
+  and r.rn > 1;
+
+create unique index if not exists uq_sim_active_sessions_user_id on sim_active_sessions(user_id);
+
+-- Optional helper for cron/manual cleanup.
+create or replace function cleanup_stale_sim_active_sessions(max_age_minutes integer default 15)
+returns integer
+language plpgsql
+as $$
+declare
+  removed_count integer := 0;
+begin
+  delete from sim_active_sessions
+  where last_seen_at < (now() - make_interval(mins => greatest(1, max_age_minutes)));
+  get diagnostics removed_count = row_count;
+  return removed_count;
+end;
+$$;
 
 create table if not exists sim_sessions (
   session_id text primary key,

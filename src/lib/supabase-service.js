@@ -98,6 +98,7 @@ export function createSupabaseService(store) {
   const creatorEmail = String(process.env.CREATOR_EMAIL || "")
     .trim()
     .toLowerCase();
+  const simActiveTtlSec = Math.max(5 * 60, Number(process.env.SIM_ACTIVE_TTL_SEC || 900));
 
   async function request(path, { method = "GET", params = null, body = undefined, prefer = null } = {}) {
     const requestUrl = new URL(`${restBase}/${path}`);
@@ -265,6 +266,36 @@ export function createSupabaseService(store) {
         A: await getActiveRoutePayload("A"),
         B: await getActiveRoutePayload("B"),
       },
+    };
+  }
+
+  function staleCutoffIso(ttlSec = simActiveTtlSec) {
+    const parsed = Number(ttlSec);
+    const effectiveTtlSec = Number.isFinite(parsed) && parsed > 0 ? Math.max(5 * 60, parsed) : simActiveTtlSec;
+    const cutoffMs = Date.now() - effectiveTtlSec * 1000;
+    return {
+      effectiveTtlSec,
+      cutoffIso: new Date(cutoffMs).toISOString(),
+    };
+  }
+
+  async function cleanupStaleSimActiveSessions(ttlSec = simActiveTtlSec) {
+    const { effectiveTtlSec, cutoffIso } = staleCutoffIso(ttlSec);
+    const staleRows = await selectRows(
+      "sim_active_sessions",
+      {
+        last_seen_at: `lt.${cutoffIso}`,
+      },
+      { select: "session_id", limit: 5000 },
+    );
+    if (staleRows.length) {
+      await deleteRows("sim_active_sessions", {
+        last_seen_at: `lt.${cutoffIso}`,
+      });
+    }
+    return {
+      removed: staleRows.length,
+      ttl_sec: effectiveTtlSec,
     };
   }
 
@@ -483,12 +514,15 @@ export function createSupabaseService(store) {
 
     async startSimSession(user, payload) {
       try {
+        await cleanupStaleSimActiveSessions();
         const routeId = normalizeRouteId(payload?.route_id);
         const route = await resolveRoute(routeId);
         if (!routeId || !route) {
           return { status: 400, error: "invalid route_id" };
         }
 
+        await deleteRows("sim_active_sessions", { user_id: `eq.${user.user_id}` });
+        const now = new Date().toISOString();
         const sessionId = generateId("sim_active");
         await insertRows(
           "sim_active_sessions",
@@ -498,7 +532,8 @@ export function createSupabaseService(store) {
               user_id: user.user_id,
               route_id: routeId,
               events: [],
-              started_at: new Date().toISOString(),
+              started_at: now,
+              last_seen_at: now,
             },
           ],
           { returning: false },
@@ -518,6 +553,7 @@ export function createSupabaseService(store) {
 
     async appendSimEvents(user, sessionId, payload) {
       try {
+        await cleanupStaleSimActiveSessions();
         const rows = await selectRows(
           "sim_active_sessions",
           {
@@ -537,11 +573,12 @@ export function createSupabaseService(store) {
           meta: event.meta ?? {},
         }));
         const mergedEvents = [...asArray(session.events), ...incoming];
+        const now = new Date().toISOString();
 
         await patchRows(
           "sim_active_sessions",
           { session_id: `eq.${sessionId}` },
-          { events: mergedEvents },
+          { events: mergedEvents, last_seen_at: now },
           { returning: false },
         );
 
@@ -704,6 +741,15 @@ export function createSupabaseService(store) {
         theoryHistory,
         simulationHistory,
       };
+    },
+
+    async cleanupStaleActiveSessions(ttlSec) {
+      try {
+        const result = await cleanupStaleSimActiveSessions(ttlSec);
+        return { status: 200, data: result };
+      } catch (error) {
+        return { status: Number(error.status) || 500, error: error.message || "internal server error" };
+      }
     },
 
     async publishRouteMap(user, payload) {

@@ -10,6 +10,8 @@ const state = {
     routeBounds: null,
     car: null,
     startedAt: 0,
+    lastKeepAliveAt: 0,
+    keepAliveTimer: null,
     camera: "first",
     trafficLightRed: true,
     trafficLightManual: null,
@@ -151,6 +153,7 @@ const HUD_UPDATE_INTERVAL_ACTIVE_MS = 90;
 const HUD_UPDATE_INTERVAL_IDLE_MS = 300;
 const MINIMAP_UPDATE_INTERVAL_ACTIVE_MS = 100;
 const MINIMAP_UPDATE_INTERVAL_IDLE_MS = 450;
+const SIM_KEEPALIVE_INTERVAL_MS = 15000;
 const ROUTE_BOUNDS_MARGIN_METERS = 14;
 const MULTIPLAYER_PEER_TTL_MS = 30000;
 const MULTIPLAYER_COLLISION_STALE_MS = 2500;
@@ -1264,6 +1267,7 @@ function clearAuth() {
   state.sim.routeDensePath = [];
   state.sim.routeBounds = null;
   state.sim.car = null;
+  state.sim.lastKeepAliveAt = 0;
   state.sim.trafficLightManual = null;
   state.sim.trafficLightRed = true;
   state.sim.penaltyPoints = 0;
@@ -1277,6 +1281,7 @@ function clearAuth() {
   state.sim.bumpAxleContacts = {};
   state.sim.bumpAxleHitAtMs = {};
   state.sim.stopLineContacts = {};
+  stopSimKeepAliveLoop();
   leaveMultiplayerRoom({ silent: true }).catch(() => {});
   if (state.sim.three.ready) {
     clearThreeGroup(state.sim.three.routeGroup);
@@ -6473,6 +6478,39 @@ function sendSimEvent(triggerKey, meta = {}, options = {}) {
   return true;
 }
 
+function stopSimKeepAliveLoop() {
+  if (state.sim.keepAliveTimer) {
+    clearInterval(state.sim.keepAliveTimer);
+    state.sim.keepAliveTimer = null;
+  }
+}
+
+function sendSimKeepAlive(nowMs = Date.now()) {
+  if (!state.sim.sessionId || !state.token) {
+    return;
+  }
+  if (nowMs - Number(state.sim.lastKeepAliveAt || 0) < SIM_KEEPALIVE_INTERVAL_MS) {
+    return;
+  }
+  state.sim.lastKeepAliveAt = nowMs;
+  api(`/v1/sim/sessions/${state.sim.sessionId}/events`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify({ events: [] }),
+  }).catch((error) => {
+    // Keepalive failures should not block driving loop.
+    dom.simOutput.textContent = `Keepalive warning: ${error.message}`;
+  });
+}
+
+function startSimKeepAliveLoop() {
+  stopSimKeepAliveLoop();
+  state.sim.lastKeepAliveAt = 0;
+  state.sim.keepAliveTimer = setInterval(() => {
+    sendSimKeepAlive(Date.now());
+  }, Math.max(5000, SIM_KEEPALIVE_INTERVAL_MS));
+}
+
 function routeCheckpoint(type) {
   return routeCheckpoints(type)[0] ?? null;
 }
@@ -7186,6 +7224,7 @@ async function startSimulation() {
   };
 
   state.sim.startedAt = Date.now();
+  state.sim.lastKeepAliveAt = 0;
   state.sim.camera = "first";
   state.sim.trafficLightRed = true;
   state.sim.trafficLightManual = null;
@@ -7211,6 +7250,8 @@ async function startSimulation() {
   state.sim.three.thirdCameraLook = null;
   state.sim.three.externalCameraMode = null;
   state.keys.clear();
+  startSimKeepAliveLoop();
+  sendSimKeepAlive(Date.now());
 
   if (state.sim.three.ready) {
     rebuildThreeRouteScene();
@@ -7250,9 +7291,11 @@ async function finishSimulation() {
   dom.simOutput.textContent = formatJson(result);
   dom.simState.textContent = `Session finished: score=${result.score_pct}, critical_fail=${result.critical_fail}`;
   state.sim.sessionId = null;
+  state.sim.lastKeepAliveAt = 0;
   state.sim.trafficLightManual = null;
   state.keys.clear();
   state.sim.stopLineContacts = {};
+  stopSimKeepAliveLoop();
   hidePenaltyCard();
   dom.toggleLightBtn.textContent = "Manual Light Override";
   updateHudOverlay();
