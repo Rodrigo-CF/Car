@@ -575,6 +575,7 @@ export function createSupabaseService(store) {
         await deleteRows("sim_active_sessions", { user_id: `eq.${user.user_id}` });
         const now = new Date().toISOString();
         const sessionId = generateId("sim_active");
+        const heartbeatToken = makeToken();
         await insertRows(
           "sim_active_sessions",
           [
@@ -582,6 +583,7 @@ export function createSupabaseService(store) {
               session_id: sessionId,
               user_id: user.user_id,
               route_id: routeId,
+              heartbeat_token: heartbeatToken,
               events: [],
               started_at: now,
               last_seen_at: now,
@@ -594,6 +596,7 @@ export function createSupabaseService(store) {
           status: 201,
           data: {
             session_id: sessionId,
+            heartbeat_token: heartbeatToken,
             route,
           },
         };

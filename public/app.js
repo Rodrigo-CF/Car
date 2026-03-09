@@ -4,6 +4,7 @@ const state = {
   examDraft: null,
   sim: {
     sessionId: null,
+    sessionHeartbeatToken: null,
     route: null,
     routePath: [],
     routeDensePath: [],
@@ -1272,6 +1273,7 @@ function clearAuth() {
   state.sim.routeDensePath = [];
   state.sim.routeBounds = null;
   state.sim.car = null;
+  state.sim.sessionHeartbeatToken = null;
   state.sim.keepAliveIntervalMs = SIM_KEEPALIVE_INTERVAL_DEFAULT_MS;
   state.sim.lastKeepAliveAt = 0;
   state.sim.lastInputAt = 0;
@@ -6487,6 +6489,43 @@ function simInputIdleTimeoutLabel() {
   return `${minutes} minute${minutes === 1 ? "" : "s"}`;
 }
 
+function canUseSupabaseKeepAliveDirect() {
+  return Boolean(
+    state.sim.sessionId && state.sim.sessionHeartbeatToken && state.multiplayer.url && state.multiplayer.anonKey,
+  );
+}
+
+function parseSupabaseKeepAliveAck(payload) {
+  if (payload === true) {
+    return true;
+  }
+  if (payload === false || payload == null) {
+    return false;
+  }
+  if (Array.isArray(payload)) {
+    if (!payload.length) {
+      return false;
+    }
+    if (payload.length === 1) {
+      return parseSupabaseKeepAliveAck(payload[0]);
+    }
+  }
+  if (typeof payload === "object") {
+    for (const [key, value] of Object.entries(payload)) {
+      const lowerKey = key.toLowerCase();
+      if (lowerKey.includes("sim_session_keepalive") || lowerKey.includes("keepalive")) {
+        if (value === true) {
+          return true;
+        }
+        if (value === false) {
+          return false;
+        }
+      }
+    }
+  }
+  return true;
+}
+
 function markSimInput(nowMs = Date.now()) {
   if (!state.sim.sessionId) {
     return;
@@ -6515,6 +6554,7 @@ async function abandonSimulation(reasonText = "Session ended due to inactivity."
   }
 
   state.sim.sessionId = null;
+  state.sim.sessionHeartbeatToken = null;
   state.sim.lastKeepAliveAt = 0;
   state.sim.lastInputAt = 0;
   state.sim.idleAbandoning = false;
@@ -6566,6 +6606,54 @@ function stopSimKeepAliveLoop() {
   }
 }
 
+function sendSimKeepAliveViaApi() {
+  api(`/v1/sim/sessions/${state.sim.sessionId}/events`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify({ events: [] }),
+  }).catch((error) => {
+    dom.simOutput.textContent = `Keepalive warning: ${error.message}`;
+  });
+}
+
+function sendSimKeepAliveViaSupabase() {
+  const url = `${String(state.multiplayer.url || "").replace(/\/+$/, "")}/rest/v1/rpc/sim_session_keepalive`;
+  const anonKey = String(state.multiplayer.anonKey || "");
+  const sessionId = String(state.sim.sessionId || "");
+  const heartbeatToken = String(state.sim.sessionHeartbeatToken || "");
+
+  fetch(url, {
+    method: "POST",
+    headers: {
+      apikey: anonKey,
+      Authorization: `Bearer ${anonKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      p_session_id: sessionId,
+      p_heartbeat_token: heartbeatToken,
+    }),
+  })
+    .then(async (response) => {
+      const text = await response.text();
+      let payload = null;
+      if (text) {
+        try {
+          payload = JSON.parse(text);
+        } catch {
+          payload = null;
+        }
+      }
+      if (!response.ok || !parseSupabaseKeepAliveAck(payload)) {
+        throw new Error("supabase keepalive rejected");
+      }
+    })
+    .catch(() => {
+      // Fallback to API path if direct Supabase RPC is unavailable.
+      sendSimKeepAliveViaApi();
+    });
+}
+
 function sendSimKeepAlive(nowMs = Date.now()) {
   if (!state.sim.sessionId || !state.token) {
     return;
@@ -6583,14 +6671,11 @@ function sendSimKeepAlive(nowMs = Date.now()) {
     return;
   }
   state.sim.lastKeepAliveAt = nowMs;
-  api(`/v1/sim/sessions/${state.sim.sessionId}/events`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify({ events: [] }),
-  }).catch((error) => {
-    // Keepalive failures should not block driving loop.
-    dom.simOutput.textContent = `Keepalive warning: ${error.message}`;
-  });
+  if (canUseSupabaseKeepAliveDirect()) {
+    sendSimKeepAliveViaSupabase();
+    return;
+  }
+  sendSimKeepAliveViaApi();
 }
 
 function startSimKeepAliveLoop() {
@@ -7318,6 +7403,7 @@ async function startSimulation() {
   const spawnPose = computeSpawnPose(activeRoute) || activeRoute.startPose;
 
   state.sim.sessionId = startPayload.session_id;
+  state.sim.sessionHeartbeatToken = startPayload.heartbeat_token || null;
   state.sim.car = {
     x: spawnPose.x,
     y: spawnPose.y,
@@ -7395,6 +7481,7 @@ async function finishSimulation() {
   dom.simOutput.textContent = formatJson(result);
   dom.simState.textContent = `Session finished: score=${result.score_pct}, critical_fail=${result.critical_fail}`;
   state.sim.sessionId = null;
+  state.sim.sessionHeartbeatToken = null;
   state.sim.lastKeepAliveAt = 0;
   state.sim.lastInputAt = 0;
   state.sim.idleAbandoning = false;

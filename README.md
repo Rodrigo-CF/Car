@@ -71,8 +71,8 @@ Use Supabase cron for periodic stale-session cleanup (instead of Vercel cron):
 
 ```sql
 select cron.schedule(
-  'cleanup-sim-active-every-5m',
-  '*/5 * * * *',
+  'cleanup-sim-active-every-30m',
+  '*/30 * * * *',
   $$ select cleanup_stale_sim_active_sessions(15); $$
 );
 ```
@@ -80,7 +80,7 @@ select cron.schedule(
 If you need to remove it later:
 
 ```sql
-select cron.unschedule('cleanup-sim-active-every-5m');
+select cron.unschedule('cleanup-sim-active-every-30m');
 ```
 
 ### Active simulation session lifecycle
@@ -88,6 +88,7 @@ select cron.unschedule('cleanup-sim-active-every-5m');
 `sim_active_sessions` now enforces one active row per user and supports stale cleanup:
 
 - `last_seen_at` heartbeat timestamp
+- keepalive is sent directly from browser to Supabase RPC (`sim_session_keepalive`) when realtime config is available
 - unique active session per user (`uq_sim_active_sessions_user_id`)
 - stale rows auto-cleaned by API logic (throttled, mainly on `start`) using `SIM_ACTIVE_TTL_SEC`
 - client keepalive interval configurable by `SIM_KEEPALIVE_INTERVAL_SEC` (default 30s)

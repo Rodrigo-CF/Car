@@ -1,4 +1,4 @@
-import { generateId } from "./store.js";
+import { generateId, makeToken } from "./store.js";
 import { resolveRoute } from "./maps.js";
 
 const SIM_ACTIVE_TTL_MS = Math.max(5 * 60 * 1000, Number(process.env.SIM_ACTIVE_TTL_SEC || 900) * 1000);
@@ -51,11 +51,13 @@ export function startSimSession(store, user, payload) {
 
   closeUserActiveSessions(store, user.user_id);
   const sessionId = generateId("sim_active");
+  const heartbeatToken = makeToken();
   const now = Date.now();
   store.simActiveSessions.set(sessionId, {
     session_id: sessionId,
     user_id: user.user_id,
     route_id: routeId,
+    heartbeat_token: heartbeatToken,
     events: [],
     started_at: now,
     last_seen_at: now,
@@ -65,6 +67,7 @@ export function startSimSession(store, user, payload) {
     status: 201,
     data: {
       session_id: sessionId,
+      heartbeat_token: heartbeatToken,
       route: activeRoute,
     },
   };

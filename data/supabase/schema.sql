@@ -45,12 +45,26 @@ create table if not exists sim_active_sessions (
   session_id text primary key,
   user_id text not null references app_users(user_id) on delete cascade,
   route_id text not null,
+  heartbeat_token text not null,
   events jsonb not null default '[]'::jsonb,
   started_at timestamptz not null default now(),
   last_seen_at timestamptz not null default now()
 );
 
 -- Migration-safe upgrades for existing projects:
+alter table if exists sim_active_sessions
+  add column if not exists heartbeat_token text;
+
+update sim_active_sessions
+set heartbeat_token = coalesce(
+  heartbeat_token,
+  md5(random()::text || clock_timestamp()::text || coalesce(session_id, ''))
+)
+where heartbeat_token is null;
+
+alter table if exists sim_active_sessions
+  alter column heartbeat_token set not null;
+
 alter table if exists sim_active_sessions
   add column if not exists last_seen_at timestamptz;
 
@@ -98,6 +112,32 @@ begin
   return removed_count;
 end;
 $$;
+
+create or replace function sim_session_keepalive(p_session_id text, p_heartbeat_token text)
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  touched integer := 0;
+begin
+  if p_session_id is null or p_heartbeat_token is null then
+    return false;
+  end if;
+
+  update sim_active_sessions
+  set last_seen_at = now()
+  where session_id = p_session_id
+    and heartbeat_token = p_heartbeat_token;
+
+  get diagnostics touched = row_count;
+  return touched > 0;
+end;
+$$;
+
+revoke all on function sim_session_keepalive(text, text) from public;
+grant execute on function sim_session_keepalive(text, text) to anon, authenticated;
 
 create table if not exists sim_sessions (
   session_id text primary key,
