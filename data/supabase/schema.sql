@@ -50,9 +50,6 @@ create table if not exists sim_active_sessions (
   last_seen_at timestamptz not null default now()
 );
 
-create index if not exists idx_sim_active_sessions_user_id on sim_active_sessions(user_id);
-create index if not exists idx_sim_active_sessions_last_seen_at on sim_active_sessions(last_seen_at desc);
-
 -- Migration-safe upgrades for existing projects:
 alter table if exists sim_active_sessions
   add column if not exists last_seen_at timestamptz;
@@ -66,6 +63,9 @@ alter table if exists sim_active_sessions
 
 alter table if exists sim_active_sessions
   alter column last_seen_at set not null;
+
+create index if not exists idx_sim_active_sessions_user_id on sim_active_sessions(user_id);
+create index if not exists idx_sim_active_sessions_last_seen_at on sim_active_sessions(last_seen_at desc);
 
 -- Keep only the newest active session per user before enforcing uniqueness.
 with ranked as (

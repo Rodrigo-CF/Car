@@ -10,6 +10,10 @@ const state = {
     routeBounds: null,
     car: null,
     startedAt: 0,
+    lastInputAt: 0,
+    keepAliveIntervalMs: 30 * 1000,
+    inputIdleTimeoutMs: 15 * 60 * 1000,
+    idleAbandoning: false,
     lastKeepAliveAt: 0,
     keepAliveTimer: null,
     camera: "first",
@@ -153,7 +157,8 @@ const HUD_UPDATE_INTERVAL_ACTIVE_MS = 90;
 const HUD_UPDATE_INTERVAL_IDLE_MS = 300;
 const MINIMAP_UPDATE_INTERVAL_ACTIVE_MS = 100;
 const MINIMAP_UPDATE_INTERVAL_IDLE_MS = 450;
-const SIM_KEEPALIVE_INTERVAL_MS = 15000;
+const SIM_KEEPALIVE_INTERVAL_DEFAULT_MS = 30 * 1000;
+const SIM_INPUT_IDLE_TIMEOUT_DEFAULT_MS = 15 * 60 * 1000;
 const ROUTE_BOUNDS_MARGIN_METERS = 14;
 const MULTIPLAYER_PEER_TTL_MS = 30000;
 const MULTIPLAYER_COLLISION_STALE_MS = 2500;
@@ -1267,7 +1272,10 @@ function clearAuth() {
   state.sim.routeDensePath = [];
   state.sim.routeBounds = null;
   state.sim.car = null;
+  state.sim.keepAliveIntervalMs = SIM_KEEPALIVE_INTERVAL_DEFAULT_MS;
   state.sim.lastKeepAliveAt = 0;
+  state.sim.lastInputAt = 0;
+  state.sim.idleAbandoning = false;
   state.sim.trafficLightManual = null;
   state.sim.trafficLightRed = true;
   state.sim.penaltyPoints = 0;
@@ -1634,6 +1642,18 @@ async function loadRealtimeConfig() {
     state.multiplayer.enabled = Boolean(payload?.enabled);
     state.multiplayer.url = payload?.url || "";
     state.multiplayer.anonKey = payload?.anon_key || "";
+    const keepAliveSec = Number(payload?.sim_keepalive_interval_sec);
+    if (Number.isFinite(keepAliveSec) && keepAliveSec > 0) {
+      state.sim.keepAliveIntervalMs = Math.max(5, keepAliveSec) * 1000;
+    } else {
+      state.sim.keepAliveIntervalMs = SIM_KEEPALIVE_INTERVAL_DEFAULT_MS;
+    }
+    const inputIdleTimeoutSec = Number(payload?.sim_input_idle_timeout_sec);
+    if (Number.isFinite(inputIdleTimeoutSec) && inputIdleTimeoutSec > 0) {
+      state.sim.inputIdleTimeoutMs = Math.max(60, inputIdleTimeoutSec) * 1000;
+    } else {
+      state.sim.inputIdleTimeoutMs = SIM_INPUT_IDLE_TIMEOUT_DEFAULT_MS;
+    }
     if (!state.multiplayer.enabled) {
       setMultiplayerStatus("disabled (missing server config).");
     }
@@ -6446,6 +6466,67 @@ function setSignal(signal) {
   state.sim.lastSignal = signal;
 }
 
+function simInputIdleTimeoutMs() {
+  const value = Number(state.sim.inputIdleTimeoutMs);
+  if (Number.isFinite(value) && value > 0) {
+    return Math.max(60 * 1000, value);
+  }
+  return SIM_INPUT_IDLE_TIMEOUT_DEFAULT_MS;
+}
+
+function simKeepAliveIntervalMs() {
+  const value = Number(state.sim.keepAliveIntervalMs);
+  if (Number.isFinite(value) && value > 0) {
+    return Math.max(5000, value);
+  }
+  return SIM_KEEPALIVE_INTERVAL_DEFAULT_MS;
+}
+
+function simInputIdleTimeoutLabel() {
+  const minutes = Math.max(1, Math.round(simInputIdleTimeoutMs() / 60000));
+  return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+}
+
+function markSimInput(nowMs = Date.now()) {
+  if (!state.sim.sessionId) {
+    return;
+  }
+  state.sim.lastInputAt = nowMs;
+}
+
+async function abandonSimulation(reasonText = "Session ended due to inactivity.") {
+  if (!state.sim.sessionId) {
+    state.sim.idleAbandoning = false;
+    return;
+  }
+
+  const sessionId = state.sim.sessionId;
+  stopSimKeepAliveLoop();
+  try {
+    await api(`/v1/sim/sessions/${sessionId}/abandon`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ reason: "input_idle_timeout" }),
+    });
+  } catch (error) {
+    if (!String(error?.message || "").toLowerCase().includes("sim session not found")) {
+      dom.simOutput.textContent = `Abandon warning: ${error.message}`;
+    }
+  }
+
+  state.sim.sessionId = null;
+  state.sim.lastKeepAliveAt = 0;
+  state.sim.lastInputAt = 0;
+  state.sim.idleAbandoning = false;
+  state.sim.trafficLightManual = null;
+  state.keys.clear();
+  state.sim.stopLineContacts = {};
+  dom.simState.textContent = reasonText;
+  dom.toggleLightBtn.textContent = "Manual Light Override";
+  hidePenaltyCard();
+  updateHudOverlay();
+}
+
 function sendSimEvent(triggerKey, meta = {}, options = {}) {
   if (!state.sim.sessionId) {
     return false;
@@ -6489,7 +6570,16 @@ function sendSimKeepAlive(nowMs = Date.now()) {
   if (!state.sim.sessionId || !state.token) {
     return;
   }
-  if (nowMs - Number(state.sim.lastKeepAliveAt || 0) < SIM_KEEPALIVE_INTERVAL_MS) {
+  if (state.sim.lastInputAt && nowMs - state.sim.lastInputAt >= simInputIdleTimeoutMs()) {
+    if (!state.sim.idleAbandoning) {
+      state.sim.idleAbandoning = true;
+      abandonSimulation(`Session ended after ${simInputIdleTimeoutLabel()} without simulator input.`).catch((error) => {
+        dom.simOutput.textContent = `Idle timeout warning: ${error.message}`;
+      });
+    }
+    return;
+  }
+  if (nowMs - Number(state.sim.lastKeepAliveAt || 0) < simKeepAliveIntervalMs()) {
     return;
   }
   state.sim.lastKeepAliveAt = nowMs;
@@ -6508,7 +6598,7 @@ function startSimKeepAliveLoop() {
   state.sim.lastKeepAliveAt = 0;
   state.sim.keepAliveTimer = setInterval(() => {
     sendSimKeepAlive(Date.now());
-  }, Math.max(5000, SIM_KEEPALIVE_INTERVAL_MS));
+  }, simKeepAliveIntervalMs());
 }
 
 function routeCheckpoint(type) {
@@ -6829,6 +6919,18 @@ function frame(now) {
   lastFrame = now;
   maybeSyncCanvas(now);
   state.sim.trafficLightRed = isTrafficLightRed();
+  const nowMs = Date.now();
+  if (
+    state.sim.sessionId &&
+    state.sim.lastInputAt &&
+    nowMs - state.sim.lastInputAt >= simInputIdleTimeoutMs() &&
+    !state.sim.idleAbandoning
+  ) {
+    state.sim.idleAbandoning = true;
+    abandonSimulation(`Session ended after ${simInputIdleTimeoutLabel()} without simulator input.`).catch((error) => {
+      dom.simOutput.textContent = `Idle timeout warning: ${error.message}`;
+    });
+  }
 
   if (state.sim.car && state.sim.sessionId) {
     const wheelbaseMeters = 2.35;
@@ -7225,6 +7327,8 @@ async function startSimulation() {
 
   state.sim.startedAt = Date.now();
   state.sim.lastKeepAliveAt = 0;
+  state.sim.lastInputAt = Date.now();
+  state.sim.idleAbandoning = false;
   state.sim.camera = "first";
   state.sim.trafficLightRed = true;
   state.sim.trafficLightManual = null;
@@ -7292,6 +7396,8 @@ async function finishSimulation() {
   dom.simState.textContent = `Session finished: score=${result.score_pct}, critical_fail=${result.critical_fail}`;
   state.sim.sessionId = null;
   state.sim.lastKeepAliveAt = 0;
+  state.sim.lastInputAt = 0;
+  state.sim.idleAbandoning = false;
   state.sim.trafficLightManual = null;
   state.keys.clear();
   state.sim.stopLineContacts = {};
@@ -7387,6 +7493,7 @@ window.addEventListener("keydown", (event) => {
   }
 
   event.preventDefault();
+  markSimInput(Date.now());
   handleControlKey(key);
 });
 

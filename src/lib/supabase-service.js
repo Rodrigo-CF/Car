@@ -99,6 +99,8 @@ export function createSupabaseService(store) {
     .trim()
     .toLowerCase();
   const simActiveTtlSec = Math.max(5 * 60, Number(process.env.SIM_ACTIVE_TTL_SEC || 900));
+  const simCleanupMinIntervalSec = Math.max(15, Number(process.env.SIM_CLEANUP_MIN_INTERVAL_SEC || 60));
+  let lastSimCleanupAtMs = 0;
 
   async function request(path, { method = "GET", params = null, body = undefined, prefer = null } = {}) {
     const requestUrl = new URL(`${restBase}/${path}`);
@@ -279,15 +281,61 @@ export function createSupabaseService(store) {
     };
   }
 
-  async function cleanupStaleSimActiveSessions(ttlSec = simActiveTtlSec) {
+  function parseCleanupRemovedCount(payload) {
+    if (Number.isFinite(Number(payload))) {
+      return Math.max(0, Math.round(Number(payload)));
+    }
+    if (Array.isArray(payload) && payload.length > 0) {
+      return parseCleanupRemovedCount(payload[0]);
+    }
+    if (payload && typeof payload === "object") {
+      for (const [key, value] of Object.entries(payload)) {
+        if (key.includes("cleanup_stale_sim_active_sessions") && Number.isFinite(Number(value))) {
+          return Math.max(0, Math.round(Number(value)));
+        }
+      }
+    }
+    return null;
+  }
+
+  async function cleanupStaleSimActiveSessions(ttlSec = simActiveTtlSec, options = {}) {
+    const { force = false } = options;
     const { effectiveTtlSec, cutoffIso } = staleCutoffIso(ttlSec);
-    const staleRows = await selectRows(
-      "sim_active_sessions",
-      {
-        last_seen_at: `lt.${cutoffIso}`,
-      },
-      { select: "session_id", limit: 5000 },
-    );
+    const nowMs = Date.now();
+    if (!force && nowMs - lastSimCleanupAtMs < simCleanupMinIntervalSec * 1000) {
+      return {
+        removed: 0,
+        ttl_sec: effectiveTtlSec,
+        min_interval_sec: simCleanupMinIntervalSec,
+        skipped: true,
+        reason: "throttled",
+      };
+    }
+    lastSimCleanupAtMs = nowMs;
+
+    const maxAgeMinutes = Math.max(1, Math.ceil(effectiveTtlSec / 60));
+    try {
+      const rpcPayload = await request("rpc/cleanup_stale_sim_active_sessions", {
+        method: "POST",
+        body: { max_age_minutes: maxAgeMinutes },
+      });
+      const removed = parseCleanupRemovedCount(rpcPayload);
+      if (removed != null) {
+        return {
+          removed,
+          ttl_sec: effectiveTtlSec,
+          min_interval_sec: simCleanupMinIntervalSec,
+          skipped: false,
+          via: "rpc",
+        };
+      }
+    } catch {
+      // Fallback for environments where the SQL helper function is not available yet.
+    }
+
+    const staleRows = await selectRows("sim_active_sessions", {
+      last_seen_at: `lt.${cutoffIso}`,
+    });
     if (staleRows.length) {
       await deleteRows("sim_active_sessions", {
         last_seen_at: `lt.${cutoffIso}`,
@@ -296,6 +344,9 @@ export function createSupabaseService(store) {
     return {
       removed: staleRows.length,
       ttl_sec: effectiveTtlSec,
+      min_interval_sec: simCleanupMinIntervalSec,
+      skipped: false,
+      via: "rest",
     };
   }
 
@@ -553,7 +604,6 @@ export function createSupabaseService(store) {
 
     async appendSimEvents(user, sessionId, payload) {
       try {
-        await cleanupStaleSimActiveSessions();
         const rows = await selectRows(
           "sim_active_sessions",
           {
@@ -661,6 +711,33 @@ export function createSupabaseService(store) {
       }
     },
 
+    async abandonSimSession(user, sessionId) {
+      try {
+        const rows = await selectRows(
+          "sim_active_sessions",
+          {
+            session_id: `eq.${sessionId}`,
+            user_id: `eq.${user.user_id}`,
+          },
+          { select: "session_id", limit: 1 },
+        );
+        if (!rows.length) {
+          return { status: 404, error: "sim session not found" };
+        }
+
+        await deleteRows("sim_active_sessions", { session_id: `eq.${sessionId}` });
+        return {
+          status: 200,
+          data: {
+            session_id: sessionId,
+            abandoned: true,
+          },
+        };
+      } catch (error) {
+        return { status: Number(error.status) || 500, error: error.message || "internal server error" };
+      }
+    },
+
     async buildTheoryLeaderboard(limit = 50) {
       const rows = await selectRows(
         "exam_attempts",
@@ -743,9 +820,9 @@ export function createSupabaseService(store) {
       };
     },
 
-    async cleanupStaleActiveSessions(ttlSec) {
+    async cleanupStaleActiveSessions(ttlSec, options = {}) {
       try {
-        const result = await cleanupStaleSimActiveSessions(ttlSec);
+        const result = await cleanupStaleSimActiveSessions(ttlSec, { force: true, ...options });
         return { status: 200, data: result };
       } catch (error) {
         return { status: Number(error.status) || 500, error: error.message || "internal server error" };

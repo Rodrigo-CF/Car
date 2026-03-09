@@ -156,6 +156,22 @@ export function finishSimSession(store, user, sessionId, payload) {
   };
 }
 
+export function abandonSimSession(store, user, sessionId) {
+  cleanupStoreSimActiveSessions(store);
+  const session = store.simActiveSessions.get(sessionId);
+  if (!session || session.user_id !== user.user_id) {
+    return { status: 404, error: "sim session not found" };
+  }
+  store.simActiveSessions.delete(sessionId);
+  return {
+    status: 200,
+    data: {
+      session_id: sessionId,
+      abandoned: true,
+    },
+  };
+}
+
 export function cleanupSimActiveSessions(store, ttlSec) {
   const parsed = Number(ttlSec);
   const ttlMs = Number.isFinite(parsed) && parsed > 0 ? Math.max(5 * 60 * 1000, parsed * 1000) : SIM_ACTIVE_TTL_MS;

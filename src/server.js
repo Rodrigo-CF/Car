@@ -7,7 +7,7 @@ import { createStore } from "./lib/store.js";
 import { sendJson, sendText, readJsonBody, getPathParts } from "./lib/http.js";
 import { registerUser, loginUser, authenticate } from "./lib/auth.js";
 import { createExamAttempt, submitExamAttempt, updateExamConfig } from "./lib/exam.js";
-import { startSimSession, appendSimEvents, finishSimSession, cleanupSimActiveSessions } from "./lib/sim.js";
+import { startSimSession, appendSimEvents, finishSimSession, abandonSimSession, cleanupSimActiveSessions } from "./lib/sim.js";
 import { publishRouteMap, getActiveRoutePayload, getAllActiveRoutesPayload } from "./lib/maps.js";
 import { createSupabaseService } from "./lib/supabase-service.js";
 import {
@@ -118,10 +118,18 @@ export function createAppServer(store = createStore()) {
       if (req.method === "GET" && reqUrl.pathname === "/v1/config/realtime") {
         const url = process.env.SUPABASE_URL || "";
         const anonKey = process.env.SUPABASE_ANON_KEY || "";
+        const rawKeepAliveSec = Number(process.env.SIM_KEEPALIVE_INTERVAL_SEC || 30);
+        const simKeepAliveIntervalSec =
+          Number.isFinite(rawKeepAliveSec) && rawKeepAliveSec > 0 ? Math.max(5, rawKeepAliveSec) : 30;
+        const rawIdleTimeoutSec = Number(process.env.SIM_INPUT_IDLE_TIMEOUT_SEC || 900);
+        const simInputIdleTimeoutSec =
+          Number.isFinite(rawIdleTimeoutSec) && rawIdleTimeoutSec > 0 ? Math.max(60, rawIdleTimeoutSec) : 900;
         sendJson(res, 200, {
           enabled: Boolean(url && anonKey),
           url,
           anon_key: anonKey,
+          sim_keepalive_interval_sec: simKeepAliveIntervalSec,
+          sim_input_idle_timeout_sec: simInputIdleTimeoutSec,
         });
         return;
       }
@@ -308,6 +316,24 @@ export function createAppServer(store = createStore()) {
         const result = supabaseService
           ? await supabaseService.finishSimSession(user, parts[3], payload)
           : finishSimSession(store, user, parts[3], payload);
+        if (result.error) {
+          sendJson(res, result.status, { error: result.error });
+          return;
+        }
+        sendJson(res, result.status, result.data);
+        return;
+      }
+
+      if (
+        req.method === "POST" &&
+        parts[1] === "sim" &&
+        parts[2] === "sessions" &&
+        parts[3] &&
+        parts[4] === "abandon"
+      ) {
+        const result = supabaseService
+          ? await supabaseService.abandonSimSession(user, parts[3])
+          : abandonSimSession(store, user, parts[3]);
         if (result.error) {
           sendJson(res, result.status, { error: result.error });
           return;

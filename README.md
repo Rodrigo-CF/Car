@@ -34,6 +34,9 @@ To enable persistent storage (required for Vercel production), configure Supabas
    - `SUPABASE_SERVICE_ROLE_KEY`
    - `CREATOR_EMAIL` (optional but recommended; only this email can publish global maps)
    - `SIM_ACTIVE_TTL_SEC` (optional; default `900` = 15 minutes)
+   - `SIM_CLEANUP_MIN_INTERVAL_SEC` (optional; default `60` = throttles cleanup in request path)
+   - `SIM_KEEPALIVE_INTERVAL_SEC` (optional; default `30`)
+   - `SIM_INPUT_IDLE_TIMEOUT_SEC` (optional; default `900` = 15 minutes)
 
 When `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` are present, the API automatically uses Supabase.
 Otherwise it falls back to in-memory mode.
@@ -46,6 +49,9 @@ export SUPABASE_ANON_KEY="<publishable-key>"
 export SUPABASE_SERVICE_ROLE_KEY="<secret-key>"
 export CREATOR_EMAIL="you@example.com"
 export SIM_ACTIVE_TTL_SEC="900"
+export SIM_CLEANUP_MIN_INTERVAL_SEC="60"
+export SIM_KEEPALIVE_INTERVAL_SEC="30"
+export SIM_INPUT_IDLE_TIMEOUT_SEC="900"
 npm start
 ```
 
@@ -57,7 +63,25 @@ This repo includes:
 - [`vercel.json`](/Users/rodrigocf/Documents/Car/vercel.json): rewrites `/v1/*` and `/health` to API handler
 - [`api/index.js`](/Users/rodrigocf/Documents/Car/api/index.js): serverless adapter for the Node app
 
-In Vercel Project Settings -> Environment Variables, add the same four variables above.
+In Vercel Project Settings -> Environment Variables, add the same variables listed above.
+
+### Supabase Cron (recommended cleanup scheduler)
+
+Use Supabase cron for periodic stale-session cleanup (instead of Vercel cron):
+
+```sql
+select cron.schedule(
+  'cleanup-sim-active-every-5m',
+  '*/5 * * * *',
+  $$ select cleanup_stale_sim_active_sessions(15); $$
+);
+```
+
+If you need to remove it later:
+
+```sql
+select cron.unschedule('cleanup-sim-active-every-5m');
+```
 
 ### Active simulation session lifecycle
 
@@ -65,7 +89,9 @@ In Vercel Project Settings -> Environment Variables, add the same four variables
 
 - `last_seen_at` heartbeat timestamp
 - unique active session per user (`uq_sim_active_sessions_user_id`)
-- stale rows auto-cleaned by API logic (on start/append) using `SIM_ACTIVE_TTL_SEC`
+- stale rows auto-cleaned by API logic (throttled, mainly on `start`) using `SIM_ACTIVE_TTL_SEC`
+- client keepalive interval configurable by `SIM_KEEPALIVE_INTERVAL_SEC` (default 30s)
+- simulation auto-abandons after `SIM_INPUT_IDLE_TIMEOUT_SEC` with no simulator keyboard input
 - manual cleanup endpoint for creator:
   - `POST /v1/admin/cleanup/sim-active` with optional body `{ "ttl_sec": 900 }`
 
