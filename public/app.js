@@ -1370,6 +1370,14 @@ function removeRemotePlayerMarker(peerId) {
   if (!marker) {
     return;
   }
+  const nameLabelTexture = marker.userData?.nameLabelTexture;
+  if (nameLabelTexture && typeof nameLabelTexture.dispose === "function") {
+    nameLabelTexture.dispose();
+  }
+  const nameLabelMaterial = marker.userData?.nameLabelMaterial;
+  if (nameLabelMaterial && typeof nameLabelMaterial.dispose === "function") {
+    nameLabelMaterial.dispose();
+  }
   if (group) {
     group.remove(marker);
   }
@@ -5496,6 +5504,93 @@ function peerColorHex(peerId = "") {
   return (r << 16) + (g << 8) + b;
 }
 
+function peerDisplayName(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return "player";
+  }
+  return raw.length > 18 ? `${raw.slice(0, 17)}…` : raw;
+}
+
+function paintRemoteNameLabel(canvas, ctx2d, label) {
+  const w = canvas.width;
+  const h = canvas.height;
+  const radius = 18;
+  const pad = 6;
+  ctx2d.clearRect(0, 0, w, h);
+  ctx2d.fillStyle = "rgba(9, 16, 24, 0.82)";
+  ctx2d.beginPath();
+  ctx2d.moveTo(pad + radius, pad);
+  ctx2d.lineTo(w - pad - radius, pad);
+  ctx2d.quadraticCurveTo(w - pad, pad, w - pad, pad + radius);
+  ctx2d.lineTo(w - pad, h - pad - radius);
+  ctx2d.quadraticCurveTo(w - pad, h - pad, w - pad - radius, h - pad);
+  ctx2d.lineTo(pad + radius, h - pad);
+  ctx2d.quadraticCurveTo(pad, h - pad, pad, h - pad - radius);
+  ctx2d.lineTo(pad, pad + radius);
+  ctx2d.quadraticCurveTo(pad, pad, pad + radius, pad);
+  ctx2d.closePath();
+  ctx2d.fill();
+
+  ctx2d.strokeStyle = "rgba(119, 218, 255, 0.92)";
+  ctx2d.lineWidth = 3;
+  ctx2d.stroke();
+
+  const dynamicSize = label.length <= 10 ? 42 : label.length <= 14 ? 36 : 31;
+  ctx2d.fillStyle = "#f2fbff";
+  ctx2d.font = `700 ${dynamicSize}px Sora, sans-serif`;
+  ctx2d.textAlign = "center";
+  ctx2d.textBaseline = "middle";
+  ctx2d.fillText(label, w / 2, h / 2 + 2);
+}
+
+function ensureRemoteNameLabel(THREE, marker, username) {
+  if (!marker?.userData) {
+    return;
+  }
+  const label = peerDisplayName(username);
+  if (!marker.userData.nameLabelSprite) {
+    const canvas = document.createElement("canvas");
+    canvas.width = 512;
+    canvas.height = 128;
+    const ctx2d = canvas.getContext("2d");
+    if (!ctx2d) {
+      return;
+    }
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.generateMipmaps = false;
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    const material = new THREE.SpriteMaterial({
+      map: texture,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+    });
+    material.sizeAttenuation = true;
+    const sprite = new THREE.Sprite(material);
+    sprite.name = `${marker.name || "remote"}-name`;
+    sprite.center.set(0.5, 0);
+    sprite.position.set(0, 1.76, 0);
+    sprite.scale.set(2.45, 0.62, 1);
+    marker.add(sprite);
+    marker.userData.nameLabelSprite = sprite;
+    marker.userData.nameLabelCanvas = canvas;
+    marker.userData.nameLabelCtx = ctx2d;
+    marker.userData.nameLabelTexture = texture;
+    marker.userData.nameLabelMaterial = material;
+    marker.userData.nameLabelText = "";
+  }
+
+  if (marker.userData.nameLabelText === label) {
+    return;
+  }
+  paintRemoteNameLabel(marker.userData.nameLabelCanvas, marker.userData.nameLabelCtx, label);
+  marker.userData.nameLabelTexture.needsUpdate = true;
+  marker.userData.nameLabelText = label;
+}
+
 function ensureRemoteAfkLabelMaterial(THREE) {
   if (state.sim.three.remoteAfkLabelMaterial) {
     return state.sim.three.remoteAfkLabelMaterial;
@@ -5559,7 +5654,7 @@ function ensureRemoteAfkLabelMaterial(THREE) {
   return material;
 }
 
-function createRemotePlayerMarker(THREE, peerId) {
+function createRemotePlayerMarker(THREE, peerId, username = "player") {
   const marker = new THREE.Group();
   marker.name = `remote-${peerId}`;
   marker.userData.kind = "fallback";
@@ -5612,6 +5707,8 @@ function createRemotePlayerMarker(THREE, peerId) {
     marker.userData.afkLabel = afkLabel;
   }
 
+  ensureRemoteNameLabel(THREE, marker, username);
+
   return marker;
 }
 
@@ -5635,10 +5732,11 @@ function syncThreeRemotePlayers() {
       marker = null;
     }
     if (!marker) {
-      marker = createRemotePlayerMarker(three.lib, peer.user_id);
+      marker = createRemotePlayerMarker(three.lib, peer.user_id, peer.username || "player");
       three.remotePlayerMarkers.set(peer.user_id, marker);
       three.remotePlayersGroup.add(marker);
     }
+    ensureRemoteNameLabel(three.lib, marker, peer.username || "player");
     marker.visible = true;
     marker.position.set(pose.x, 0, -pose.y);
     marker.rotation.order = "YXZ";
