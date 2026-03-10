@@ -1441,23 +1441,10 @@ function multiplayerInputIdleAfkMs() {
 }
 
 function peerPresenceState(peer, nowMs = Date.now()) {
-  const ageMs = Math.max(0, nowMs - Number(peer?.lastSeenMs || 0));
-  const hiddenSinceMs = Number(peer?.hiddenSinceMs || 0);
-  const hiddenAfk = Boolean(peer?.isHidden) && hiddenSinceMs > 0 && nowMs - hiddenSinceMs >= multiplayerTabHiddenAfkMs();
-  const inputIdleAfk = Boolean(peer?.isInputIdle);
-  const collisionStaleMs = multiplayerCollisionStaleMs();
-  const peerTtlMs = multiplayerPeerTtlMs();
-
-  if (ageMs > peerTtlMs) {
-    return "offline";
-  }
-  if (hiddenAfk || inputIdleAfk || ageMs > collisionStaleMs) {
-    return "afk";
-  }
-  if (ageMs <= collisionStaleMs) {
-    return "active";
-  }
-  return "afk";
+  const inputIdleFlag = Boolean(peer?.isInputIdle);
+  const lastInputAtMs = Number(peer?.lastInputAtMs || 0);
+  const inputIdleByClock = lastInputAtMs > 0 && nowMs - lastInputAtMs >= multiplayerInputIdleAfkMs();
+  return inputIdleFlag || inputIdleByClock ? "afk" : "active";
 }
 
 function updateMultiplayerPeerRenderStates(dtSec, nowMs = Date.now()) {
@@ -1521,7 +1508,7 @@ function updateMultiplayerPeerRenderStates(dtSec, nowMs = Date.now()) {
 }
 
 function pruneMultiplayerPeers(nowMs = Date.now()) {
-  const ttlMs = multiplayerPeerTtlMs();
+  const ttlMs = Math.max(multiplayerPeerTtlMs(), simInputIdleTimeoutMs());
   for (const [peerId, peer] of state.multiplayer.peers.entries()) {
     if (nowMs - Number(peer.lastSeenMs || 0) > ttlMs) {
       state.multiplayer.peers.delete(peerId);

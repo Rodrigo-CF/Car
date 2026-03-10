@@ -124,9 +124,9 @@ export function createAppServer(store = createStore()) {
         const rawIdleTimeoutSec = Number(process.env.SIM_INPUT_IDLE_TIMEOUT_SEC || 900);
         const simInputIdleTimeoutSec =
           Number.isFinite(rawIdleTimeoutSec) && rawIdleTimeoutSec > 0 ? Math.max(60, rawIdleTimeoutSec) : 900;
-        const rawPeerTtlSec = Number(process.env.MULTIPLAYER_PEER_TTL_SEC || 30);
+        const rawPeerTtlSec = Number(process.env.MULTIPLAYER_PEER_TTL_SEC || simInputIdleTimeoutSec);
         const multiplayerPeerTtlSec =
-          Number.isFinite(rawPeerTtlSec) && rawPeerTtlSec > 0 ? Math.max(5, rawPeerTtlSec) : 30;
+          Number.isFinite(rawPeerTtlSec) && rawPeerTtlSec > 0 ? Math.max(5, rawPeerTtlSec) : simInputIdleTimeoutSec;
         const rawCollisionStaleSec = Number(process.env.MULTIPLAYER_COLLISION_STALE_SEC || 10);
         const multiplayerCollisionStaleSec =
           Number.isFinite(rawCollisionStaleSec) && rawCollisionStaleSec > 0

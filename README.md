@@ -37,7 +37,7 @@ To enable persistent storage (required for Vercel production), configure Supabas
    - `SIM_CLEANUP_MIN_INTERVAL_SEC` (optional; default `60` = throttles cleanup in request path)
    - `SIM_KEEPALIVE_INTERVAL_SEC` (optional; default `30`)
    - `SIM_INPUT_IDLE_TIMEOUT_SEC` (optional; default `900` = 15 minutes)
-   - `MULTIPLAYER_PEER_TTL_SEC` (optional; default `30`)
+   - `MULTIPLAYER_PEER_TTL_SEC` (optional; default `900`)
    - `MULTIPLAYER_COLLISION_STALE_SEC` (optional; default `10`)
    - `MULTIPLAYER_TAB_HIDDEN_AFK_SEC` (optional; default `10`)
    - `MULTIPLAYER_INPUT_IDLE_AFK_SEC` (optional; default `180`)
@@ -56,7 +56,7 @@ export SIM_ACTIVE_TTL_SEC="900"
 export SIM_CLEANUP_MIN_INTERVAL_SEC="60"
 export SIM_KEEPALIVE_INTERVAL_SEC="30"
 export SIM_INPUT_IDLE_TIMEOUT_SEC="900"
-export MULTIPLAYER_PEER_TTL_SEC="30"
+export MULTIPLAYER_PEER_TTL_SEC="900"
 export MULTIPLAYER_COLLISION_STALE_SEC="10"
 export MULTIPLAYER_TAB_HIDDEN_AFK_SEC="10"
 export MULTIPLAYER_INPUT_IDLE_AFK_SEC="180"
