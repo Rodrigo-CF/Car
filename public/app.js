@@ -5144,6 +5144,8 @@ async function loadRealCockpitModel() {
         three.vehicleFootprintLocal = {
           minX: modelBoundsLocal.min.x,
           maxX: modelBoundsLocal.max.x,
+          minY: modelBoundsLocal.min.y,
+          maxY: modelBoundsLocal.max.y,
           minZ: modelBoundsLocal.min.z,
           maxZ: modelBoundsLocal.max.z,
         };
@@ -5544,6 +5546,37 @@ function paintRemoteNameLabel(canvas, ctx2d, label) {
   ctx2d.fillText(label, w / 2, h / 2 + 2);
 }
 
+function computeRemoteLabelAnchor(THREE, marker) {
+  let centerX = 0;
+  let centerZ = 0;
+  const footprint = state.sim.three.vehicleFootprintLocal;
+  if (footprint && Number.isFinite(footprint.minX) && Number.isFinite(footprint.maxX)) {
+    centerX = (footprint.minX + footprint.maxX) * 0.5;
+  }
+  if (footprint && Number.isFinite(footprint.minZ) && Number.isFinite(footprint.maxZ)) {
+    centerZ = (footprint.minZ + footprint.maxZ) * 0.5;
+  }
+
+  let roofY = Number.isFinite(footprint?.maxY) ? footprint.maxY : 1.0;
+  const box = new THREE.Box3();
+  box.setFromObject(marker);
+  if (Number.isFinite(box.max.y)) {
+    roofY = box.max.y;
+  }
+  if (!footprint && Number.isFinite(box.min.x) && Number.isFinite(box.max.x)) {
+    centerX = (box.min.x + box.max.x) * 0.5;
+  }
+  if (!footprint && Number.isFinite(box.min.z) && Number.isFinite(box.max.z)) {
+    centerZ = (box.min.z + box.max.z) * 0.5;
+  }
+
+  return {
+    x: centerX,
+    y: roofY,
+    z: centerZ,
+  };
+}
+
 function ensureRemoteNameLabel(THREE, marker, username) {
   if (!marker?.userData) {
     return;
@@ -5572,7 +5605,8 @@ function ensureRemoteNameLabel(THREE, marker, username) {
     const sprite = new THREE.Sprite(material);
     sprite.name = `${marker.name || "remote"}-name`;
     sprite.center.set(0.5, 0);
-    sprite.position.set(0, 1.76, 0);
+    const anchor = marker.userData.labelAnchor || { x: 0, y: 1.0, z: 0 };
+    sprite.position.set(anchor.x, anchor.y + 0.7, anchor.z);
     sprite.scale.set(2.45, 0.62, 1);
     marker.add(sprite);
     marker.userData.nameLabelSprite = sprite;
@@ -5695,12 +5729,15 @@ function createRemotePlayerMarker(THREE, peerId, username = "player") {
     marker.add(nose);
   }
 
+  marker.userData.labelAnchor = computeRemoteLabelAnchor(THREE, marker);
+
   const afkMaterial = ensureRemoteAfkLabelMaterial(THREE);
   if (afkMaterial) {
     const afkLabel = new THREE.Sprite(afkMaterial);
     afkLabel.name = `remote-${peerId}-afk`;
     afkLabel.center.set(0.5, 0);
-    afkLabel.position.set(0, 1.1, 0);
+    const anchor = marker.userData.labelAnchor || { x: 0, y: 1.0, z: 0 };
+    afkLabel.position.set(anchor.x, anchor.y + 0.12, anchor.z);
     afkLabel.scale.set(1.5, 0.56, 1);
     afkLabel.visible = false;
     marker.add(afkLabel);
