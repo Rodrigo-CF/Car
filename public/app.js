@@ -99,6 +99,10 @@ const state = {
     checkpointsPx: [],
     pendingCheckpointType: null,
     routeOverrideA: null,
+    mapLibrary: [],
+    selectedMapId: "",
+    libraryRouteFilter: "A",
+    librarySearch: "",
   },
   multiplayer: {
     configLoaded: false,
@@ -248,7 +252,15 @@ const dom = {
   mapperUndo: document.querySelector("#mapper-undo"),
   mapperClear: document.querySelector("#mapper-clear"),
   mapperApplyRoute: document.querySelector("#mapper-apply-route"),
+  mapperMapName: document.querySelector("#mapper-map-name"),
+  mapperSaveRoute: document.querySelector("#mapper-save-route"),
   mapperPublishRoute: document.querySelector("#mapper-publish-route"),
+  mapperLibraryRouteFilter: document.querySelector("#mapper-library-route-filter"),
+  mapperLibrarySearch: document.querySelector("#mapper-library-search"),
+  mapperLibraryRefresh: document.querySelector("#mapper-library-refresh"),
+  mapperSavedMaps: document.querySelector("#mapper-saved-maps"),
+  mapperActivateMap: document.querySelector("#mapper-activate-map"),
+  mapperLibraryStatus: document.querySelector("#mapper-library-status"),
   mapperDownloadJson: document.querySelector("#mapper-download-json"),
   mapperImportJson: document.querySelector("#mapper-import-json"),
   mapperImportJsonFile: document.querySelector("#mapper-import-json-file"),
@@ -797,6 +809,121 @@ function refreshMapperJsonPreview() {
   }
 }
 
+function defaultMapperMapName() {
+  return `Route A ${new Date().toISOString().slice(0, 10)}`;
+}
+
+function updateMapperLibraryStatus(message) {
+  if (!dom.mapperLibraryStatus) {
+    return;
+  }
+  dom.mapperLibraryStatus.textContent = message;
+}
+
+function updateMapperMapActions() {
+  const creator = Boolean(state.user?.is_creator);
+  const hasSelection = Boolean(state.mapper.selectedMapId);
+  if (dom.mapperSaveRoute) {
+    dom.mapperSaveRoute.disabled = !creator;
+  }
+  if (dom.mapperPublishRoute) {
+    dom.mapperPublishRoute.disabled = !creator;
+  }
+  if (dom.mapperActivateMap) {
+    dom.mapperActivateMap.disabled = !creator || !hasSelection;
+  }
+}
+
+function renderMapperMapLibrary() {
+  if (!dom.mapperSavedMaps) {
+    return;
+  }
+
+  const previousSelection = state.mapper.selectedMapId;
+  dom.mapperSavedMaps.innerHTML = "";
+  const maps = Array.isArray(state.mapper.mapLibrary) ? state.mapper.mapLibrary : [];
+
+  for (const map of maps) {
+    const option = document.createElement("option");
+    option.value = map.map_id;
+    const createdText = map.created_at ? new Date(map.created_at).toLocaleString() : "";
+    const activeText = map.is_active ? " [ACTIVE]" : "";
+    option.textContent = `${map.route_id} v${map.version} - ${map.name}${activeText}${createdText ? ` - ${createdText}` : ""}`;
+    dom.mapperSavedMaps.appendChild(option);
+  }
+
+  if (maps.length === 0) {
+    state.mapper.selectedMapId = "";
+    const emptyOption = document.createElement("option");
+    emptyOption.value = "";
+    emptyOption.textContent = "No saved maps found.";
+    emptyOption.disabled = true;
+    emptyOption.selected = true;
+    dom.mapperSavedMaps.appendChild(emptyOption);
+  } else if (previousSelection && maps.some((map) => map.map_id === previousSelection)) {
+    dom.mapperSavedMaps.value = previousSelection;
+    state.mapper.selectedMapId = previousSelection;
+  } else {
+    state.mapper.selectedMapId = maps[0].map_id;
+    dom.mapperSavedMaps.value = maps[0].map_id;
+  }
+
+  updateMapperMapActions();
+}
+
+function selectedMapperMapRecord() {
+  const mapId = state.mapper.selectedMapId;
+  if (!mapId) {
+    return null;
+  }
+  return state.mapper.mapLibrary.find((map) => map.map_id === mapId) || null;
+}
+
+async function loadMapperMapLibrary(options = {}) {
+  const { preserveSelection = true } = options;
+  if (!state.token || !state.user?.is_creator) {
+    state.mapper.mapLibrary = [];
+    state.mapper.selectedMapId = "";
+    renderMapperMapLibrary();
+    updateMapperLibraryStatus("Saved maps: creator login required.");
+    return;
+  }
+
+  const previousSelection = preserveSelection ? state.mapper.selectedMapId : "";
+  const params = new URLSearchParams();
+  const routeFilter = String(state.mapper.libraryRouteFilter || "A").trim().toUpperCase();
+  params.set("route_id", routeFilter || "A");
+  const search = String(state.mapper.librarySearch || "").trim();
+  if (search) {
+    params.set("q", search);
+  }
+  params.set("limit", "120");
+
+  updateMapperLibraryStatus("Saved maps: loading...");
+  const payload = await api(`/v1/maps?${params.toString()}`, {
+    headers: authHeaders(),
+  });
+  state.mapper.mapLibrary = Array.isArray(payload.maps) ? payload.maps : [];
+  if (previousSelection) {
+    state.mapper.selectedMapId = previousSelection;
+  }
+  renderMapperMapLibrary();
+
+  const visibleCount = state.mapper.mapLibrary.length;
+  const hasMore = Boolean(payload.pagination?.has_more);
+  updateMapperLibraryStatus(
+    `Saved maps: ${visibleCount}${hasMore ? "+" : ""} shown (route=${payload.filters?.route_id || routeFilter}${search ? `, q="${search}"` : ""}).`,
+  );
+}
+
+function resolveMapperRouteForSave() {
+  let route = state.mapper.routeOverrideA;
+  if (!route) {
+    route = mapperBuildRouteAFromCanvas();
+  }
+  return route;
+}
+
 function drawMapperCanvas() {
   const w = dom.mapperCanvas.width;
   const h = dom.mapperCanvas.height;
@@ -1220,6 +1347,25 @@ function updateAuthState() {
     if (dom.mapperPublishRoute) {
       dom.mapperPublishRoute.disabled = true;
     }
+    if (dom.mapperSaveRoute) {
+      dom.mapperSaveRoute.disabled = true;
+    }
+    if (dom.mapperActivateMap) {
+      dom.mapperActivateMap.disabled = true;
+    }
+    if (dom.mapperLibraryRouteFilter) {
+      dom.mapperLibraryRouteFilter.disabled = true;
+    }
+    if (dom.mapperLibrarySearch) {
+      dom.mapperLibrarySearch.disabled = true;
+    }
+    if (dom.mapperLibraryRefresh) {
+      dom.mapperLibraryRefresh.disabled = true;
+    }
+    if (dom.mapperSavedMaps) {
+      dom.mapperSavedMaps.disabled = true;
+    }
+    updateMapperLibraryStatus("Saved maps: creator login required.");
     if (dom.multiplayerRoom) {
       dom.multiplayerRoom.disabled = true;
     }
@@ -1241,9 +1387,19 @@ function updateAuthState() {
   if (dom.mapperPanel) {
     dom.mapperPanel.classList.toggle("hidden", !state.user.is_creator);
   }
-  if (dom.mapperPublishRoute) {
-    dom.mapperPublishRoute.disabled = !state.user.is_creator;
+  if (dom.mapperLibraryRouteFilter) {
+    dom.mapperLibraryRouteFilter.disabled = !state.user.is_creator;
   }
+  if (dom.mapperLibrarySearch) {
+    dom.mapperLibrarySearch.disabled = !state.user.is_creator;
+  }
+  if (dom.mapperLibraryRefresh) {
+    dom.mapperLibraryRefresh.disabled = !state.user.is_creator;
+  }
+  if (dom.mapperSavedMaps) {
+    dom.mapperSavedMaps.disabled = !state.user.is_creator;
+  }
+  updateMapperMapActions();
   if (dom.multiplayerRoom) {
     dom.multiplayerRoom.disabled = false;
     if (!dom.multiplayerRoom.value.trim()) {
@@ -1274,6 +1430,14 @@ function setAuth(authData) {
   state.user = authData.user;
   clearAuthForms();
   updateAuthState();
+  if (dom.mapperMapName && !dom.mapperMapName.value.trim()) {
+    dom.mapperMapName.value = defaultMapperMapName();
+  }
+  if (state.user?.is_creator) {
+    loadMapperMapLibrary({ preserveSelection: false }).catch((error) => {
+      updateMapperLibraryStatus(`Saved maps: failed (${error.message}).`);
+    });
+  }
   showAuthFeedback(`Login successful. Welcome, ${state.user.username}.`);
 }
 
@@ -1308,6 +1472,8 @@ function clearAuth() {
   state.sim.bumpAxleContacts = {};
   state.sim.bumpAxleHitAtMs = {};
   state.sim.stopLineContacts = {};
+  state.mapper.mapLibrary = [];
+  state.mapper.selectedMapId = "";
   stopSimKeepAliveLoop();
   leaveMultiplayerRoom({ silent: true }).catch(() => {});
   if (state.sim.three.ready) {
@@ -1321,6 +1487,8 @@ function clearAuth() {
   hidePenaltyCard();
   updateHudOverlay();
   drawMiniMapOverlay();
+  renderMapperMapLibrary();
+  updateMapperLibraryStatus("Saved maps: creator login required.");
 }
 
 function authHeaders() {
@@ -8114,6 +8282,12 @@ window.addEventListener("blur", () => {
 window.addEventListener("resize", syncCanvasSize);
 
 function bindRouteMapperUi() {
+  if (dom.mapperMapName && !dom.mapperMapName.value.trim()) {
+    dom.mapperMapName.value = defaultMapperMapName();
+  }
+  state.mapper.libraryRouteFilter = dom.mapperLibraryRouteFilter?.value || "A";
+  state.mapper.librarySearch = dom.mapperLibrarySearch?.value || "";
+
   dom.mapperCheckpointType.addEventListener("change", updateMapperCheckpointUi);
   dom.mapperLaneWidth.addEventListener("input", () => {
     if (state.mapper.scalePointsPx.length === 2) {
@@ -8251,6 +8425,47 @@ function bindRouteMapperUi() {
     }
   });
 
+  dom.mapperSaveRoute.addEventListener("click", async () => {
+    if (!state.token) {
+      alert("Login first.");
+      return;
+    }
+    if (!state.user?.is_creator) {
+      alert("Only the creator account can save maps.");
+      return;
+    }
+
+    let route;
+    try {
+      route = resolveMapperRouteForSave();
+    } catch (error) {
+      alert(error.message);
+      return;
+    }
+
+    const requestedName = (dom.mapperMapName?.value || "").trim() || defaultMapperMapName();
+    try {
+      const result = await api("/v1/maps/save", {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({
+          route_id: "A",
+          name: requestedName,
+          route,
+        }),
+      });
+      if (dom.mapperMapName) {
+        dom.mapperMapName.value = result.map?.name || requestedName;
+      }
+      state.mapper.selectedMapId = result.map?.map_id || "";
+      dom.mapperJson.textContent = formatJson(result.route);
+      setMapperStatus(`Route A saved (map ${result.map.map_id}, v${result.map.version}).`);
+      await loadMapperMapLibrary({ preserveSelection: true });
+    } catch (error) {
+      alert(error.message);
+    }
+  });
+
   dom.mapperPublishRoute.addEventListener("click", async () => {
     if (!state.token) {
       alert("Login first.");
@@ -8261,30 +8476,102 @@ function bindRouteMapperUi() {
       return;
     }
 
-    let route = state.mapper.routeOverrideA;
-    if (!route) {
-      try {
-        route = mapperBuildRouteAFromCanvas();
-      } catch (error) {
-        alert(error.message);
-        return;
-      }
+    let route;
+    try {
+      route = resolveMapperRouteForSave();
+    } catch (error) {
+      alert(error.message);
+      return;
     }
 
+    const requestedName = (dom.mapperMapName?.value || "").trim() || defaultMapperMapName();
     try {
       const result = await api("/v1/maps/publish", {
         method: "POST",
         headers: authHeaders(),
         body: JSON.stringify({
           route_id: "A",
-          name: `Route A ${new Date().toISOString().slice(0, 10)}`,
+          name: requestedName,
           route,
         }),
       });
+      if (dom.mapperMapName) {
+        dom.mapperMapName.value = result.map?.name || requestedName;
+      }
+      state.mapper.selectedMapId = result.map?.map_id || "";
       setMapperStatus(
         `Route A published globally (map ${result.map.map_id}, v${result.map.version}). All players now receive it.`,
       );
       dom.mapperJson.textContent = formatJson(result.route);
+      await loadMapperMapLibrary({ preserveSelection: true });
+    } catch (error) {
+      alert(error.message);
+    }
+  });
+
+  dom.mapperLibraryRouteFilter.addEventListener("change", () => {
+    state.mapper.libraryRouteFilter = dom.mapperLibraryRouteFilter.value || "A";
+    loadMapperMapLibrary({ preserveSelection: false }).catch((error) => {
+      updateMapperLibraryStatus(`Saved maps: failed (${error.message}).`);
+    });
+  });
+
+  dom.mapperLibrarySearch.addEventListener("input", () => {
+    state.mapper.librarySearch = dom.mapperLibrarySearch.value || "";
+  });
+
+  dom.mapperLibrarySearch.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") {
+      return;
+    }
+    event.preventDefault();
+    state.mapper.librarySearch = dom.mapperLibrarySearch.value || "";
+    loadMapperMapLibrary({ preserveSelection: false }).catch((error) => {
+      updateMapperLibraryStatus(`Saved maps: failed (${error.message}).`);
+    });
+  });
+
+  dom.mapperLibraryRefresh.addEventListener("click", () => {
+    state.mapper.librarySearch = dom.mapperLibrarySearch.value || "";
+    loadMapperMapLibrary({ preserveSelection: false }).catch((error) => {
+      updateMapperLibraryStatus(`Saved maps: failed (${error.message}).`);
+    });
+  });
+
+  dom.mapperSavedMaps.addEventListener("change", () => {
+    state.mapper.selectedMapId = dom.mapperSavedMaps.value || "";
+    updateMapperMapActions();
+  });
+
+  dom.mapperActivateMap.addEventListener("click", async () => {
+    if (!state.token) {
+      alert("Login first.");
+      return;
+    }
+    if (!state.user?.is_creator) {
+      alert("Only the creator account can activate maps globally.");
+      return;
+    }
+    const selected = selectedMapperMapRecord();
+    if (!selected) {
+      alert("Select a saved map first.");
+      return;
+    }
+
+    try {
+      const result = await api("/v1/maps/activate", {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({
+          map_id: selected.map_id,
+          route_id: selected.route_id,
+        }),
+      });
+      state.mapper.selectedMapId = result.map?.map_id || selected.map_id;
+      setMapperStatus(
+        `Global route ${result.map.route_id} now uses map ${result.map.map_id} (${result.map.name}, v${result.map.version}).`,
+      );
+      await loadMapperMapLibrary({ preserveSelection: true });
     } catch (error) {
       alert(error.message);
     }
@@ -8338,6 +8625,9 @@ function bindRouteMapperUi() {
 
   dom.mapperCanvas.addEventListener("click", handleMapperCanvasClick);
   loadPersistedMapperRouteOverride();
+  renderMapperMapLibrary();
+  updateMapperMapActions();
+  updateMapperLibraryStatus("Saved maps: creator login required.");
   updateMapperCheckpointUi();
   drawMapperCanvas();
 }

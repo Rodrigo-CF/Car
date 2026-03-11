@@ -51,6 +51,67 @@ function mapMetadata(record) {
   };
 }
 
+function normalizeMapName(name, fallbackName) {
+  const normalized = String(name || "").trim();
+  return (normalized || fallbackName).slice(0, 120);
+}
+
+function nextRouteVersion(store, routeId) {
+  return (
+    store.maps
+      .filter((record) => record.route_id === routeId)
+      .reduce((best, current) => Math.max(best, Number(current.version) || 0), 0) + 1
+  );
+}
+
+function parsePositiveInteger(value, fallback, min = 0, max = Number.POSITIVE_INFINITY) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  const rounded = Math.floor(parsed);
+  if (rounded < min) {
+    return min;
+  }
+  if (rounded > max) {
+    return max;
+  }
+  return rounded;
+}
+
+function createRouteMapRecord(store, user, payload) {
+  const routeId = normalizeRouteId(payload?.route_id);
+  if (!routeId) {
+    return { status: 400, error: "invalid route_id" };
+  }
+
+  const route = cloneJson(payload?.route);
+  const shapeError = validateRouteShape(route, routeId);
+  if (shapeError) {
+    return { status: 400, error: shapeError };
+  }
+
+  route.routeId = routeId;
+  route.unit = route.unit || "meters";
+
+  const version = nextRouteVersion(store, routeId);
+  const nowIso = new Date().toISOString();
+  const defaultName = `Route ${routeId} v${version}`;
+  const record = {
+    map_id: generateId("map"),
+    route_id: routeId,
+    name: normalizeMapName(payload?.name, defaultName),
+    version,
+    route,
+    created_by: user.user_id,
+    created_at: nowIso,
+    published_at: nowIso,
+  };
+
+  store.maps.push(record);
+  return { status: 201, data: record };
+}
+
 export function resolveRoute(store, routeId) {
   const normalizedRouteId = normalizeRouteId(routeId);
   if (!normalizedRouteId) {
@@ -75,48 +136,133 @@ export function publishRouteMap(store, user, payload) {
     return { status: 403, error: "creator permissions required" };
   }
 
-  const routeId = normalizeRouteId(payload?.route_id);
-  if (!routeId) {
-    return { status: 400, error: "invalid route_id" };
+  const created = createRouteMapRecord(store, user, payload);
+  if (created.error) {
+    return created;
   }
-
-  const route = cloneJson(payload?.route);
-  const shapeError = validateRouteShape(route, routeId);
-  if (shapeError) {
-    return { status: 400, error: shapeError };
-  }
-
-  route.routeId = routeId;
-  route.unit = route.unit || "meters";
-
-  const version =
-    store.maps
-      .filter((record) => record.route_id === routeId)
-      .reduce((best, current) => Math.max(best, Number(current.version) || 0), 0) + 1;
-
-  const defaultName = `Route ${routeId} v${version}`;
-  const providedName = String(payload?.name || "").trim();
+  const record = created.data;
   const nowIso = new Date().toISOString();
-
-  const record = {
-    map_id: generateId("map"),
-    route_id: routeId,
-    name: (providedName || defaultName).slice(0, 120),
-    version,
-    route,
-    created_by: user.user_id,
-    created_at: nowIso,
-    published_at: nowIso,
-  };
-
-  store.maps.push(record);
-  store.activeRouteMaps[routeId] = record.map_id;
+  record.published_at = nowIso;
+  store.activeRouteMaps[record.route_id] = record.map_id;
 
   return {
     status: 201,
     data: {
       map: mapMetadata(record),
       route: cloneJson(record.route),
+    },
+  };
+}
+
+export function saveRouteMap(store, user, payload) {
+  if (!user?.is_creator) {
+    return { status: 403, error: "creator permissions required" };
+  }
+  const created = createRouteMapRecord(store, user, payload);
+  if (created.error) {
+    return created;
+  }
+  const record = created.data;
+  return {
+    status: 201,
+    data: {
+      map: mapMetadata(record),
+      route: cloneJson(record.route),
+    },
+  };
+}
+
+export function activateRouteMap(store, user, payload) {
+  if (!user?.is_creator) {
+    return { status: 403, error: "creator permissions required" };
+  }
+  const mapId = String(payload?.map_id || "").trim();
+  if (!mapId) {
+    return { status: 400, error: "map_id is required" };
+  }
+  const routeFilterRaw = payload?.route_id == null ? "" : String(payload.route_id);
+  const routeFilter = routeFilterRaw ? normalizeRouteId(routeFilterRaw) : null;
+  if (routeFilterRaw && !routeFilter) {
+    return { status: 400, error: "invalid route_id" };
+  }
+
+  const record = store.maps.find(
+    (candidate) => candidate.map_id === mapId && (!routeFilter || candidate.route_id === routeFilter),
+  );
+  if (!record) {
+    return { status: 404, error: "map not found" };
+  }
+
+  record.published_at = new Date().toISOString();
+  store.activeRouteMaps[record.route_id] = record.map_id;
+  return {
+    status: 200,
+    data: {
+      map: mapMetadata(record),
+      route: cloneJson(record.route),
+      activated: true,
+    },
+  };
+}
+
+export function listRouteMaps(store, user, query = {}) {
+  if (!user?.is_creator) {
+    return { status: 403, error: "creator permissions required" };
+  }
+
+  const routeFilterRaw = String(query.route_id || "").trim();
+  const routeFilter = routeFilterRaw && routeFilterRaw.toUpperCase() !== "ALL" ? normalizeRouteId(routeFilterRaw) : null;
+  if (routeFilterRaw && routeFilterRaw.toUpperCase() !== "ALL" && !routeFilter) {
+    return { status: 400, error: "invalid route_id" };
+  }
+
+  const q = String(query.q || "").trim().toLowerCase();
+  const limit = parsePositiveInteger(query.limit, 50, 1, 200);
+  const offset = parsePositiveInteger(query.offset, 0, 0, Number.MAX_SAFE_INTEGER);
+
+  const filtered = [...store.maps]
+    .filter((record) => !routeFilter || record.route_id === routeFilter)
+    .filter((record) => {
+      if (!q) {
+        return true;
+      }
+      const name = String(record.name || "").toLowerCase();
+      const mapId = String(record.map_id || "").toLowerCase();
+      return name.includes(q) || mapId.includes(q);
+    })
+    .sort((a, b) => {
+      const createdOrder = String(b.created_at || "").localeCompare(String(a.created_at || ""));
+      if (createdOrder !== 0) {
+        return createdOrder;
+      }
+      const versionOrder = (Number(b.version) || 0) - (Number(a.version) || 0);
+      if (versionOrder !== 0) {
+        return versionOrder;
+      }
+      return String(b.map_id || "").localeCompare(String(a.map_id || ""));
+    });
+
+  const total = filtered.length;
+  const page = filtered.slice(offset, offset + limit);
+  const maps = page.map((record) => ({
+    ...mapMetadata(record),
+    is_active: store.activeRouteMaps?.[record.route_id] === record.map_id,
+  }));
+
+  return {
+    status: 200,
+    data: {
+      maps,
+      pagination: {
+        total,
+        limit,
+        offset,
+        has_more: offset + maps.length < total,
+      },
+      filters: {
+        route_id: routeFilter || "ALL",
+        q,
+      },
     },
   };
 }

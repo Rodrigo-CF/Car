@@ -8,7 +8,14 @@ import { sendJson, sendText, readJsonBody, getPathParts } from "./lib/http.js";
 import { registerUser, loginUser, authenticate } from "./lib/auth.js";
 import { createExamAttempt, submitExamAttempt, updateExamConfig } from "./lib/exam.js";
 import { startSimSession, appendSimEvents, finishSimSession, abandonSimSession, cleanupSimActiveSessions } from "./lib/sim.js";
-import { publishRouteMap, getActiveRoutePayload, getAllActiveRoutesPayload } from "./lib/maps.js";
+import {
+  publishRouteMap,
+  saveRouteMap,
+  activateRouteMap,
+  listRouteMaps,
+  getActiveRoutePayload,
+  getAllActiveRoutesPayload,
+} from "./lib/maps.js";
 import { createSupabaseService } from "./lib/supabase-service.js";
 import {
   buildTheoryLeaderboard,
@@ -249,6 +256,45 @@ export function createAppServer(store = createStore()) {
         const result = supabaseService
           ? await supabaseService.cleanupStaleActiveSessions(payload?.ttl_sec)
           : cleanupSimActiveSessions(store, payload?.ttl_sec);
+        if (result.error) {
+          sendJson(res, result.status, { error: result.error });
+          return;
+        }
+        sendJson(res, result.status, result.data);
+        return;
+      }
+
+      if (req.method === "GET" && reqUrl.pathname === "/v1/maps") {
+        const query = Object.fromEntries(reqUrl.searchParams.entries());
+        const result = supabaseService
+          ? await supabaseService.listRouteMaps(user, query)
+          : listRouteMaps(store, user, query);
+        if (result.error) {
+          sendJson(res, result.status, { error: result.error });
+          return;
+        }
+        sendJson(res, result.status, result.data);
+        return;
+      }
+
+      if (req.method === "POST" && reqUrl.pathname === "/v1/maps/save") {
+        const payload = await readJsonBody(req);
+        const result = supabaseService
+          ? await supabaseService.saveRouteMap(user, payload)
+          : saveRouteMap(store, user, payload);
+        if (result.error) {
+          sendJson(res, result.status, { error: result.error });
+          return;
+        }
+        sendJson(res, result.status, result.data);
+        return;
+      }
+
+      if (req.method === "POST" && reqUrl.pathname === "/v1/maps/activate") {
+        const payload = await readJsonBody(req);
+        const result = supabaseService
+          ? await supabaseService.activateRouteMap(user, payload)
+          : activateRouteMap(store, user, payload);
         if (result.error) {
           sendJson(res, result.status, { error: result.error });
           return;

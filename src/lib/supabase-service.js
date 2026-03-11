@@ -66,6 +66,26 @@ function mapMetadata(record) {
   };
 }
 
+function normalizeMapName(name, fallbackName) {
+  const normalized = String(name || "").trim();
+  return (normalized || fallbackName).slice(0, 120);
+}
+
+function parsePositiveInteger(value, fallback, min = 0, max = Number.POSITIVE_INFINITY) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  const rounded = Math.floor(parsed);
+  if (rounded < min) {
+    return min;
+  }
+  if (rounded > max) {
+    return max;
+  }
+  return rounded;
+}
+
 function asArray(value) {
   return Array.isArray(value) ? value : [];
 }
@@ -137,13 +157,16 @@ export function createSupabaseService(store) {
   }
 
   async function selectRows(table, filters = {}, options = {}) {
-    const { select = "*", order = null, limit = null } = options;
+    const { select = "*", order = null, limit = null, offset = null } = options;
     const params = { select, ...filters };
     if (order) {
       params.order = order;
     }
     if (Number.isFinite(limit) && Number(limit) > 0) {
       params.limit = Math.max(1, Math.floor(Number(limit)));
+    }
+    if (Number.isFinite(offset) && Number(offset) >= 0) {
+      params.offset = Math.max(0, Math.floor(Number(offset)));
     }
     const rows = await request(table, { params });
     return asArray(rows);
@@ -348,6 +371,63 @@ export function createSupabaseService(store) {
       skipped: false,
       via: "rest",
     };
+  }
+
+  async function createRouteMapRecord(user, payload) {
+    if (!user?.is_creator) {
+      return { status: 403, error: "creator permissions required" };
+    }
+
+    const routeId = normalizeRouteId(payload?.route_id);
+    if (!routeId) {
+      return { status: 400, error: "invalid route_id" };
+    }
+
+    const route = cloneJson(payload?.route);
+    const shapeError = validateRouteShape(route, routeId);
+    if (shapeError) {
+      return { status: 400, error: shapeError };
+    }
+    route.routeId = routeId;
+    route.unit = route.unit || "meters";
+
+    const lastVersion = await selectRows(
+      "maps",
+      { route_id: `eq.${routeId}` },
+      { select: "version", order: "version.desc", limit: 1 },
+    );
+    const version = (Number(lastVersion[0]?.version) || 0) + 1;
+    const now = new Date().toISOString();
+    const defaultName = `Route ${routeId} v${version}`;
+
+    const mapRecord = {
+      map_id: generateId("map"),
+      route_id: routeId,
+      name: normalizeMapName(payload?.name, defaultName),
+      version,
+      route,
+      created_by: user.user_id,
+      created_at: now,
+      published_at: now,
+    };
+
+    const [created] = await insertRows("maps", [mapRecord], { returning: true });
+    return { status: 201, data: created };
+  }
+
+  async function activateRouteMapRecord(record) {
+    const now = new Date().toISOString();
+    await insertRows(
+      "active_route_maps",
+      [{ route_id: record.route_id, map_id: record.map_id, updated_at: now }],
+      {
+        upsert: true,
+        onConflict: "route_id",
+        returning: false,
+      },
+    );
+    await patchRows("maps", { map_id: `eq.${record.map_id}` }, { published_at: now }, { returning: false });
+    return now;
   }
 
   return {
@@ -834,60 +914,143 @@ export function createSupabaseService(store) {
 
     async publishRouteMap(user, payload) {
       try {
-        if (!user?.is_creator) {
-          return { status: 403, error: "creator permissions required" };
+        const created = await createRouteMapRecord(user, payload);
+        if (created.error) {
+          return created;
         }
-
-        const routeId = normalizeRouteId(payload?.route_id);
-        if (!routeId) {
-          return { status: 400, error: "invalid route_id" };
-        }
-
-        const route = cloneJson(payload?.route);
-        const shapeError = validateRouteShape(route, routeId);
-        if (shapeError) {
-          return { status: 400, error: shapeError };
-        }
-        route.routeId = routeId;
-        route.unit = route.unit || "meters";
-
-        const lastVersion = await selectRows(
-          "maps",
-          { route_id: `eq.${routeId}` },
-          { select: "version", order: "version.desc", limit: 1 },
-        );
-        const version = (Number(lastVersion[0]?.version) || 0) + 1;
-        const defaultName = `Route ${routeId} v${version}`;
-        const providedName = String(payload?.name || "").trim();
-        const now = new Date().toISOString();
-
-        const mapRecord = {
-          map_id: generateId("map"),
-          route_id: routeId,
-          name: (providedName || defaultName).slice(0, 120),
-          version,
-          route,
-          created_by: user.user_id,
-          created_at: now,
-          published_at: now,
-        };
-
-        const [created] = await insertRows("maps", [mapRecord], { returning: true });
-        await insertRows(
-          "active_route_maps",
-          [{ route_id: routeId, map_id: created.map_id, updated_at: now }],
-          {
-            upsert: true,
-            onConflict: "route_id",
-            returning: false,
-          },
-        );
+        const mapRecord = created.data;
+        const publishedAt = await activateRouteMapRecord(mapRecord);
+        mapRecord.published_at = publishedAt;
 
         return {
           status: 201,
           data: {
-            map: mapMetadata(created),
-            route: cloneJson(created.route),
+            map: mapMetadata(mapRecord),
+            route: cloneJson(mapRecord.route),
+          },
+        };
+      } catch (error) {
+        return { status: Number(error.status) || 500, error: error.message || "internal server error" };
+      }
+    },
+
+    async saveRouteMap(user, payload) {
+      try {
+        const created = await createRouteMapRecord(user, payload);
+        if (created.error) {
+          return created;
+        }
+        const mapRecord = created.data;
+        return {
+          status: 201,
+          data: {
+            map: mapMetadata(mapRecord),
+            route: cloneJson(mapRecord.route),
+          },
+        };
+      } catch (error) {
+        return { status: Number(error.status) || 500, error: error.message || "internal server error" };
+      }
+    },
+
+    async activateRouteMap(user, payload) {
+      try {
+        if (!user?.is_creator) {
+          return { status: 403, error: "creator permissions required" };
+        }
+        const mapId = String(payload?.map_id || "").trim();
+        if (!mapId) {
+          return { status: 400, error: "map_id is required" };
+        }
+
+        const routeFilterRaw = payload?.route_id == null ? "" : String(payload.route_id);
+        const routeFilter = routeFilterRaw ? normalizeRouteId(routeFilterRaw) : null;
+        if (routeFilterRaw && !routeFilter) {
+          return { status: 400, error: "invalid route_id" };
+        }
+
+        const filters = { map_id: `eq.${mapId}` };
+        if (routeFilter) {
+          filters.route_id = `eq.${routeFilter}`;
+        }
+        const rows = await selectRows("maps", filters, { select: "*", limit: 1 });
+        if (!rows.length) {
+          return { status: 404, error: "map not found" };
+        }
+
+        const mapRecord = rows[0];
+        const publishedAt = await activateRouteMapRecord(mapRecord);
+        mapRecord.published_at = publishedAt;
+        return {
+          status: 200,
+          data: {
+            map: mapMetadata(mapRecord),
+            route: cloneJson(mapRecord.route),
+            activated: true,
+          },
+        };
+      } catch (error) {
+        return { status: Number(error.status) || 500, error: error.message || "internal server error" };
+      }
+    },
+
+    async listRouteMaps(user, query = {}) {
+      try {
+        if (!user?.is_creator) {
+          return { status: 403, error: "creator permissions required" };
+        }
+
+        const routeFilterRaw = String(query.route_id || "").trim();
+        const routeFilter =
+          routeFilterRaw && routeFilterRaw.toUpperCase() !== "ALL" ? normalizeRouteId(routeFilterRaw) : null;
+        if (routeFilterRaw && routeFilterRaw.toUpperCase() !== "ALL" && !routeFilter) {
+          return { status: 400, error: "invalid route_id" };
+        }
+
+        const q = String(query.q || "").trim();
+        const limit = parsePositiveInteger(query.limit, 50, 1, 200);
+        const offset = parsePositiveInteger(query.offset, 0, 0, Number.MAX_SAFE_INTEGER);
+
+        const filters = {};
+        if (routeFilter) {
+          filters.route_id = `eq.${routeFilter}`;
+        }
+        if (q) {
+          const escaped = q.replace(/[,%]/g, "").trim();
+          if (escaped) {
+            filters.or = `(name.ilike.*${escaped}*,map_id.ilike.*${escaped}*)`;
+          }
+        }
+
+        const rows = await selectRows("maps", filters, {
+          select: "*",
+          order: "created_at.desc,version.desc",
+          limit: limit + 1,
+          offset,
+        });
+        const hasMore = rows.length > limit;
+        const pageRows = hasMore ? rows.slice(0, limit) : rows;
+
+        const activeRows = await selectRows("active_route_maps", {}, { select: "route_id,map_id" });
+        const activeByRoute = new Map(activeRows.map((row) => [row.route_id, row.map_id]));
+        const maps = pageRows.map((row) => ({
+          ...mapMetadata(row),
+          is_active: activeByRoute.get(row.route_id) === row.map_id,
+        }));
+
+        return {
+          status: 200,
+          data: {
+            maps,
+            pagination: {
+              limit,
+              offset,
+              has_more: hasMore,
+            },
+            filters: {
+              route_id: routeFilter || "ALL",
+              q: String(query.q || "").trim(),
+            },
           },
         };
       } catch (error) {

@@ -199,13 +199,47 @@
                 <button id="mapper-clear" class="btn btn-soft">Clear All</button>
                 <button id="mapper-apply-route" class="btn">Apply to Route A</button>
               </div>
+              <div class="mapper-grid">
+                <label for="mapper-map-name">Map name</label>
+                <input
+                  id="mapper-map-name"
+                  type="text"
+                  maxlength="120"
+                  placeholder="e.g. Ruta A - Lima Norte v1"
+                />
+              </div>
               <div class="button-row button-row-compact">
+                <button id="mapper-save-route" class="btn btn-soft" disabled>Save Route A (Library)</button>
                 <button id="mapper-publish-route" class="btn btn-soft" disabled>Publish Route A (Global)</button>
-                <span class="status-line mapper-inline-note">Creator only. Players receive this map on start.</span>
+              </div>
+              <div class="status-line mapper-inline-note">
+                Creator only. Save stores versions in your library. Publish sets the active map for all players.
               </div>
               <div class="button-row button-row-compact">
                 <button id="mapper-download-json" class="btn btn-soft">Download JSON</button>
                 <button id="mapper-import-json" class="btn btn-soft">Import JSON</button>
+              </div>
+              <div class="mapper-library">
+                <div class="mapper-grid mapper-grid-two">
+                  <div>
+                    <label for="mapper-library-route-filter">Saved maps: route filter</label>
+                    <select id="mapper-library-route-filter">
+                      <option value="A" selected>Route A</option>
+                      <option value="B">Route B</option>
+                      <option value="ALL">All</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label for="mapper-library-search">Search</label>
+                    <input id="mapper-library-search" type="text" maxlength="80" placeholder="name or map id" />
+                  </div>
+                </div>
+                <div class="button-row button-row-compact">
+                  <button id="mapper-library-refresh" class="btn btn-soft">Refresh Saved Maps</button>
+                  <button id="mapper-activate-map" class="btn btn-soft" disabled>Use Selected Globally</button>
+                </div>
+                <select id="mapper-saved-maps" size="6"></select>
+                <p id="mapper-library-status" class="status-line mapper-inline-note">Saved maps: loading...</p>
               </div>
               <input id="mapper-import-json-file" type="file" accept=".json,application/json" class="hidden" />
               <canvas id="mapper-canvas" class="mapper-canvas" width="420" height="420"></canvas>

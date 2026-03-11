@@ -5,7 +5,7 @@ import { createStore } from "../src/lib/store.js";
 import { registerUser } from "../src/lib/auth.js";
 import { createExamAttempt, submitExamAttempt } from "../src/lib/exam.js";
 import { startSimSession, appendSimEvents, finishSimSession, cleanupSimActiveSessions } from "../src/lib/sim.js";
-import { publishRouteMap } from "../src/lib/maps.js";
+import { publishRouteMap, saveRouteMap, activateRouteMap, listRouteMaps } from "../src/lib/maps.js";
 import {
   buildTheoryLeaderboard,
   buildSimulationLeaderboard,
@@ -230,6 +230,67 @@ test("published route is the global route used by new simulation sessions", () =
   assert.equal(started.data.route.startPose.headingDeg, 123);
   assert.equal(started.data.route.path.length, 3);
   assert.equal(started.data.route.checkpoints[0].id, "A_TL_CUSTOM");
+});
+
+test("saved maps can be listed and activated globally without republishing", () => {
+  const store = createStore();
+  const creator = createAuthedUser(store, "creator3", "creator3@test.com");
+  const player = createAuthedUser(store, "player3", "player3@test.com");
+
+  const customRouteA = JSON.parse(JSON.stringify(store.routes.A));
+  customRouteA.startPose = { x: 777, y: -40, headingDeg: 95 };
+  customRouteA.path = [
+    { x: 777, y: -40 },
+    { x: 790, y: -40 },
+    { x: 806, y: -33 },
+  ];
+  customRouteA.checkpoints = [
+    {
+      id: "A_TL_DRAFT",
+      type: "traffic_light",
+      x: 790,
+      y: -40,
+      meta: { mustStopOnRed: true, facing: "with_path" },
+    },
+    {
+      id: "A_SL_DRAFT",
+      type: "stop_line",
+      x: 786,
+      y: -40,
+      meta: { lane: 1, laneCount: 2, lineWidthM: 0.26, trafficLightId: "A_TL_DRAFT" },
+    },
+  ];
+
+  const saved = saveRouteMap(store, creator, {
+    route_id: "A",
+    name: "Route A Draft",
+    route: customRouteA,
+  });
+  assert.equal(saved.status, 201);
+
+  const listedBeforeActivation = listRouteMaps(store, creator, { route_id: "A", q: "Draft" });
+  assert.equal(listedBeforeActivation.status, 200);
+  assert.ok(listedBeforeActivation.data.maps.length >= 1);
+  const savedRow = listedBeforeActivation.data.maps.find((row) => row.map_id === saved.data.map.map_id);
+  assert.ok(savedRow);
+  assert.equal(savedRow.is_active, false);
+
+  const activated = activateRouteMap(store, creator, {
+    route_id: "A",
+    map_id: saved.data.map.map_id,
+  });
+  assert.equal(activated.status, 200);
+  assert.equal(activated.data.activated, true);
+
+  const listedAfterActivation = listRouteMaps(store, creator, { route_id: "A", q: "Draft" });
+  const activeRow = listedAfterActivation.data.maps.find((row) => row.map_id === saved.data.map.map_id);
+  assert.ok(activeRow);
+  assert.equal(activeRow.is_active, true);
+
+  const started = startSimSession(store, player, { route_id: "A" });
+  assert.equal(started.status, 201);
+  assert.equal(started.data.route.startPose.x, 777);
+  assert.equal(started.data.route.checkpoints[0].id, "A_TL_DRAFT");
 });
 
 test("sim active sessions keep at most one active session per user", () => {

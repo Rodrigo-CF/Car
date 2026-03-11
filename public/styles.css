@@ -431,6 +431,19 @@ pre {
   margin-top: 8px;
 }
 
+.mapper-library {
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(132, 188, 210, 0.24);
+  background: rgba(8, 27, 38, 0.52);
+}
+
+#mapper-saved-maps {
+  min-height: 160px;
+  margin: 6px 0 2px;
+}
+
 .status-line {
   margin: 6px 0;
   font-size: 12px;
