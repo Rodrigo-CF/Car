@@ -15,6 +15,8 @@ const state = {
     keepAliveIntervalMs: 30 * 1000,
     inputIdleTimeoutMs: 15 * 60 * 1000,
     idleAbandoning: false,
+    inactivityAlertPending: false,
+    inactivityAlertShown: false,
     lastKeepAliveAt: 0,
     keepAliveTimer: null,
     camera: "first",
@@ -1291,6 +1293,8 @@ function clearAuth() {
   state.sim.lastKeepAliveAt = 0;
   state.sim.lastInputAt = 0;
   state.sim.idleAbandoning = false;
+  state.sim.inactivityAlertPending = false;
+  state.sim.inactivityAlertShown = false;
   state.sim.trafficLightManual = null;
   state.sim.trafficLightRed = true;
   state.sim.penaltyPoints = 0;
@@ -6942,6 +6946,32 @@ function simInputIdleTimeoutLabel() {
   return `${minutes} minute${minutes === 1 ? "" : "s"}`;
 }
 
+function inactivityDisconnectNoticeText() {
+  return "You were disconnected for inactivity (refresh the page to start a new practice).";
+}
+
+function notifyInactivityDisconnectIfNeeded() {
+  if (state.sim.inactivityAlertShown) {
+    return;
+  }
+  if (document.hidden) {
+    state.sim.inactivityAlertPending = true;
+    return;
+  }
+  state.sim.inactivityAlertShown = true;
+  state.sim.inactivityAlertPending = false;
+  alert(inactivityDisconnectNoticeText());
+}
+
+function flushPendingInactivityDisconnectAlert() {
+  if (!state.sim.inactivityAlertPending || state.sim.inactivityAlertShown) {
+    return;
+  }
+  state.sim.inactivityAlertShown = true;
+  state.sim.inactivityAlertPending = false;
+  alert(inactivityDisconnectNoticeText());
+}
+
 function canUseSupabaseKeepAliveDirect() {
   return Boolean(
     state.sim.sessionId && state.sim.sessionHeartbeatToken && state.multiplayer.url && state.multiplayer.anonKey,
@@ -6986,7 +7016,8 @@ function markSimInput(nowMs = Date.now()) {
   state.sim.lastInputAt = nowMs;
 }
 
-async function abandonSimulation(reasonText = "Session ended due to inactivity.") {
+async function abandonSimulation(reasonText = "Session ended due to inactivity.", options = {}) {
+  const inactivityDisconnect = Boolean(options?.inactivityDisconnect);
   if (!state.sim.sessionId) {
     state.sim.idleAbandoning = false;
     return;
@@ -7014,9 +7045,19 @@ async function abandonSimulation(reasonText = "Session ended due to inactivity."
   state.sim.trafficLightManual = null;
   state.keys.clear();
   state.sim.stopLineContacts = {};
-  dom.simState.textContent = reasonText;
+  if (inactivityDisconnect) {
+    const notice = inactivityDisconnectNoticeText();
+    dom.simState.textContent = notice;
+    dom.simOutput.textContent = notice;
+    showPenaltyCard("Disconnected for inactivity.", 5200);
+    notifyInactivityDisconnectIfNeeded();
+  } else {
+    dom.simState.textContent = reasonText;
+  }
   dom.toggleLightBtn.textContent = "Manual Light Override";
-  hidePenaltyCard();
+  if (!inactivityDisconnect) {
+    hidePenaltyCard();
+  }
   updateHudOverlay();
 }
 
@@ -7114,7 +7155,9 @@ function sendSimKeepAlive(nowMs = Date.now()) {
   if (state.sim.lastInputAt && nowMs - state.sim.lastInputAt >= simInputIdleTimeoutMs()) {
     if (!state.sim.idleAbandoning) {
       state.sim.idleAbandoning = true;
-      abandonSimulation(`Session ended after ${simInputIdleTimeoutLabel()} without simulator input.`).catch((error) => {
+      abandonSimulation(`Session ended after ${simInputIdleTimeoutLabel()} without simulator input.`, {
+        inactivityDisconnect: true,
+      }).catch((error) => {
         dom.simOutput.textContent = `Idle timeout warning: ${error.message}`;
       });
     }
@@ -7465,7 +7508,9 @@ function frame(now) {
     !state.sim.idleAbandoning
   ) {
     state.sim.idleAbandoning = true;
-    abandonSimulation(`Session ended after ${simInputIdleTimeoutLabel()} without simulator input.`).catch((error) => {
+    abandonSimulation(`Session ended after ${simInputIdleTimeoutLabel()} without simulator input.`, {
+      inactivityDisconnect: true,
+    }).catch((error) => {
       dom.simOutput.textContent = `Idle timeout warning: ${error.message}`;
     });
   }
@@ -7869,6 +7914,8 @@ async function startSimulation() {
   state.sim.lastKeepAliveAt = 0;
   state.sim.lastInputAt = Date.now();
   state.sim.idleAbandoning = false;
+  state.sim.inactivityAlertPending = false;
+  state.sim.inactivityAlertShown = false;
   state.sim.camera = "first";
   state.sim.trafficLightRed = true;
   state.sim.trafficLightManual = null;
@@ -7939,6 +7986,8 @@ async function finishSimulation() {
   state.sim.lastKeepAliveAt = 0;
   state.sim.lastInputAt = 0;
   state.sim.idleAbandoning = false;
+  state.sim.inactivityAlertPending = false;
+  state.sim.inactivityAlertShown = false;
   state.sim.trafficLightManual = null;
   state.keys.clear();
   state.sim.stopLineContacts = {};
@@ -8374,6 +8423,9 @@ function bindUi() {
   }
   document.addEventListener("visibilitychange", () => {
     broadcastLocalPose(Date.now(), { force: true });
+    if (!document.hidden) {
+      flushPendingInactivityDisconnectAlert();
+    }
   });
 
   document
