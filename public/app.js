@@ -6950,6 +6950,10 @@ function inactivityDisconnectNoticeText() {
   return "You were disconnected for inactivity (refresh the page to start a new practice).";
 }
 
+function inactivityReconnectHintText() {
+  return "You were disconnected for inactivity. Press Start Session to begin a new practice.";
+}
+
 function notifyInactivityDisconnectIfNeeded() {
   if (state.sim.inactivityAlertShown) {
     return;
@@ -6960,7 +6964,7 @@ function notifyInactivityDisconnectIfNeeded() {
   }
   state.sim.inactivityAlertShown = true;
   state.sim.inactivityAlertPending = false;
-  alert(inactivityDisconnectNoticeText());
+  alert(inactivityReconnectHintText());
 }
 
 function flushPendingInactivityDisconnectAlert() {
@@ -6969,7 +6973,7 @@ function flushPendingInactivityDisconnectAlert() {
   }
   state.sim.inactivityAlertShown = true;
   state.sim.inactivityAlertPending = false;
-  alert(inactivityDisconnectNoticeText());
+  alert(inactivityReconnectHintText());
 }
 
 function canUseSupabaseKeepAliveDirect() {
@@ -7046,10 +7050,10 @@ async function abandonSimulation(reasonText = "Session ended due to inactivity."
   state.keys.clear();
   state.sim.stopLineContacts = {};
   if (inactivityDisconnect) {
-    const notice = inactivityDisconnectNoticeText();
+    const notice = inactivityReconnectHintText();
     dom.simState.textContent = notice;
     dom.simOutput.textContent = notice;
-    showPenaltyCard("Disconnected for inactivity.", 5200);
+    showPenaltyCard("Disconnected for inactivity.", 5600);
     notifyInactivityDisconnectIfNeeded();
   } else {
     dom.simState.textContent = reasonText;
