@@ -147,125 +147,131 @@
             Upload your official map image, set scale from a known distance (default two-lane width = 7m), trace the centerline, place checkpoints, and apply as Route A.
           </p>
           <input id="mapper-image-file" type="file" accept="image/*" />
-          <canvas id="mapper-canvas" class="mapper-canvas" width="420" height="420"></canvas>
-          <p id="mapper-status" class="status-line">Mapper: upload an image to begin.</p>
-          <div class="mapper-grid">
-            <label for="mapper-lane-width">Scale reference (meters)</label>
-            <input id="mapper-lane-width" type="number" min="0.1" step="0.1" value="7" />
-          </div>
-          <div class="button-row button-row-compact">
-            <button id="mapper-scale-mode" class="btn btn-soft">1) Set Scale</button>
-            <button id="mapper-path-mode" class="btn btn-soft">2) Trace Path</button>
-          </div>
-          <div class="button-row button-row-compact">
-            <button id="mapper-new-segment" class="btn btn-soft">Path: New Segment</button>
-            <span class="mapper-inline-note">Use when you need to branch without connecting with a line. New points auto-snap to existing nodes.</span>
-          </div>
-          <div class="mapper-grid">
-            <label for="mapper-checkpoint-type">Checkpoint type</label>
-            <select id="mapper-checkpoint-type">
-              <option value="speed_zone">Speed Zone (max speed)</option>
-              <option value="traffic_light">Traffic Light</option>
-              <option value="stop_line">Stop Line (per lane)</option>
-              <option value="roundabout">Roundabout</option>
-              <option value="parking_parallel">Parking: Parallel</option>
-              <option value="parking_diagonal">Parking: Diagonal</option>
-              <option value="speed_bump">Speed Bump (per lane)</option>
-              <option value="tree">Tree / Decor</option>
-            </select>
-          </div>
-          <p id="mapper-checkpoint-help" class="mapper-help">
-            Select a checkpoint type, click "Place Checkpoint", then click its position on the map.
-          </p>
-          <div id="mapper-traffic-fields" class="mapper-grid hidden">
-            <div>
-              <label for="mapper-traffic-facing">Traffic light orientation</label>
-              <select id="mapper-traffic-facing">
-                <option value="with_path">Follow path direction</option>
-                <option value="reverse">Reverse path direction</option>
-              </select>
+          <div class="mapper-workspace">
+            <div class="mapper-preview-column">
+              <canvas id="mapper-canvas" class="mapper-canvas" width="420" height="420"></canvas>
+              <p id="mapper-status" class="status-line">Mapper: upload an image to begin.</p>
+              <pre id="mapper-json"></pre>
             </div>
-          </div>
-          <div id="mapper-lane-fields" class="mapper-grid mapper-grid-two hidden">
-            <div>
-              <label for="mapper-lane-side">Lane side</label>
-              <select id="mapper-lane-side">
-                <option value="left">Left</option>
-                <option value="right" selected>Right</option>
-              </select>
-            </div>
-            <div>
-              <label for="mapper-lane-count">Lanes</label>
-              <select id="mapper-lane-count">
-                <option value="1">1</option>
-                <option value="2" selected>2</option>
-                <option value="3">3</option>
-                <option value="4">4</option>
-              </select>
-            </div>
-          </div>
-          <div id="mapper-parking-fields" class="mapper-grid mapper-grid-two hidden">
-            <div>
-              <label for="mapper-parking-slots">Parking slots</label>
-              <input id="mapper-parking-slots" type="number" min="1" step="1" value="3" />
-            </div>
-            <div>
-              <label for="mapper-parking-angle">Diagonal angle (deg)</label>
-              <input id="mapper-parking-angle" type="number" min="10" max="80" step="1" value="45" />
-            </div>
-          </div>
-          <div class="button-row button-row-compact">
-            <button id="mapper-place-checkpoint" class="btn btn-soft">Place Checkpoint</button>
-            <button id="mapper-undo" class="btn btn-soft">Undo</button>
-          </div>
-          <div class="button-row button-row-compact">
-            <button id="mapper-clear" class="btn btn-soft">Clear All</button>
-            <button id="mapper-apply-route" class="btn">Apply to Route A</button>
-          </div>
-          <div class="mapper-grid">
-            <label for="mapper-map-name">Map name</label>
-            <input
-              id="mapper-map-name"
-              type="text"
-              maxlength="120"
-              placeholder="e.g. Ruta A - Lima Norte v1"
-            />
-          </div>
-          <div class="button-row button-row-compact">
-            <button id="mapper-save-route" class="btn btn-soft" disabled>Save Route A (Library)</button>
-            <button id="mapper-publish-route" class="btn btn-soft" disabled>Publish Route A (Global)</button>
-          </div>
-          <div class="status-line mapper-inline-note">
-            Creator only. Save stores versions in your library. Publish sets the active map for all players.
-          </div>
-          <div class="button-row button-row-compact">
-            <button id="mapper-download-json" class="btn btn-soft">Download JSON</button>
-            <button id="mapper-import-json" class="btn btn-soft">Import JSON</button>
-          </div>
-          <div class="mapper-library">
-            <div class="mapper-grid mapper-grid-two">
-              <div>
-                <label for="mapper-library-route-filter">Saved maps: route filter</label>
-                <select id="mapper-library-route-filter">
-                  <option value="A" selected>Route A</option>
-                  <option value="B">Route B</option>
-                  <option value="ALL">All</option>
+            <div class="mapper-controls-column">
+              <div class="mapper-grid">
+                <label for="mapper-lane-width">Scale reference (meters)</label>
+                <input id="mapper-lane-width" type="number" min="0.1" step="0.1" value="7" />
+              </div>
+              <div class="button-row button-row-compact">
+                <button id="mapper-scale-mode" class="btn btn-soft">1) Set Scale</button>
+                <button id="mapper-path-mode" class="btn btn-soft">2) Trace Path</button>
+              </div>
+              <div class="button-row button-row-compact">
+                <button id="mapper-new-segment" class="btn btn-soft">Path: New Segment</button>
+                <span class="mapper-inline-note">Use when you need to branch without connecting with a line. New points auto-snap to existing nodes.</span>
+              </div>
+              <div class="mapper-grid">
+                <label for="mapper-checkpoint-type">Checkpoint type</label>
+                <select id="mapper-checkpoint-type">
+                  <option value="speed_zone">Speed Zone (max speed)</option>
+                  <option value="traffic_light">Traffic Light</option>
+                  <option value="stop_line">Stop Line (per lane)</option>
+                  <option value="roundabout">Roundabout</option>
+                  <option value="parking_parallel">Parking: Parallel</option>
+                  <option value="parking_diagonal">Parking: Diagonal</option>
+                  <option value="speed_bump">Speed Bump (per lane)</option>
+                  <option value="tree">Tree / Decor</option>
                 </select>
               </div>
-              <div>
-                <label for="mapper-library-search">Search</label>
-                <input id="mapper-library-search" type="text" maxlength="80" placeholder="name or map id" />
+              <p id="mapper-checkpoint-help" class="mapper-help">
+                Select a checkpoint type, click "Place Checkpoint", then click its position on the map.
+              </p>
+              <div id="mapper-traffic-fields" class="mapper-grid hidden">
+                <div>
+                  <label for="mapper-traffic-facing">Traffic light orientation</label>
+                  <select id="mapper-traffic-facing">
+                    <option value="with_path">Follow path direction</option>
+                    <option value="reverse">Reverse path direction</option>
+                  </select>
+                </div>
               </div>
+              <div id="mapper-lane-fields" class="mapper-grid mapper-grid-two hidden">
+                <div>
+                  <label for="mapper-lane-side">Lane side</label>
+                  <select id="mapper-lane-side">
+                    <option value="left">Left</option>
+                    <option value="right" selected>Right</option>
+                  </select>
+                </div>
+                <div>
+                  <label for="mapper-lane-count">Lanes</label>
+                  <select id="mapper-lane-count">
+                    <option value="1">1</option>
+                    <option value="2" selected>2</option>
+                    <option value="3">3</option>
+                    <option value="4">4</option>
+                  </select>
+                </div>
+              </div>
+              <div id="mapper-parking-fields" class="mapper-grid mapper-grid-two hidden">
+                <div>
+                  <label for="mapper-parking-slots">Parking slots</label>
+                  <input id="mapper-parking-slots" type="number" min="1" step="1" value="3" />
+                </div>
+                <div>
+                  <label for="mapper-parking-angle">Diagonal angle (deg)</label>
+                  <input id="mapper-parking-angle" type="number" min="10" max="80" step="1" value="45" />
+                </div>
+              </div>
+              <div class="button-row button-row-compact">
+                <button id="mapper-place-checkpoint" class="btn btn-soft">Place Checkpoint</button>
+                <button id="mapper-undo" class="btn btn-soft">Undo</button>
+              </div>
+              <div class="button-row button-row-compact">
+                <button id="mapper-clear" class="btn btn-soft">Clear All</button>
+                <button id="mapper-apply-route" class="btn">Apply to Route A</button>
+              </div>
+              <div class="mapper-grid">
+                <label for="mapper-map-name">Map name</label>
+                <input
+                  id="mapper-map-name"
+                  type="text"
+                  maxlength="120"
+                  placeholder="e.g. Ruta A - Lima Norte v1"
+                />
+              </div>
+              <div class="button-row button-row-compact">
+                <button id="mapper-save-route" class="btn btn-soft" disabled>Save Route A (Library)</button>
+                <button id="mapper-publish-route" class="btn btn-soft" disabled>Publish Route A (Global)</button>
+              </div>
+              <div class="status-line mapper-inline-note">
+                Creator only. Save stores versions in your library. Publish sets the active map for all players.
+              </div>
+              <div class="button-row button-row-compact">
+                <button id="mapper-download-json" class="btn btn-soft">Download JSON</button>
+                <button id="mapper-import-json" class="btn btn-soft">Import JSON</button>
+              </div>
+              <div class="mapper-library">
+                <div class="mapper-grid mapper-grid-two">
+                  <div>
+                    <label for="mapper-library-route-filter">Saved maps: route filter</label>
+                    <select id="mapper-library-route-filter">
+                      <option value="A" selected>Route A</option>
+                      <option value="B">Route B</option>
+                      <option value="ALL">All</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label for="mapper-library-search">Search</label>
+                    <input id="mapper-library-search" type="text" maxlength="80" placeholder="name or map id" />
+                  </div>
+                </div>
+                <div class="button-row button-row-compact">
+                  <button id="mapper-library-refresh" class="btn btn-soft">Refresh Saved Maps</button>
+                  <button id="mapper-activate-map" class="btn btn-soft" disabled>Use Selected Globally</button>
+                </div>
+                <select id="mapper-saved-maps" size="6"></select>
+                <p id="mapper-library-status" class="status-line mapper-inline-note">Saved maps: loading...</p>
+              </div>
+              <input id="mapper-import-json-file" type="file" accept=".json,application/json" class="hidden" />
             </div>
-            <div class="button-row button-row-compact">
-              <button id="mapper-library-refresh" class="btn btn-soft">Refresh Saved Maps</button>
-              <button id="mapper-activate-map" class="btn btn-soft" disabled>Use Selected Globally</button>
-            </div>
-            <select id="mapper-saved-maps" size="6"></select>
-            <p id="mapper-library-status" class="status-line mapper-inline-note">Saved maps: loading...</p>
           </div>
-          <input id="mapper-import-json-file" type="file" accept=".json,application/json" class="hidden" />
-          <pre id="mapper-json"></pre>
         </details>
       </section>
 
