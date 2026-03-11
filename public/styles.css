@@ -380,13 +380,20 @@ pre {
 .mapper-workspace {
   display: grid;
   gap: 14px;
-  grid-template-columns: minmax(0, 1.45fr) minmax(320px, 1fr);
+  grid-template-columns: minmax(0, 1.35fr) minmax(360px, 0.95fr);
   align-items: start;
 }
 
 .mapper-preview-column,
 .mapper-controls-column {
   min-width: 0;
+}
+
+.mapper-controls-column {
+  border-radius: 10px;
+  border: 1px solid rgba(132, 188, 210, 0.24);
+  background: rgba(7, 24, 34, 0.45);
+  padding: 10px;
 }
 
 .mapper-panel summary {
@@ -469,7 +476,7 @@ pre {
   margin: 6px 0 2px;
 }
 
-@media (max-width: 1120px) {
+@media (max-width: 980px) {
   .mapper-workspace {
     grid-template-columns: 1fr;
   }
