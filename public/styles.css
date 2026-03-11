@@ -373,6 +373,10 @@ pre {
   padding: 10px;
 }
 
+.mapper-panel-standalone {
+  margin-top: 14px;
+}
+
 .mapper-panel summary {
   cursor: pointer;
   font-size: 13px;
@@ -429,6 +433,10 @@ pre {
   border: 1px solid rgba(146, 191, 212, 0.44);
   background: rgba(6, 18, 27, 0.74);
   margin-top: 8px;
+}
+
+.mapper-panel-standalone .mapper-canvas {
+  max-width: 760px;
 }
 
 .mapper-library {
