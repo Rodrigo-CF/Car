@@ -7989,20 +7989,21 @@ function trafficLightControlledApproachHeading(trafficLight) {
 }
 
 function resolvedControlledApproachHeading(stopLine, trafficLight) {
-  const base = trafficLightControlledApproachHeading(trafficLight);
-  const expected = stopLineExpectedApproachHeading(stopLine);
-  const baseDelta = normalizeHeadingDeltaRad(expected, base);
-  const flipped = base + Math.PI;
-  const flippedDelta = normalizeHeadingDeltaRad(expected, flipped);
-  // If control direction is clearly opposite to stop-line lane direction, auto-correct.
-  return flippedDelta + toRadians(6) < baseDelta ? flipped : base;
+  // Keep semaforo-facing authoritative for control direction.
+  // Lane-side hints can be wrong in diagonals/intersections and invert penalties.
+  return trafficLightControlledApproachHeading(trafficLight);
 }
 
-function stopLineTrafficLightMatchScore(stopLine, trafficLight, expectedHeading = stopLineExpectedApproachHeading(stopLine)) {
+function stopLineTrafficLightMatchScore(stopLine, trafficLight) {
   const dist = Math.hypot(stopLine.x - trafficLight.x, stopLine.y - trafficLight.y);
-  const controlledApproach = resolvedControlledApproachHeading(stopLine, trafficLight);
-  const delta = normalizeHeadingDeltaRad(expectedHeading, controlledApproach);
-  const headingPenaltyM = delta * 10;
+  const controlledApproach = trafficLightControlledApproachHeading(trafficLight);
+  const stopHeading = checkpointHeadingAt(stopLine);
+  // Stop-line can be crossed in either heading direction depending on lane side;
+  // use the closest longitudinal direction to avoid diagonal lane-side inversion.
+  const deltaForward = normalizeHeadingDeltaRad(stopHeading, controlledApproach);
+  const deltaReverse = normalizeHeadingDeltaRad(stopHeading + Math.PI, controlledApproach);
+  const delta = Math.min(deltaForward, deltaReverse);
+  const headingPenaltyM = delta * 8;
   let score = dist * dist + headingPenaltyM * headingPenaltyM;
 
   // Prefer same snapped segment when available, so duplicated ids still pair correctly.
@@ -8028,7 +8029,6 @@ function trafficLightForStopLine(stopLine) {
     return null;
   }
 
-  const expectedHeading = stopLineExpectedApproachHeading(stopLine);
   const linkedId = stopLine?.meta?.trafficLightId;
   if (linkedId) {
     const linkedMatches = trafficLights.filter((tl) => tl.id === linkedId);
@@ -8038,7 +8038,7 @@ function trafficLightForStopLine(stopLine) {
     if (linkedMatches.length > 1) {
       let linkedBest = null;
       for (const trafficLight of linkedMatches) {
-        const match = stopLineTrafficLightMatchScore(stopLine, trafficLight, expectedHeading);
+        const match = stopLineTrafficLightMatchScore(stopLine, trafficLight);
         if (!linkedBest || match.score < linkedBest.score) {
           linkedBest = { trafficLight, score: match.score };
         }
@@ -8051,7 +8051,7 @@ function trafficLightForStopLine(stopLine) {
 
   let best = null;
   for (const trafficLight of trafficLights) {
-    const match = stopLineTrafficLightMatchScore(stopLine, trafficLight, expectedHeading);
+    const match = stopLineTrafficLightMatchScore(stopLine, trafficLight);
     if (!best || match.score < best.score) {
       best = { trafficLight, score: match.score };
     }
