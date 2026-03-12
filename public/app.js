@@ -574,24 +574,25 @@ function mapperBuildRouteAFromCanvas() {
   }
   const headingDeg = normalizeHeading((Math.atan2(next.y - start.y, next.x - start.x) * 180) / Math.PI);
 
-  const inferParkingPlacement = (worldPoint, preferredHeadingDeg = null) => {
+  const inferParkingPlacement = (worldPoint, preferredHeadingDeg = null, preferredSegmentIndex = null) => {
     let best = null;
     let bestScore = Number.POSITIVE_INFINITY;
     const preferredHeading = Number.isFinite(preferredHeadingDeg) ? toRadians(preferredHeadingDeg) : null;
+    const preferredSegIdx = Number.isFinite(preferredSegmentIndex) ? Math.round(preferredSegmentIndex) : null;
 
-    for (let i = 0; i < path.length - 1; i += 1) {
+    const evaluateSegment = (i) => {
       const a = path[i];
       const b = path[i + 1];
       // `move` marks the start of a sub-path at point `b`, so only skip when `b.move` is true.
       if (!a || !b || b.move) {
-        continue;
+        return null;
       }
 
       const abx = b.x - a.x;
       const aby = b.y - a.y;
       const abLenSq = abx * abx + aby * aby;
       if (abLenSq < 1e-6) {
-        continue;
+        return null;
       }
 
       const apx = worldPoint.x - a.x;
@@ -607,9 +608,25 @@ function mapperBuildRouteAFromCanvas() {
         const headingPenaltyM = delta * 6;
         score += headingPenaltyM * headingPenaltyM;
       }
-      if (score < bestScore) {
-        bestScore = score;
-        best = { heading, qx, qy };
+      return { i, heading, qx, qy, distSq, score };
+    };
+
+    for (let i = 0; i < path.length - 1; i += 1) {
+      const candidate = evaluateSegment(i);
+      if (!candidate) {
+        continue;
+      }
+      if (candidate.score < bestScore) {
+        bestScore = candidate.score;
+        best = candidate;
+      }
+    }
+
+    if (preferredSegIdx != null && preferredSegIdx >= 0 && preferredSegIdx < path.length - 1) {
+      const preferredCandidate = evaluateSegment(preferredSegIdx);
+      // At intersections, keep the user-selected path segment when still reasonably close.
+      if (preferredCandidate && preferredCandidate.distSq <= 64) {
+        best = preferredCandidate;
       }
     }
 
@@ -628,6 +645,7 @@ function mapperBuildRouteAFromCanvas() {
       sideSign: Math.sign(lateral) || 0,
       snappedX: best.qx,
       snappedY: best.qy,
+      segmentIndex: best.i,
     };
   };
 
@@ -651,7 +669,9 @@ function mapperBuildRouteAFromCanvas() {
       }
     }
     if (cp.type === "traffic_light") {
-      const placement = inferParkingPlacement(world, Number(meta.headingDeg));
+      const preferredSeg = Number.isFinite(meta.snapSegmentIndex) ? Number(meta.snapSegmentIndex) : null;
+      const preferredHeading = preferredSeg != null ? Number(meta.headingDeg) : null;
+      const placement = inferParkingPlacement(world, preferredHeading, preferredSeg);
       cpX = placement.snappedX;
       cpY = placement.snappedY;
       if (Number.isFinite(placement.headingRad)) {
@@ -659,6 +679,9 @@ function mapperBuildRouteAFromCanvas() {
       }
       meta.sideSign = placement.sideSign || Math.sign(Number(meta.sideSign) || 0) || 1;
       meta.facing = meta.facing === "reverse" ? "reverse" : "with_path";
+      if (Number.isFinite(placement.segmentIndex)) {
+        meta.snapSegmentIndex = placement.segmentIndex;
+      }
     }
     if (cp.type === "speed_bump" || cp.type === "stop_line" || cp.type === "stop_line_free") {
       const placement = inferParkingPlacement(world, Number(meta.headingDeg));
@@ -888,7 +911,7 @@ function mapperFrameAtImagePoint(imagePoint) {
     const distSq = (px - qx) ** 2 + (py - qy) ** 2;
     if (distSq < bestDistSq) {
       bestDistSq = distSq;
-      best = { abx, aby, qx, qy, px, py };
+      best = { abx, aby, qx, qy, px, py, segmentIndex: i };
     }
   }
 
@@ -909,6 +932,9 @@ function mapperFrameAtImagePoint(imagePoint) {
     headingRad,
     lateral,
     sideSign: Math.sign(lateral) || 0,
+    segmentIndex: Number.isFinite(best.segmentIndex) ? best.segmentIndex : null,
+    snappedX: best.qx,
+    snappedY: -best.qy,
   };
 }
 
@@ -1420,6 +1446,9 @@ function handleMapperCanvasClick(event) {
       if (frame?.sideSign) {
         meta.sideSign = frame.sideSign;
       }
+      if (Number.isFinite(frame?.segmentIndex)) {
+        meta.snapSegmentIndex = Math.max(0, Math.round(frame.segmentIndex));
+      }
     }
     const newId = mapperCheckpointId(type, state.mapper.checkpointsPx);
     state.mapper.checkpointsPx.push({
@@ -1501,6 +1530,23 @@ function handleMapperCanvasPointerMove(event) {
 function handleMapperCanvasPointerUp() {
   if (!state.mapper.dragging) {
     return;
+  }
+  const drag = state.mapper.dragging;
+  if (drag.kind === "checkpoint") {
+    const cp = state.mapper.checkpointsPx[drag.index];
+    if (cp?.type === "traffic_light") {
+      const frame = mapperFrameAtImagePoint(cp);
+      if (frame && Number.isFinite(frame.headingDeg)) {
+        cp.meta = cp.meta && typeof cp.meta === "object" ? cp.meta : {};
+        cp.meta.headingDeg = mapperRound(frame.headingDeg, 1);
+        if (frame.sideSign) {
+          cp.meta.sideSign = frame.sideSign;
+        }
+        if (Number.isFinite(frame.segmentIndex)) {
+          cp.meta.snapSegmentIndex = Math.max(0, Math.round(frame.segmentIndex));
+        }
+      }
+    }
   }
   state.mapper.dragging = null;
   state.mapper.routeOverrideA = null;
