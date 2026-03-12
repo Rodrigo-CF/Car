@@ -4253,6 +4253,39 @@ function rebuildThreeRouteScene() {
     routeGroup.add(centerLine);
   }
 
+  // Fill segment joints with rounded caps so curves/roundabouts look smooth
+  // instead of showing polygonal wedge gaps between straight road pieces.
+  for (let i = 0; i < path.length; i += 1) {
+    const point = path[i];
+    if (!point) {
+      continue;
+    }
+
+    const next = path[i + 1] || null;
+    const hasPrevConnection = i > 0 && !point.move;
+    const hasNextConnection = Boolean(next && !next.move);
+    if (!hasPrevConnection && !hasNextConnection) {
+      continue;
+    }
+
+    const roadWidth = routeRoadWidthAt(point.x, point.y);
+    const shoulderWidth = roadWidth + 4.2;
+
+    const shoulderCap = new THREE.Mesh(
+      new THREE.CylinderGeometry(shoulderWidth * 0.5, shoulderWidth * 0.5, 0.03, 16),
+      shoulderMat,
+    );
+    shoulderCap.position.set(point.x, 0.005, -point.y);
+    routeGroup.add(shoulderCap);
+
+    const roadCap = new THREE.Mesh(
+      new THREE.CylinderGeometry(roadWidth * 0.5, roadWidth * 0.5, 0.04, 16),
+      roadMat,
+    );
+    roadCap.position.set(point.x, 0.02, -point.y);
+    routeGroup.add(roadCap);
+  }
+
   for (const checkpoint of state.sim.route.checkpoints) {
     if (checkpoint.type === "parking_parallel" || checkpoint.type === "parking_diagonal") {
       const baseShape = parkingShape(checkpoint);
