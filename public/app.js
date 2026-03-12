@@ -192,6 +192,8 @@ const MAPPER_STORAGE_KEY = "routeA_override_v1";
 const MAPPER_SNAP_CANVAS_PX = 10;
 const PARALLEL_PARK_BOX_L_M = 6.2;
 const PARALLEL_PARK_BOX_W_M = 2.9;
+const ROAD_RENDER_SMOOTH_ITERATIONS = 1;
+const ROAD_RENDER_JOINT_SEGMENTS = 24;
 const CAMERA_MODE_CYCLE = ["first", "third", "right", "front", "left", "top"];
 const EXTERNAL_CAMERA_MODES = new Set(["third", "right", "front", "left", "top"]);
 
@@ -2805,6 +2807,76 @@ function densifyPath(points, step = 2.2) {
   return dense;
 }
 
+function splitContinuousPathSegments(points) {
+  if (!Array.isArray(points) || !points.length) {
+    return [];
+  }
+  const segments = [];
+  let current = [];
+  for (let i = 0; i < points.length; i += 1) {
+    const point = points[i];
+    if (!point) {
+      continue;
+    }
+    if (i === 0 || point.move) {
+      if (current.length >= 2) {
+        segments.push(current);
+      }
+      current = [{ x: Number(point.x), y: Number(point.y) }];
+    } else {
+      current.push({ x: Number(point.x), y: Number(point.y) });
+    }
+  }
+  if (current.length >= 2) {
+    segments.push(current);
+  }
+  return segments;
+}
+
+function chaikinSmoothSegment(segment, iterations = ROAD_RENDER_SMOOTH_ITERATIONS) {
+  let result = segment.map((point) => ({ x: point.x, y: point.y }));
+  for (let iter = 0; iter < iterations; iter += 1) {
+    if (result.length < 3) {
+      break;
+    }
+    const next = [result[0]];
+    for (let i = 0; i < result.length - 1; i += 1) {
+      const a = result[i];
+      const b = result[i + 1];
+      next.push({
+        x: a.x * 0.75 + b.x * 0.25,
+        y: a.y * 0.75 + b.y * 0.25,
+      });
+      next.push({
+        x: a.x * 0.25 + b.x * 0.75,
+        y: a.y * 0.25 + b.y * 0.75,
+      });
+    }
+    next.push(result[result.length - 1]);
+    result = next;
+  }
+  return result;
+}
+
+function smoothRenderPath(points) {
+  const segments = splitContinuousPathSegments(points);
+  if (!segments.length) {
+    return Array.isArray(points) ? points : [];
+  }
+  const output = [];
+  for (let s = 0; s < segments.length; s += 1) {
+    const smoothed = chaikinSmoothSegment(segments[s], ROAD_RENDER_SMOOTH_ITERATIONS);
+    for (let i = 0; i < smoothed.length; i += 1) {
+      output.push({
+        x: smoothed[i].x,
+        y: smoothed[i].y,
+        move: i === 0,
+      });
+    }
+  }
+  return output;
+}
+
 function computeRouteBounds(points) {
   if (!points.length) {
     return { minX: 0, maxX: 1, minY: 0, maxY: 1 };
@@ -4213,7 +4285,8 @@ function rebuildThreeRouteScene() {
   ground.position.set((bounds.minX + bounds.maxX) / 2, -0.03, -((bounds.minY + bounds.maxY) / 2));
   routeGroup.add(ground);
 
-  const path = state.sim.routeDensePath;
+  const rawPath = state.sim.routeDensePath?.length ? state.sim.routeDensePath : state.sim.routePath;
+  const path = smoothRenderPath(rawPath);
   for (let i = 0; i < path.length - 1; i += 1) {
     const a = path[i];
     const b = path[Math.min(i + 1, path.length - 1)];
@@ -4272,14 +4345,14 @@ function rebuildThreeRouteScene() {
     const shoulderWidth = roadWidth + 4.2;
 
     const shoulderCap = new THREE.Mesh(
-      new THREE.CylinderGeometry(shoulderWidth * 0.5, shoulderWidth * 0.5, 0.03, 16),
+      new THREE.CylinderGeometry(shoulderWidth * 0.5, shoulderWidth * 0.5, 0.03, ROAD_RENDER_JOINT_SEGMENTS),
       shoulderMat,
     );
     shoulderCap.position.set(point.x, 0.005, -point.y);
     routeGroup.add(shoulderCap);
 
     const roadCap = new THREE.Mesh(
-      new THREE.CylinderGeometry(roadWidth * 0.5, roadWidth * 0.5, 0.04, 16),
+      new THREE.CylinderGeometry(roadWidth * 0.5, roadWidth * 0.5, 0.04, ROAD_RENDER_JOINT_SEGMENTS),
       roadMat,
     );
     roadCap.position.set(point.x, 0.02, -point.y);
