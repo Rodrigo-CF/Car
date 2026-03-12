@@ -4516,7 +4516,9 @@ function rebuildThreeRouteScene() {
 
     const tlGroup = new THREE.Group();
     tlGroup.position.set(poleX, 0, -poleY);
-    tlGroup.rotation.y = Math.PI / 2 - placement.signalHeading;
+    // Local traffic-light mesh faces +Z; convert map heading (x,y) to world yaw (x,z).
+    // Using +heading keeps vertical/diagonal orientation consistent with "with_path/reverse".
+    tlGroup.rotation.y = Math.PI / 2 + placement.signalHeading;
 
     const pole = new THREE.Mesh(
       new THREE.CylinderGeometry(0.07, 0.07, 3.4, 14),
