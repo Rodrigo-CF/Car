@@ -431,8 +431,23 @@ function mapperCheckpointPrefix(type) {
 
 function mapperCheckpointId(type, checkpoints = state.mapper.checkpointsPx) {
   const prefix = mapperCheckpointPrefix(type);
-  const existing = checkpoints.filter((cp) => cp.type === type).length;
-  const sequence = existing + 1;
+  const existingIds = new Set(
+    checkpoints
+      .map((cp) => String(cp?.id || ""))
+      .filter((id) => id.length > 0),
+  );
+  const typedIds = checkpoints
+    .filter((cp) => cp.type === type)
+    .map((cp) => String(cp?.id || ""));
+  let maxSequence = 0;
+  for (const id of typedIds) {
+    const match = id.match(new RegExp(`^${prefix}_(\\d+)$`));
+    if (match) {
+      maxSequence = Math.max(maxSequence, Number(match[1]) || 0);
+    }
+  }
+  const existing = typedIds.length;
+  let sequence = Math.max(existing + 1, maxSequence + 1);
 
   if (!mapperAllowsMultiple(type) || type === "parking_parallel" || type === "parking_diagonal") {
     if (type === "parking_parallel") {
@@ -444,7 +459,12 @@ function mapperCheckpointId(type, checkpoints = state.mapper.checkpointsPx) {
     return `${prefix}_01`;
   }
 
-  return `${prefix}_${String(sequence).padStart(2, "0")}`;
+  let candidate = `${prefix}_${String(sequence).padStart(2, "0")}`;
+  while (existingIds.has(candidate)) {
+    sequence += 1;
+    candidate = `${prefix}_${String(sequence).padStart(2, "0")}`;
+  }
+  return candidate;
 }
 
 function sanitizeMapperRoute(route) {
@@ -7970,11 +7990,6 @@ function trafficLightControlledApproachHeading(trafficLight) {
 
 function resolvedControlledApproachHeading(stopLine, trafficLight) {
   const base = trafficLightControlledApproachHeading(trafficLight);
-  // For explicitly linked stop-line/semaforo pairs, trust the semaforo facing as source of truth.
-  // This avoids accidental 180deg inversions on diagonals from lane-heuristic auto-flips.
-  if (stopLine?.meta?.trafficLightId && stopLine.meta.trafficLightId === trafficLight?.id) {
-    return base;
-  }
   const expected = stopLineExpectedApproachHeading(stopLine);
   const baseDelta = normalizeHeadingDeltaRad(expected, base);
   const flipped = base + Math.PI;
@@ -7983,30 +7998,62 @@ function resolvedControlledApproachHeading(stopLine, trafficLight) {
   return flippedDelta + toRadians(6) < baseDelta ? flipped : base;
 }
 
+function stopLineTrafficLightMatchScore(stopLine, trafficLight, expectedHeading = stopLineExpectedApproachHeading(stopLine)) {
+  const dist = Math.hypot(stopLine.x - trafficLight.x, stopLine.y - trafficLight.y);
+  const controlledApproach = resolvedControlledApproachHeading(stopLine, trafficLight);
+  const delta = normalizeHeadingDeltaRad(expectedHeading, controlledApproach);
+  const headingPenaltyM = delta * 10;
+  let score = dist * dist + headingPenaltyM * headingPenaltyM;
+
+  // Prefer same snapped segment when available, so duplicated ids still pair correctly.
+  const slSeg = Number(stopLine?.meta?.snapSegmentIndex);
+  const tlSeg = Number(trafficLight?.meta?.snapSegmentIndex);
+  if (Number.isFinite(slSeg) && Number.isFinite(tlSeg)) {
+    const segDiff = Math.abs(Math.round(slSeg) - Math.round(tlSeg));
+    if (segDiff === 0) {
+      score *= 0.35;
+    } else if (segDiff === 1) {
+      score *= 0.75;
+    } else {
+      score += segDiff * segDiff * 4;
+    }
+  }
+
+  return { score, dist, delta, controlledApproach };
+}
+
 function trafficLightForStopLine(stopLine) {
   const trafficLights = routeCheckpoints("traffic_light");
   if (!trafficLights.length) {
     return null;
   }
 
+  const expectedHeading = stopLineExpectedApproachHeading(stopLine);
   const linkedId = stopLine?.meta?.trafficLightId;
   if (linkedId) {
-    const linked = trafficLights.find((tl) => tl.id === linkedId);
-    if (linked) {
-      return linked;
+    const linkedMatches = trafficLights.filter((tl) => tl.id === linkedId);
+    if (linkedMatches.length === 1) {
+      return linkedMatches[0];
+    }
+    if (linkedMatches.length > 1) {
+      let linkedBest = null;
+      for (const trafficLight of linkedMatches) {
+        const match = stopLineTrafficLightMatchScore(stopLine, trafficLight, expectedHeading);
+        if (!linkedBest || match.score < linkedBest.score) {
+          linkedBest = { trafficLight, score: match.score };
+        }
+      }
+      if (linkedBest?.trafficLight) {
+        return linkedBest.trafficLight;
+      }
     }
   }
 
-  const expectedHeading = stopLineExpectedApproachHeading(stopLine);
   let best = null;
   for (const trafficLight of trafficLights) {
-    const dist = Math.hypot(stopLine.x - trafficLight.x, stopLine.y - trafficLight.y);
-    const controlledApproach = resolvedControlledApproachHeading(stopLine, trafficLight);
-    const delta = normalizeHeadingDeltaRad(expectedHeading, controlledApproach);
-    const headingPenaltyM = delta * 10;
-    const score = dist * dist + headingPenaltyM * headingPenaltyM;
-    if (!best || score < best.score) {
-      best = { trafficLight, score };
+    const match = stopLineTrafficLightMatchScore(stopLine, trafficLight, expectedHeading);
+    if (!best || match.score < best.score) {
+      best = { trafficLight, score: match.score };
     }
   }
   return best?.trafficLight || null;
@@ -8047,7 +8094,8 @@ function detectRedLightStopLineViolation(prevFrontAxle, currFrontAxle, carHeadin
     const lineBand = segment.lineWidth * 0.5 + 0.07;
     const laneBand = segment.laneWidth * 0.5 + 0.12;
     const insideNow = Math.abs(currLong) <= lineBand && Math.abs(currLat) <= laneBand;
-    const key = stopLine.id || `sl_${segment.center.x.toFixed(2)}_${segment.center.y.toFixed(2)}`;
+    // Include geometric location so duplicate ids do not share contact state.
+    const key = `${stopLine.id || "sl"}_${segment.center.x.toFixed(2)}_${segment.center.y.toFixed(2)}`;
     const wasInside = state.sim.stopLineContacts[key] === true;
     state.sim.stopLineContacts[key] = insideNow;
 
