@@ -7970,6 +7970,11 @@ function trafficLightControlledApproachHeading(trafficLight) {
 
 function resolvedControlledApproachHeading(stopLine, trafficLight) {
   const base = trafficLightControlledApproachHeading(trafficLight);
+  // For explicitly linked stop-line/semaforo pairs, trust the semaforo facing as source of truth.
+  // This avoids accidental 180deg inversions on diagonals from lane-heuristic auto-flips.
+  if (stopLine?.meta?.trafficLightId && stopLine.meta.trafficLightId === trafficLight?.id) {
+    return base;
+  }
   const expected = stopLineExpectedApproachHeading(stopLine);
   const baseDelta = normalizeHeadingDeltaRad(expected, base);
   const flipped = base + Math.PI;
@@ -7984,19 +7989,15 @@ function trafficLightForStopLine(stopLine) {
     return null;
   }
 
-  const expectedHeading = stopLineExpectedApproachHeading(stopLine);
   const linkedId = stopLine?.meta?.trafficLightId;
   if (linkedId) {
     const linked = trafficLights.find((tl) => tl.id === linkedId);
     if (linked) {
-      const controlledApproach = resolvedControlledApproachHeading(stopLine, linked);
-      const linkedDelta = normalizeHeadingDeltaRad(expectedHeading, controlledApproach);
-      if (linkedDelta <= toRadians(95)) {
-        return linked;
-      }
+      return linked;
     }
   }
 
+  const expectedHeading = stopLineExpectedApproachHeading(stopLine);
   let best = null;
   for (const trafficLight of trafficLights) {
     const dist = Math.hypot(stopLine.x - trafficLight.x, stopLine.y - trafficLight.y);
