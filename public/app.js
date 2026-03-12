@@ -8066,9 +8066,25 @@ function detectRedLightStopLineViolation(prevFrontAxle, currFrontAxle, carHeadin
     if (!trafficLight) {
       continue;
     }
+    const placement = trafficLightPlacement(trafficLight);
+    const faceX = Math.cos(placement.signalHeading);
+    const faceY = Math.sin(placement.signalHeading);
+    const prevFacingProj =
+      (prevFrontAxle.x - placement.poleBase.x) * faceX + (prevFrontAxle.y - placement.poleBase.y) * faceY;
+    const currFacingProj =
+      (currFrontAxle.x - placement.poleBase.x) * faceX + (currFrontAxle.y - placement.poleBase.y) * faceY;
+    // Only the traffic-light front side controls this stop-line crossing.
+    // This is robust on diagonals where pure heading deltas can flip unexpectedly.
+    if (Math.max(prevFacingProj, currFacingProj) <= 0.12) {
+      continue;
+    }
+    // Ignore movements that go away from the semaforo front side.
+    if (currFacingProj > prevFacingProj + 0.02) {
+      continue;
+    }
     const controlledApproachHeading = resolvedControlledApproachHeading(stopLine, trafficLight);
     const headingDelta = normalizeHeadingDeltaRad(movementHeading, controlledApproachHeading);
-    if (headingDelta > toRadians(85)) {
+    if (headingDelta > toRadians(110)) {
       continue;
     }
 
