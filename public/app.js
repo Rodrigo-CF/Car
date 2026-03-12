@@ -7968,6 +7968,16 @@ function trafficLightControlledApproachHeading(trafficLight) {
   return placement.signalHeading + Math.PI;
 }
 
+function resolvedControlledApproachHeading(stopLine, trafficLight) {
+  const base = trafficLightControlledApproachHeading(trafficLight);
+  const expected = stopLineExpectedApproachHeading(stopLine);
+  const baseDelta = normalizeHeadingDeltaRad(expected, base);
+  const flipped = base + Math.PI;
+  const flippedDelta = normalizeHeadingDeltaRad(expected, flipped);
+  // If control direction is clearly opposite to stop-line lane direction, auto-correct.
+  return flippedDelta + toRadians(6) < baseDelta ? flipped : base;
+}
+
 function trafficLightForStopLine(stopLine) {
   const trafficLights = routeCheckpoints("traffic_light");
   if (!trafficLights.length) {
@@ -7979,7 +7989,7 @@ function trafficLightForStopLine(stopLine) {
   if (linkedId) {
     const linked = trafficLights.find((tl) => tl.id === linkedId);
     if (linked) {
-      const controlledApproach = trafficLightControlledApproachHeading(linked);
+      const controlledApproach = resolvedControlledApproachHeading(stopLine, linked);
       const linkedDelta = normalizeHeadingDeltaRad(expectedHeading, controlledApproach);
       if (linkedDelta <= toRadians(95)) {
         return linked;
@@ -7990,7 +8000,7 @@ function trafficLightForStopLine(stopLine) {
   let best = null;
   for (const trafficLight of trafficLights) {
     const dist = Math.hypot(stopLine.x - trafficLight.x, stopLine.y - trafficLight.y);
-    const controlledApproach = trafficLightControlledApproachHeading(trafficLight);
+    const controlledApproach = resolvedControlledApproachHeading(stopLine, trafficLight);
     const delta = normalizeHeadingDeltaRad(expectedHeading, controlledApproach);
     const headingPenaltyM = delta * 10;
     const score = dist * dist + headingPenaltyM * headingPenaltyM;
@@ -8055,10 +8065,7 @@ function detectRedLightStopLineViolation(prevFrontAxle, currFrontAxle, carHeadin
     if (!trafficLight) {
       continue;
     }
-    const placement = trafficLightPlacement(trafficLight);
-    // `signalHeading` is where the traffic-light head points.
-    // Cars controlled by that face approach from the opposite direction.
-    const controlledApproachHeading = placement.signalHeading + Math.PI;
+    const controlledApproachHeading = resolvedControlledApproachHeading(stopLine, trafficLight);
     const headingDelta = normalizeHeadingDeltaRad(movementHeading, controlledApproachHeading);
     if (headingDelta > toRadians(85)) {
       continue;
