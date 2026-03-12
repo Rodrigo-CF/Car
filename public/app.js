@@ -719,12 +719,34 @@ function mapperBuildRouteAFromCanvas() {
   }
   if (trafficLights.length > 0 && stopLines.length > 0) {
     const maxAssociationDistanceM = 18;
+    const stopLineExpectedApproachHeading = (stopLine) => {
+      const laneCount = Math.max(1, Math.round(Number(stopLine.meta?.laneCount) || 2));
+      const lane = Math.max(1, Math.min(laneCount, Math.round(Number(stopLine.meta?.lane) || 1)));
+      const heading = Number.isFinite(Number(stopLine.meta?.headingDeg))
+        ? toRadians(Number(stopLine.meta.headingDeg))
+        : 0;
+      const withPath = lane - 0.5 >= laneCount / 2;
+      return withPath ? heading : heading + Math.PI;
+    };
+    const trafficLightControlledApproachHeading = (trafficLight) => {
+      const heading = Number.isFinite(Number(trafficLight.meta?.headingDeg))
+        ? toRadians(Number(trafficLight.meta.headingDeg))
+        : 0;
+      const facing = trafficLight.meta?.facing === "reverse" ? "reverse" : "with_path";
+      const signalHeading = facing === "reverse" ? heading + Math.PI : heading;
+      return signalHeading + Math.PI;
+    };
     for (const stopLine of stopLines) {
       let best = null;
+      const expectedHeading = stopLineExpectedApproachHeading(stopLine);
       for (const trafficLight of trafficLights) {
         const dist = Math.hypot(stopLine.x - trafficLight.x, stopLine.y - trafficLight.y);
-        if (!best || dist < best.dist) {
-          best = { trafficLight, dist };
+        const controlledApproach = trafficLightControlledApproachHeading(trafficLight);
+        const delta = normalizeHeadingDeltaRad(expectedHeading, controlledApproach);
+        const headingPenaltyM = delta * 10;
+        const score = dist * dist + headingPenaltyM * headingPenaltyM;
+        if (!best || score < best.score) {
+          best = { trafficLight, dist, delta, score };
         }
       }
       if (!best || best.dist > maxAssociationDistanceM) {
@@ -7930,30 +7952,53 @@ function distanceTo(checkpoint) {
   return Math.sqrt(dx * dx + dy * dy);
 }
 
+function stopLineExpectedApproachHeading(stopLine) {
+  if (!stopLine) {
+    return 0;
+  }
+  const laneCount = Math.max(1, Math.round(Number(stopLine.meta?.laneCount) || 2));
+  const lane = Math.max(1, Math.min(laneCount, Math.round(Number(stopLine.meta?.lane) || 1)));
+  const heading = checkpointHeadingAt(stopLine);
+  const withPath = lane - 0.5 >= laneCount / 2;
+  return withPath ? heading : heading + Math.PI;
+}
+
+function trafficLightControlledApproachHeading(trafficLight) {
+  const placement = trafficLightPlacement(trafficLight);
+  return placement.signalHeading + Math.PI;
+}
+
 function trafficLightForStopLine(stopLine) {
   const trafficLights = routeCheckpoints("traffic_light");
   if (!trafficLights.length) {
     return null;
   }
 
+  const expectedHeading = stopLineExpectedApproachHeading(stopLine);
   const linkedId = stopLine?.meta?.trafficLightId;
   if (linkedId) {
     const linked = trafficLights.find((tl) => tl.id === linkedId);
     if (linked) {
-      return linked;
+      const controlledApproach = trafficLightControlledApproachHeading(linked);
+      const linkedDelta = normalizeHeadingDeltaRad(expectedHeading, controlledApproach);
+      if (linkedDelta <= toRadians(95)) {
+        return linked;
+      }
     }
   }
 
   let best = null;
-  let bestDist = Number.POSITIVE_INFINITY;
   for (const trafficLight of trafficLights) {
     const dist = Math.hypot(stopLine.x - trafficLight.x, stopLine.y - trafficLight.y);
-    if (dist < bestDist) {
-      bestDist = dist;
-      best = trafficLight;
+    const controlledApproach = trafficLightControlledApproachHeading(trafficLight);
+    const delta = normalizeHeadingDeltaRad(expectedHeading, controlledApproach);
+    const headingPenaltyM = delta * 10;
+    const score = dist * dist + headingPenaltyM * headingPenaltyM;
+    if (!best || score < best.score) {
+      best = { trafficLight, score };
     }
   }
-  return best;
+  return best?.trafficLight || null;
 }
 
 function detectRedLightStopLineViolation(prevFrontAxle, currFrontAxle, carHeadingRad) {
