@@ -103,6 +103,9 @@ const state = {
     selectedMapId: "",
     libraryRouteFilter: "A",
     librarySearch: "",
+    selectedPathIndex: -1,
+    selectedCheckpointIndex: -1,
+    dragging: null,
   },
   multiplayer: {
     configLoaded: false,
@@ -248,7 +251,9 @@ const dom = {
   mapperLaneCount: document.querySelector("#mapper-lane-count"),
   mapperParkingSlots: document.querySelector("#mapper-parking-slots"),
   mapperParkingAngle: document.querySelector("#mapper-parking-angle"),
+  mapperEditMode: document.querySelector("#mapper-edit-mode"),
   mapperPlaceCheckpoint: document.querySelector("#mapper-place-checkpoint"),
+  mapperDeleteSelected: document.querySelector("#mapper-delete-selected"),
   mapperUndo: document.querySelector("#mapper-undo"),
   mapperClear: document.querySelector("#mapper-clear"),
   mapperApplyRoute: document.querySelector("#mapper-apply-route"),
@@ -259,6 +264,7 @@ const dom = {
   mapperLibrarySearch: document.querySelector("#mapper-library-search"),
   mapperLibraryRefresh: document.querySelector("#mapper-library-refresh"),
   mapperSavedMaps: document.querySelector("#mapper-saved-maps"),
+  mapperOpenMap: document.querySelector("#mapper-open-map"),
   mapperActivateMap: document.querySelector("#mapper-activate-map"),
   mapperLibraryStatus: document.querySelector("#mapper-library-status"),
   mapperDownloadJson: document.querySelector("#mapper-download-json"),
@@ -329,6 +335,7 @@ function mapperCheckpointColor(type) {
     speed_zone: "#45b6ff",
     traffic_light: "#f34f5f",
     stop_line: "#f5f8ff",
+    stop_line_free: "#dce8ff",
     roundabout: "#ff9e3d",
     parking_parallel: "#ffd166",
     parking_diagonal: "#ba68ff",
@@ -339,7 +346,13 @@ function mapperCheckpointColor(type) {
 }
 
 function mapperAllowsMultiple(type) {
-  return type === "speed_bump" || type === "stop_line" || type === "tree" || type === "traffic_light";
+  return (
+    type === "speed_bump" ||
+    type === "stop_line" ||
+    type === "stop_line_free" ||
+    type === "tree" ||
+    type === "traffic_light"
+  );
 }
 
 function mapperLaneSelection() {
@@ -357,7 +370,7 @@ function mapperDefaultMeta(type) {
     const facing = dom.mapperTrafficFacing.value === "reverse" ? "reverse" : "with_path";
     return { mustStopOnRed: true, facing };
   }
-  if (type === "stop_line") {
+  if (type === "stop_line" || type === "stop_line_free") {
     const { lane, laneCount } = mapperLaneSelection();
     return { lane, laneCount, lineWidthM: 0.26 };
   }
@@ -392,6 +405,9 @@ function mapperCheckpointPrefix(type) {
   }
   if (type === "stop_line") {
     return "A_SL";
+  }
+  if (type === "stop_line_free") {
+    return "A_SLF";
   }
   if (type === "roundabout") {
     return "A_RB";
@@ -437,6 +453,8 @@ function sanitizeMapperRoute(route) {
     throw new Error("Route JSON must include path with at least 2 points.");
   }
 
+  const mapperMeta = route.mapperMeta && typeof route.mapperMeta === "object" ? route.mapperMeta : null;
+
   return {
     routeId: "A",
     unit: "meters",
@@ -455,6 +473,37 @@ function sanitizeMapperRoute(route) {
           meta: cp.meta && typeof cp.meta === "object" ? cp.meta : {},
         }))
       : [],
+    mapperMeta: mapperMeta
+      ? {
+          version: Number(mapperMeta.version) || 1,
+          metersPerPixel: Number(mapperMeta.metersPerPixel) || 0,
+          originPx: mapperMeta.originPx && typeof mapperMeta.originPx === "object"
+            ? { x: Number(mapperMeta.originPx.x) || 0, y: Number(mapperMeta.originPx.y) || 0 }
+            : null,
+          imageSize: mapperMeta.imageSize && typeof mapperMeta.imageSize === "object"
+            ? {
+                width: Number(mapperMeta.imageSize.width) || 0,
+                height: Number(mapperMeta.imageSize.height) || 0,
+              }
+            : null,
+          pathPointsPx: Array.isArray(mapperMeta.pathPointsPx)
+            ? mapperMeta.pathPointsPx.map((point, idx) => ({
+                x: Number(point.x) || 0,
+                y: Number(point.y) || 0,
+                move: idx === 0 ? true : Boolean(point.move),
+              }))
+            : [],
+          checkpointsPx: Array.isArray(mapperMeta.checkpointsPx)
+            ? mapperMeta.checkpointsPx.map((cp, idx) => ({
+                id: String(cp.id || `A_CP_${String(idx + 1).padStart(2, "0")}`),
+                type: String(cp.type || "speed_zone"),
+                x: Number(cp.x) || 0,
+                y: Number(cp.y) || 0,
+                meta: cp.meta && typeof cp.meta === "object" ? cp.meta : {},
+              }))
+            : [],
+        }
+      : null,
   };
 }
 
@@ -477,10 +526,10 @@ function loadPersistedMapperRouteOverride() {
       return;
     }
     const parsed = JSON.parse(raw);
-    state.mapper.routeOverrideA = sanitizeMapperRoute(parsed);
-    dom.mapperJson.textContent = formatJson(state.mapper.routeOverrideA);
+    const route = sanitizeMapperRoute(parsed);
+    loadRouteIntoMapperEditor(route);
     setMapperStatus(
-      `loaded saved Route A override (${state.mapper.routeOverrideA.path.length} points). Start session to use it.`,
+      `loaded saved Route A override (${route.path.length} points). Start session to use it.`,
     );
   } catch {
     localStorage.removeItem(MAPPER_STORAGE_KEY);
@@ -612,7 +661,7 @@ function mapperBuildRouteAFromCanvas() {
       meta.sideSign = placement.sideSign || Math.sign(Number(meta.sideSign) || 0) || 1;
       meta.facing = meta.facing === "reverse" ? "reverse" : "with_path";
     }
-    if (cp.type === "speed_bump" || cp.type === "stop_line") {
+    if (cp.type === "speed_bump" || cp.type === "stop_line" || cp.type === "stop_line_free") {
       const placement = inferParkingPlacement(world, Number(meta.headingDeg));
       cpX = placement.snappedX;
       cpY = placement.snappedY;
@@ -623,7 +672,7 @@ function mapperBuildRouteAFromCanvas() {
       const laneCount = Math.max(lane, Math.round(Number(meta.laneCount) || 2));
       meta.lane = lane;
       meta.laneCount = laneCount;
-      if (cp.type === "stop_line") {
+      if (cp.type === "stop_line" || cp.type === "stop_line_free") {
         meta.lineWidthM = Math.max(0.1, Math.min(0.8, Number(meta.lineWidthM) || 0.26));
       }
     }
@@ -674,6 +723,24 @@ function mapperBuildRouteAFromCanvas() {
     },
     path,
     checkpoints,
+    mapperMeta: {
+      version: 1,
+      metersPerPixel: mapperRound(state.mapper.metersPerPixel, 6),
+      originPx: { x: mapperRound(origin.x, 3), y: mapperRound(origin.y, 3) },
+      imageSize: state.mapper.image ? { width: state.mapper.image.width, height: state.mapper.image.height } : null,
+      pathPointsPx: state.mapper.pathPointsPx.map((p, index) => ({
+        x: mapperRound(p.x, 3),
+        y: mapperRound(p.y, 3),
+        move: index === 0 ? true : Boolean(p.move),
+      })),
+      checkpointsPx: state.mapper.checkpointsPx.map((cp) => ({
+        id: cp.id,
+        type: cp.type,
+        x: mapperRound(cp.x, 3),
+        y: mapperRound(cp.y, 3),
+        meta: cp.meta && typeof cp.meta === "object" ? { ...cp.meta } : {},
+      })),
+    },
   };
 }
 
@@ -800,6 +867,142 @@ function mapperFrameAtImagePoint(imagePoint) {
   };
 }
 
+function clearMapperSelection() {
+  state.mapper.selectedPathIndex = -1;
+  state.mapper.selectedCheckpointIndex = -1;
+}
+
+function mapperSelectedRef() {
+  if (state.mapper.selectedCheckpointIndex >= 0) {
+    return { kind: "checkpoint", index: state.mapper.selectedCheckpointIndex };
+  }
+  if (state.mapper.selectedPathIndex >= 0) {
+    return { kind: "path", index: state.mapper.selectedPathIndex };
+  }
+  return null;
+}
+
+function mapperHitTest(imagePoint) {
+  if (!imagePoint || !state.mapper.imageFit) {
+    return null;
+  }
+  const fit = state.mapper.imageFit;
+  const radius = MAPPER_SNAP_CANVAS_PX / Math.max(0.001, fit.scale);
+  let best = null;
+  let bestDist = Number.POSITIVE_INFINITY;
+
+  for (let i = 0; i < state.mapper.checkpointsPx.length; i += 1) {
+    const cp = state.mapper.checkpointsPx[i];
+    const dist = Math.hypot(imagePoint.x - cp.x, imagePoint.y - cp.y);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = { kind: "checkpoint", index: i };
+    }
+  }
+  for (let i = 0; i < state.mapper.pathPointsPx.length; i += 1) {
+    const point = state.mapper.pathPointsPx[i];
+    const dist = Math.hypot(imagePoint.x - point.x, imagePoint.y - point.y);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = { kind: "path", index: i };
+    }
+  }
+
+  return bestDist <= radius ? best : null;
+}
+
+function deleteMapperPathPoint(index) {
+  if (index < 0 || index >= state.mapper.pathPointsPx.length) {
+    return false;
+  }
+  const points = state.mapper.pathPointsPx;
+  const removed = points[index];
+  points.splice(index, 1);
+  if (!points.length) {
+    return true;
+  }
+  if (index === 0) {
+    points[0].move = true;
+  }
+  if (removed?.move && index < points.length) {
+    points[index].move = true;
+  }
+  return true;
+}
+
+function loadRouteIntoMapperEditor(route, options = {}) {
+  if (!route || !Array.isArray(route.path) || !Array.isArray(route.checkpoints)) {
+    throw new Error("Route is invalid for mapper editing.");
+  }
+  const mapName = String(options.mapName || "").trim();
+  if (mapName && dom.mapperMapName) {
+    dom.mapperMapName.value = mapName;
+  }
+
+  const meta = route.mapperMeta && typeof route.mapperMeta === "object" ? route.mapperMeta : null;
+  const metaPath = Array.isArray(meta?.pathPointsPx) ? meta.pathPointsPx : null;
+  const metaCheckpoints = Array.isArray(meta?.checkpointsPx) ? meta.checkpointsPx : null;
+
+  if (Number.isFinite(Number(meta?.metersPerPixel)) && Number(meta.metersPerPixel) > 0) {
+    state.mapper.metersPerPixel = Number(meta.metersPerPixel);
+  }
+
+  if (metaPath && metaPath.length >= 2) {
+    state.mapper.pathPointsPx = metaPath.map((point, index) => ({
+      x: Number(point.x) || 0,
+      y: Number(point.y) || 0,
+      move: index === 0 ? true : Boolean(point.move),
+    }));
+  } else {
+    const inferredMetersPerPixel = Number(state.mapper.metersPerPixel) > 0 ? Number(state.mapper.metersPerPixel) : 0.1;
+    state.mapper.metersPerPixel = inferredMetersPerPixel;
+    const baseX = (state.mapper.image?.width || 420) * 0.5;
+    const baseY = (state.mapper.image?.height || 420) * 0.5;
+    const originWorld = route.path[0] || { x: 0, y: 0 };
+    state.mapper.pathPointsPx = route.path.map((point, index) => ({
+      x: baseX + (Number(point.x || 0) - Number(originWorld.x || 0)) / inferredMetersPerPixel,
+      y: baseY - (Number(point.y || 0) - Number(originWorld.y || 0)) / inferredMetersPerPixel,
+      move: index === 0 ? true : Boolean(point.move),
+    }));
+  }
+
+  if (metaCheckpoints) {
+    state.mapper.checkpointsPx = metaCheckpoints.map((cp, index) => ({
+      x: Number(cp.x) || 0,
+      y: Number(cp.y) || 0,
+      id: String(cp.id || mapperCheckpointId(cp.type || "speed_zone", metaCheckpoints.slice(0, index))),
+      type: String(cp.type || "speed_zone"),
+      meta: cp.meta && typeof cp.meta === "object" ? { ...cp.meta } : {},
+    }));
+  } else {
+    const originWorld = route.path[0] || { x: 0, y: 0 };
+    const baseX = (state.mapper.image?.width || 420) * 0.5;
+    const baseY = (state.mapper.image?.height || 420) * 0.5;
+    const metersPerPixel = Number(state.mapper.metersPerPixel) > 0 ? Number(state.mapper.metersPerPixel) : 0.1;
+    state.mapper.checkpointsPx = route.checkpoints.map((cp, index) => ({
+      x: baseX + (Number(cp.x || 0) - Number(originWorld.x || 0)) / metersPerPixel,
+      y: baseY - (Number(cp.y || 0) - Number(originWorld.y || 0)) / metersPerPixel,
+      id: String(cp.id || `A_CP_${String(index + 1).padStart(2, "0")}`),
+      type: String(cp.type || "speed_zone"),
+      meta: cp.meta && typeof cp.meta === "object" ? { ...cp.meta } : {},
+    }));
+  }
+
+  state.mapper.mode = "idle";
+  state.mapper.pathNextMove = false;
+  state.mapper.pendingCheckpointType = null;
+  clearMapperSelection();
+  state.mapper.dragging = null;
+  state.mapper.routeOverrideA = sanitizeMapperRoute(route);
+  persistMapperRouteOverride();
+  if (state.mapper.image && Number.isFinite(state.mapper.metersPerPixel) && state.mapper.metersPerPixel > 0) {
+    refreshMapperJsonPreview();
+  } else {
+    dom.mapperJson.textContent = formatJson(state.mapper.routeOverrideA);
+  }
+  drawMapperCanvas();
+}
+
 function refreshMapperJsonPreview() {
   try {
     const route = mapperBuildRouteAFromCanvas();
@@ -831,6 +1034,9 @@ function updateMapperMapActions() {
   }
   if (dom.mapperActivateMap) {
     dom.mapperActivateMap.disabled = !creator || !hasSelection;
+  }
+  if (dom.mapperOpenMap) {
+    dom.mapperOpenMap.disabled = !creator || !hasSelection;
   }
 }
 
@@ -1009,6 +1215,18 @@ function drawMapperCanvas() {
     }
   }
 
+  if (state.mapper.selectedPathIndex >= 0) {
+    const selected = state.mapper.pathPointsPx[state.mapper.selectedPathIndex];
+    const c = selected ? mapperImageToCanvasPoint(selected) : null;
+    if (c) {
+      mapperCtx.strokeStyle = "#9dffbf";
+      mapperCtx.lineWidth = 2;
+      mapperCtx.beginPath();
+      mapperCtx.arc(c.x, c.y, 8, 0, Math.PI * 2);
+      mapperCtx.stroke();
+    }
+  }
+
   for (const cp of state.mapper.checkpointsPx) {
     const c = mapperImageToCanvasPoint(cp);
     if (!c) {
@@ -1021,6 +1239,18 @@ function drawMapperCanvas() {
     mapperCtx.fillStyle = "#06131d";
     mapperCtx.font = "bold 10px Sora, sans-serif";
     mapperCtx.fillText(cp.id.replace("A_", ""), c.x + 7, c.y - 7);
+  }
+
+  if (state.mapper.selectedCheckpointIndex >= 0) {
+    const cp = state.mapper.checkpointsPx[state.mapper.selectedCheckpointIndex];
+    const c = cp ? mapperImageToCanvasPoint(cp) : null;
+    if (c) {
+      mapperCtx.strokeStyle = "#ffd67b";
+      mapperCtx.lineWidth = 2;
+      mapperCtx.beginPath();
+      mapperCtx.arc(c.x, c.y, 9, 0, Math.PI * 2);
+      mapperCtx.stroke();
+    }
   }
 
   mapperCtx.fillStyle = "rgba(8, 22, 33, 0.84)";
@@ -1036,7 +1266,7 @@ function drawMapperCanvas() {
 
 function updateMapperCheckpointUi() {
   const type = dom.mapperCheckpointType.value;
-  const bumpMode = type === "speed_bump" || type === "stop_line";
+  const bumpMode = type === "speed_bump" || type === "stop_line" || type === "stop_line_free";
   const trafficMode = type === "traffic_light";
   const parkingMode = type === "parking_parallel" || type === "parking_diagonal";
   dom.mapperTrafficFields.classList.toggle("hidden", !trafficMode);
@@ -1048,6 +1278,8 @@ function updateMapperCheckpointUi() {
     traffic_light:
       "Traffic Light: click near a road edge and it snaps to the closest path edge. Choose orientation, then add at least one Stop Line nearby.",
     stop_line: "Stop Line: choose lanes + lane side, click near the road. It snaps to the closest path and occupies one lane.",
+    stop_line_free:
+      "Standalone Stop Line: same lane snap as Stop Line, but it is not paired to a traffic light and does not trigger red-light penalties.",
     roundabout: "Roundabout: place at the ovalo center area.",
     parking_parallel: "Parking Parallel: choose number of slots, then click left/right of path; bays auto-snap to that road edge.",
     parking_diagonal: "Parking Diagonal: choose slots/angle, then click left/right of path; bays auto-snap to that road edge.",
@@ -1065,6 +1297,9 @@ function handleMapperCanvasClick(event) {
   }
 
   if (state.mapper.mode === "scale") {
+    clearMapperSelection();
+    state.mapper.routeOverrideA = null;
+    persistMapperRouteOverride();
     if (state.mapper.scalePointsPx.length >= 2) {
       state.mapper.scalePointsPx = [];
     }
@@ -1078,6 +1313,9 @@ function handleMapperCanvasClick(event) {
       setMapperStatus(`scale set: ${state.mapper.metersPerPixel.toFixed(4)} m/px.`);
     }
   } else if (state.mapper.mode === "path") {
+    clearMapperSelection();
+    state.mapper.routeOverrideA = null;
+    persistMapperRouteOverride();
     const snapped = mapperFindSnapPoint(imagePoint);
     const point = snapped ? { x: snapped.x, y: snapped.y } : imagePoint;
     const isNewSegment = state.mapper.pathNextMove || state.mapper.pathPointsPx.length === 0;
@@ -1103,6 +1341,9 @@ function handleMapperCanvasClick(event) {
       setMapperStatus(`path point ${state.mapper.pathPointsPx.length} added.`);
     }
   } else if (state.mapper.mode === "checkpoint") {
+    clearMapperSelection();
+    state.mapper.routeOverrideA = null;
+    persistMapperRouteOverride();
     const type = state.mapper.pendingCheckpointType || dom.mapperCheckpointType.value;
     if (!mapperAllowsMultiple(type)) {
       state.mapper.checkpointsPx = state.mapper.checkpointsPx.filter((cp) => cp.type !== type);
@@ -1134,6 +1375,78 @@ function handleMapperCanvasClick(event) {
     setMapperStatus(`${type} checkpoint placed.`);
   }
 
+  refreshMapperJsonPreview();
+  drawMapperCanvas();
+}
+
+function handleMapperCanvasPointerDown(event) {
+  if (state.mapper.mode !== "idle") {
+    return;
+  }
+  const imagePoint = mapperCanvasToImagePoint(event);
+  if (!imagePoint) {
+    return;
+  }
+  const hit = mapperHitTest(imagePoint);
+  if (!hit) {
+    clearMapperSelection();
+    state.mapper.dragging = null;
+    drawMapperCanvas();
+    return;
+  }
+
+  if (hit.kind === "checkpoint") {
+    state.mapper.selectedCheckpointIndex = hit.index;
+    state.mapper.selectedPathIndex = -1;
+  } else {
+    state.mapper.selectedPathIndex = hit.index;
+    state.mapper.selectedCheckpointIndex = -1;
+  }
+  state.mapper.dragging = { kind: hit.kind, index: hit.index };
+  drawMapperCanvas();
+}
+
+function handleMapperCanvasPointerMove(event) {
+  if (state.mapper.mode !== "idle" || !state.mapper.dragging) {
+    return;
+  }
+  const imagePoint = mapperCanvasToImagePoint(event);
+  if (!imagePoint) {
+    return;
+  }
+
+  const drag = state.mapper.dragging;
+  if (drag.kind === "checkpoint") {
+    const cp = state.mapper.checkpointsPx[drag.index];
+    if (!cp) {
+      return;
+    }
+    cp.x = imagePoint.x;
+    cp.y = imagePoint.y;
+    state.mapper.selectedCheckpointIndex = drag.index;
+    state.mapper.selectedPathIndex = -1;
+  } else if (drag.kind === "path") {
+    const point = state.mapper.pathPointsPx[drag.index];
+    if (!point) {
+      return;
+    }
+    point.x = imagePoint.x;
+    point.y = imagePoint.y;
+    state.mapper.selectedPathIndex = drag.index;
+    state.mapper.selectedCheckpointIndex = -1;
+  }
+  state.mapper.routeOverrideA = null;
+  persistMapperRouteOverride();
+  drawMapperCanvas();
+}
+
+function handleMapperCanvasPointerUp() {
+  if (!state.mapper.dragging) {
+    return;
+  }
+  state.mapper.dragging = null;
+  state.mapper.routeOverrideA = null;
+  persistMapperRouteOverride();
   refreshMapperJsonPreview();
   drawMapperCanvas();
 }
@@ -1353,6 +1666,9 @@ function updateAuthState() {
     if (dom.mapperActivateMap) {
       dom.mapperActivateMap.disabled = true;
     }
+    if (dom.mapperOpenMap) {
+      dom.mapperOpenMap.disabled = true;
+    }
     if (dom.mapperLibraryRouteFilter) {
       dom.mapperLibraryRouteFilter.disabled = true;
     }
@@ -1398,6 +1714,9 @@ function updateAuthState() {
   }
   if (dom.mapperSavedMaps) {
     dom.mapperSavedMaps.disabled = !state.user.is_creator;
+  }
+  if (dom.mapperOpenMap) {
+    dom.mapperOpenMap.disabled = !state.user.is_creator || !state.mapper.selectedMapId;
   }
   updateMapperMapActions();
   if (dom.multiplayerRoom) {
@@ -2496,6 +2815,7 @@ function colorForCheckpoint(checkpointType) {
     parking_parallel: "#ffd166",
     parking_diagonal: "#ba68ff",
     stop_line: "#f5f8ff",
+    stop_line_free: "#dce8ff",
     speed_bump: "#ff9554",
     tree: "#4fc46b",
     start: "#9fd3ff",
@@ -2635,7 +2955,11 @@ function routeRoadWidthAt(x, y) {
     ) {
       laneCount = Math.max(laneCount, 3);
     }
-    if (checkpoint.type === "speed_bump" || checkpoint.type === "stop_line") {
+    if (
+      checkpoint.type === "speed_bump" ||
+      checkpoint.type === "stop_line" ||
+      checkpoint.type === "stop_line_free"
+    ) {
       laneCount = Math.max(laneCount, Math.round(Number(checkpoint.meta?.laneCount) || 2));
     }
   }
@@ -3960,7 +4284,7 @@ function rebuildThreeRouteScene() {
     routeGroup.add(bump);
   }
 
-  const stopLineCps = routeCheckpoints("stop_line");
+  const stopLineCps = routeStopLines();
   for (const checkpoint of stopLineCps) {
     const segment = stopLineSegment(checkpoint);
     const lineMesh = new THREE.Mesh(
@@ -6321,7 +6645,7 @@ function drawSpeedBumpsPerspective(horizonY) {
 }
 
 function drawStopLinesPerspective(horizonY) {
-  const stopLines = routeCheckpoints("stop_line");
+  const stopLines = routeStopLines();
   for (const checkpoint of stopLines) {
     const segment = stopLineSegment(checkpoint);
     const projected = segment.corners.map((corner) => projectWorldPoint(corner.x, corner.y, horizonY));
@@ -6415,7 +6739,7 @@ function drawSpeedBumpsThirdPerson() {
 }
 
 function drawStopLinesThirdPerson() {
-  const stopLines = routeCheckpoints("stop_line");
+  const stopLines = routeStopLines();
   for (const checkpoint of stopLines) {
     const segment = stopLineSegment(checkpoint);
     const corners = segment.corners.map((corner) => worldToThirdPersonCanvas(corner.x, corner.y));
@@ -6559,7 +6883,8 @@ function drawCheckpointSigns(horizonY) {
       checkpoint.type === "parking_parallel" ||
       checkpoint.type === "parking_diagonal" ||
       checkpoint.type === "traffic_light" ||
-      checkpoint.type === "stop_line"
+      checkpoint.type === "stop_line" ||
+      checkpoint.type === "stop_line_free"
     ) {
       continue;
     }
@@ -6594,6 +6919,7 @@ function drawCheckpointSigns(horizonY) {
     const shortText = checkpoint.type
       .replace("parking_", "pk ")
       .replace("traffic_light", "tl")
+      .replace("stop_line_free", "line")
       .replace("stop_line", "line")
       .replace("speed_zone", "spd")
       .replace("roundabout", "ovl")
@@ -7001,7 +7327,8 @@ function drawThirdPersonScene() {
     if (
       checkpoint.type === "parking_parallel" ||
       checkpoint.type === "parking_diagonal" ||
-      checkpoint.type === "stop_line"
+      checkpoint.type === "stop_line" ||
+      checkpoint.type === "stop_line_free"
     ) {
       continue;
     }
@@ -7363,6 +7690,15 @@ function routeCheckpoints(type) {
     return [];
   }
   return state.sim.route.checkpoints.filter((checkpoint) => checkpoint.type === type);
+}
+
+function routeStopLines() {
+  if (!state.sim.route?.checkpoints?.length) {
+    return [];
+  }
+  return state.sim.route.checkpoints.filter(
+    (checkpoint) => checkpoint.type === "stop_line" || checkpoint.type === "stop_line_free",
+  );
 }
 
 function distanceTo(checkpoint) {
@@ -8316,6 +8652,8 @@ function bindRouteMapperUi() {
     img.onload = () => {
       state.mapper.image = img;
       state.mapper.imageFit = null;
+      clearMapperSelection();
+      state.mapper.dragging = null;
       setMapperStatus("image loaded. Click 'Set Scale' first.");
       refreshMapperJsonPreview();
       drawMapperCanvas();
@@ -8332,6 +8670,8 @@ function bindRouteMapperUi() {
       return;
     }
     state.mapper.mode = "scale";
+    clearMapperSelection();
+    state.mapper.dragging = null;
     state.mapper.scalePointsPx = [];
     setMapperStatus("scale mode active. Click two points with known distance.");
     drawMapperCanvas();
@@ -8347,7 +8687,22 @@ function bindRouteMapperUi() {
       return;
     }
     state.mapper.mode = "path";
+    clearMapperSelection();
+    state.mapper.dragging = null;
     setMapperStatus("path mode active. Click route centerline points in order (auto-snap to existing nodes).");
+    drawMapperCanvas();
+  });
+
+  dom.mapperEditMode.addEventListener("click", () => {
+    if (!state.mapper.image) {
+      alert("Upload the map image first.");
+      return;
+    }
+    state.mapper.mode = "idle";
+    state.mapper.pendingCheckpointType = null;
+    state.mapper.pathNextMove = false;
+    state.mapper.dragging = null;
+    setMapperStatus("select/move mode active. Drag points or checkpoints.");
     drawMapperCanvas();
   });
 
@@ -8361,6 +8716,8 @@ function bindRouteMapperUi() {
       return;
     }
     state.mapper.mode = "path";
+    clearMapperSelection();
+    state.mapper.dragging = null;
     state.mapper.pathNextMove = true;
     setMapperStatus("new segment armed. Next path click will start a branch without connecting line.");
     drawMapperCanvas();
@@ -8373,7 +8730,34 @@ function bindRouteMapperUi() {
     }
     state.mapper.pendingCheckpointType = dom.mapperCheckpointType.value;
     state.mapper.mode = "checkpoint";
+    clearMapperSelection();
+    state.mapper.dragging = null;
     setMapperStatus(`${state.mapper.pendingCheckpointType} mode. Click checkpoint location.`);
+    drawMapperCanvas();
+  });
+
+  dom.mapperDeleteSelected.addEventListener("click", () => {
+    const selected = mapperSelectedRef();
+    if (!selected) {
+      setMapperStatus("No selected point/checkpoint to delete.");
+      return;
+    }
+    if (selected.kind === "checkpoint") {
+      if (selected.index >= 0 && selected.index < state.mapper.checkpointsPx.length) {
+        state.mapper.checkpointsPx.splice(selected.index, 1);
+        setMapperStatus("Selected checkpoint deleted.");
+      }
+    } else if (selected.kind === "path") {
+      const removed = deleteMapperPathPoint(selected.index);
+      if (removed) {
+        setMapperStatus("Selected path point deleted.");
+      }
+    }
+    clearMapperSelection();
+    state.mapper.dragging = null;
+    state.mapper.routeOverrideA = null;
+    persistMapperRouteOverride();
+    refreshMapperJsonPreview();
     drawMapperCanvas();
   });
 
@@ -8392,6 +8776,10 @@ function bindRouteMapperUi() {
       state.mapper.metersPerPixel = 0;
       setMapperStatus("removed scale point.");
     }
+    clearMapperSelection();
+    state.mapper.dragging = null;
+    state.mapper.routeOverrideA = null;
+    persistMapperRouteOverride();
     refreshMapperJsonPreview();
     drawMapperCanvas();
   });
@@ -8404,6 +8792,8 @@ function bindRouteMapperUi() {
     state.mapper.pathNextMove = false;
     state.mapper.checkpointsPx = [];
     state.mapper.pendingCheckpointType = null;
+    clearMapperSelection();
+    state.mapper.dragging = null;
     state.mapper.routeOverrideA = null;
     persistMapperRouteOverride();
     dom.mapperJson.textContent = "";
@@ -8543,6 +8933,37 @@ function bindRouteMapperUi() {
     updateMapperMapActions();
   });
 
+  dom.mapperOpenMap.addEventListener("click", async () => {
+    if (!state.token) {
+      alert("Login first.");
+      return;
+    }
+    if (!state.user?.is_creator) {
+      alert("Only the creator account can edit saved maps.");
+      return;
+    }
+    const selected = selectedMapperMapRecord();
+    if (!selected) {
+      alert("Select a saved map first.");
+      return;
+    }
+    if (String(selected.route_id || "").toUpperCase() !== "A") {
+      alert("Route A mapper currently edits Route A maps only.");
+      return;
+    }
+    try {
+      const result = await api(`/v1/maps/${encodeURIComponent(selected.map_id)}`, {
+        headers: authHeaders(),
+      });
+      loadRouteIntoMapperEditor(result.route, { mapName: result.map?.name || selected.name });
+      setMapperStatus(
+        `Loaded map ${result.map?.map_id || selected.map_id} for editing (${result.route.path.length} points, ${result.route.checkpoints.length} checkpoints).`,
+      );
+    } catch (error) {
+      alert(error.message);
+    }
+  });
+
   dom.mapperActivateMap.addEventListener("click", async () => {
     if (!state.token) {
       alert("Login first.");
@@ -8612,17 +9033,18 @@ function bindRouteMapperUi() {
     try {
       const text = await file.text();
       const parsed = JSON.parse(text);
-      state.mapper.routeOverrideA = sanitizeMapperRoute(parsed);
-      persistMapperRouteOverride();
-      dom.mapperJson.textContent = formatJson(state.mapper.routeOverrideA);
-      setMapperStatus(
-        `imported Route A JSON (${state.mapper.routeOverrideA.path.length} points). Start session to use it.`,
-      );
+      const route = sanitizeMapperRoute(parsed);
+      loadRouteIntoMapperEditor(route);
+      setMapperStatus(`imported Route A JSON (${route.path.length} points). You can edit and apply/save it.`);
     } catch (error) {
       alert(`Invalid JSON: ${error.message}`);
     }
   });
 
+  dom.mapperCanvas.addEventListener("pointerdown", handleMapperCanvasPointerDown);
+  dom.mapperCanvas.addEventListener("pointermove", handleMapperCanvasPointerMove);
+  dom.mapperCanvas.addEventListener("pointerup", handleMapperCanvasPointerUp);
+  dom.mapperCanvas.addEventListener("pointerleave", handleMapperCanvasPointerUp);
   dom.mapperCanvas.addEventListener("click", handleMapperCanvasClick);
   loadPersistedMapperRouteOverride();
   renderMapperMapLibrary();

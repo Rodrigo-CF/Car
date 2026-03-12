@@ -1058,6 +1058,37 @@ export function createSupabaseService(store) {
       }
     },
 
+    async getRouteMap(user, mapIdRaw) {
+      try {
+        if (!user?.is_creator) {
+          return { status: 403, error: "creator permissions required" };
+        }
+        const mapId = String(mapIdRaw || "").trim();
+        if (!mapId) {
+          return { status: 400, error: "map_id is required" };
+        }
+        const rows = await selectRows("maps", { map_id: `eq.${mapId}` }, { select: "*", limit: 1 });
+        if (!rows.length) {
+          return { status: 404, error: "map not found" };
+        }
+        const row = rows[0];
+        const activeRows = await selectRows("active_route_maps", { route_id: `eq.${row.route_id}` }, { select: "map_id", limit: 1 });
+        const activeMapId = activeRows[0]?.map_id || null;
+        return {
+          status: 200,
+          data: {
+            map: {
+              ...mapMetadata(row),
+              is_active: activeMapId === row.map_id,
+            },
+            route: cloneJson(row.route),
+          },
+        };
+      } catch (error) {
+        return { status: Number(error.status) || 500, error: error.message || "internal server error" };
+      }
+    },
+
     async getActiveRoutePayload(routeId) {
       return getActiveRoutePayload(routeId);
     },

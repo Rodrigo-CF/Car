@@ -13,6 +13,7 @@ import {
   saveRouteMap,
   activateRouteMap,
   listRouteMaps,
+  getRouteMap,
   getActiveRoutePayload,
   getAllActiveRoutesPayload,
 } from "./lib/maps.js";
@@ -269,6 +270,19 @@ export function createAppServer(store = createStore()) {
         const result = supabaseService
           ? await supabaseService.listRouteMaps(user, query)
           : listRouteMaps(store, user, query);
+        if (result.error) {
+          sendJson(res, result.status, { error: result.error });
+          return;
+        }
+        sendJson(res, result.status, result.data);
+        return;
+      }
+
+      if (req.method === "GET" && parts[1] === "maps" && parts[2]) {
+        const mapId = decodeURIComponent(parts[2]);
+        const result = supabaseService
+          ? await supabaseService.getRouteMap(user, mapId)
+          : getRouteMap(store, user, mapId);
         if (result.error) {
           sendJson(res, result.status, { error: result.error });
           return;

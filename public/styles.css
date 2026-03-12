@@ -476,8 +476,16 @@ pre {
   margin: 6px 0 2px;
 }
 
+.mapper-library-actions {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 @media (max-width: 980px) {
   .mapper-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .mapper-library-actions {
     grid-template-columns: 1fr;
   }
 }

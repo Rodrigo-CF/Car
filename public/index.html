@@ -175,6 +175,7 @@
                   <option value="speed_zone">Speed Zone (max speed)</option>
                   <option value="traffic_light">Traffic Light</option>
                   <option value="stop_line">Stop Line (per lane)</option>
+                  <option value="stop_line_free">Stop Line (standalone)</option>
                   <option value="roundabout">Roundabout</option>
                   <option value="parking_parallel">Parking: Parallel</option>
                   <option value="parking_diagonal">Parking: Diagonal</option>
@@ -227,6 +228,11 @@
                 <button id="mapper-undo" class="btn btn-soft">Undo</button>
               </div>
               <div class="button-row button-row-compact">
+                <button id="mapper-edit-mode" class="btn btn-soft">Select / Move</button>
+                <button id="mapper-delete-selected" class="btn btn-soft">Delete Selected</button>
+              </div>
+              <p class="mapper-inline-note">Idle mode: click/drag path points or checkpoints to move them.</p>
+              <div class="button-row button-row-compact">
                 <button id="mapper-clear" class="btn btn-soft">Clear All</button>
                 <button id="mapper-apply-route" class="btn">Apply to Route A</button>
               </div>
@@ -265,8 +271,9 @@
                     <input id="mapper-library-search" type="text" maxlength="80" placeholder="name or map id" />
                   </div>
                 </div>
-                <div class="button-row button-row-compact">
+                <div class="button-row mapper-library-actions">
                   <button id="mapper-library-refresh" class="btn btn-soft">Refresh Saved Maps</button>
+                  <button id="mapper-open-map" class="btn btn-soft" disabled>Open Selected for Editing</button>
                   <button id="mapper-activate-map" class="btn btn-soft" disabled>Use Selected Globally</button>
                 </div>
                 <select id="mapper-saved-maps" size="6"></select>

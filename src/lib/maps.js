@@ -267,6 +267,30 @@ export function listRouteMaps(store, user, query = {}) {
   };
 }
 
+export function getRouteMap(store, user, mapIdRaw) {
+  if (!user?.is_creator) {
+    return { status: 403, error: "creator permissions required" };
+  }
+  const mapId = String(mapIdRaw || "").trim();
+  if (!mapId) {
+    return { status: 400, error: "map_id is required" };
+  }
+  const record = store.maps.find((candidate) => candidate.map_id === mapId);
+  if (!record) {
+    return { status: 404, error: "map not found" };
+  }
+  return {
+    status: 200,
+    data: {
+      map: {
+        ...mapMetadata(record),
+        is_active: store.activeRouteMaps?.[record.route_id] === record.map_id,
+      },
+      route: cloneJson(record.route),
+    },
+  };
+}
+
 export function getActiveRoutePayload(store, routeId) {
   const normalizedRouteId = normalizeRouteId(routeId);
   if (!normalizedRouteId) {
