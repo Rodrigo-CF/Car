@@ -684,11 +684,16 @@ function mapperBuildRouteAFromCanvas() {
       }
     }
     if (cp.type === "speed_bump" || cp.type === "stop_line" || cp.type === "stop_line_free") {
-      const placement = inferParkingPlacement(world, Number(meta.headingDeg));
+      const preferredSeg = Number.isFinite(meta.snapSegmentIndex) ? Number(meta.snapSegmentIndex) : null;
+      const preferredHeading = preferredSeg != null ? Number(meta.headingDeg) : null;
+      const placement = inferParkingPlacement(world, preferredHeading, preferredSeg);
       cpX = placement.snappedX;
       cpY = placement.snappedY;
       if (Number.isFinite(placement.headingRad)) {
         meta.headingDeg = mapperRound((placement.headingRad * 180) / Math.PI, 1);
+      }
+      if (Number.isFinite(placement.segmentIndex)) {
+        meta.snapSegmentIndex = placement.segmentIndex;
       }
       const lane = Math.max(1, Math.round(Number(meta.lane) || 1));
       const laneCount = Math.max(lane, Math.round(Number(meta.laneCount) || 2));
@@ -1441,6 +1446,9 @@ function handleMapperCanvasClick(event) {
       // Persist chosen side so parking auto-snaps to road edge without manual offset hunting.
       meta.sideSign = frame.sideSign;
     }
+    if ((type === "speed_bump" || type === "stop_line" || type === "stop_line_free") && Number.isFinite(frame?.segmentIndex)) {
+      meta.snapSegmentIndex = Math.max(0, Math.round(frame.segmentIndex));
+    }
     if (type === "traffic_light") {
       meta.facing = dom.mapperTrafficFacing.value === "reverse" ? "reverse" : "with_path";
       if (frame?.sideSign) {
@@ -1534,12 +1542,17 @@ function handleMapperCanvasPointerUp() {
   const drag = state.mapper.dragging;
   if (drag.kind === "checkpoint") {
     const cp = state.mapper.checkpointsPx[drag.index];
-    if (cp?.type === "traffic_light") {
+    if (
+      cp?.type === "traffic_light" ||
+      cp?.type === "stop_line" ||
+      cp?.type === "stop_line_free" ||
+      cp?.type === "speed_bump"
+    ) {
       const frame = mapperFrameAtImagePoint(cp);
       if (frame && Number.isFinite(frame.headingDeg)) {
         cp.meta = cp.meta && typeof cp.meta === "object" ? cp.meta : {};
         cp.meta.headingDeg = mapperRound(frame.headingDeg, 1);
-        if (frame.sideSign) {
+        if (cp.type === "traffic_light" && frame.sideSign) {
           cp.meta.sideSign = frame.sideSign;
         }
         if (Number.isFinite(frame.segmentIndex)) {
