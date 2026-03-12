@@ -542,9 +542,6 @@ function mapperRound(value, digits = 2) {
 }
 
 function mapperBuildRouteAFromCanvas() {
-  if (!state.mapper.image) {
-    throw new Error("Upload a map image first.");
-  }
   if (!Number.isFinite(state.mapper.metersPerPixel) || state.mapper.metersPerPixel <= 0) {
     throw new Error("Set scale first (click two points over a known distance).");
   }
@@ -759,8 +756,8 @@ function mapperCanvasToImagePoint(event) {
   }
 
   return {
-    x: (cx - fit.drawX) / fit.scale,
-    y: (cy - fit.drawY) / fit.scale,
+    x: fit.offsetX + (cx - fit.drawX) / fit.scale,
+    y: fit.offsetY + (cy - fit.drawY) / fit.scale,
   };
 }
 
@@ -770,8 +767,54 @@ function mapperImageToCanvasPoint(point) {
     return null;
   }
   return {
-    x: fit.drawX + point.x * fit.scale,
-    y: fit.drawY + point.y * fit.scale,
+    x: fit.drawX + (point.x - fit.offsetX) * fit.scale,
+    y: fit.drawY + (point.y - fit.offsetY) * fit.scale,
+  };
+}
+
+function computeMapperVirtualFit(canvasWidth, canvasHeight) {
+  const allPoints = [
+    ...state.mapper.pathPointsPx,
+    ...state.mapper.checkpointsPx,
+    ...state.mapper.scalePointsPx,
+  ].filter((point) => Number.isFinite(point?.x) && Number.isFinite(point?.y));
+
+  if (!allPoints.length) {
+    return null;
+  }
+
+  let minX = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  for (const point of allPoints) {
+    minX = Math.min(minX, point.x);
+    maxX = Math.max(maxX, point.x);
+    minY = Math.min(minY, point.y);
+    maxY = Math.max(maxY, point.y);
+  }
+
+  const dataPad = 20;
+  const dataW = Math.max(10, maxX - minX + dataPad * 2);
+  const dataH = Math.max(10, maxY - minY + dataPad * 2);
+  const viewportPad = 18;
+  const availableW = Math.max(20, canvasWidth - viewportPad * 2);
+  const availableH = Math.max(20, canvasHeight - viewportPad * 2);
+  const scale = Math.min(availableW / dataW, availableH / dataH);
+  const drawW = dataW * scale;
+  const drawH = dataH * scale;
+  const drawX = (canvasWidth - drawW) / 2;
+  const drawY = (canvasHeight - drawH) / 2;
+
+  return {
+    drawX,
+    drawY,
+    drawW,
+    drawH,
+    scale,
+    offsetX: minX - dataPad,
+    offsetY: minY - dataPad,
+    virtual: true,
   };
 }
 
@@ -1138,26 +1181,39 @@ function drawMapperCanvas() {
   mapperCtx.fillStyle = "rgba(6, 18, 28, 0.9)";
   mapperCtx.fillRect(0, 0, w, h);
 
-  if (!state.mapper.image) {
-    mapperCtx.fillStyle = "#9fb9c7";
-    mapperCtx.font = "12px Sora, sans-serif";
-    mapperCtx.fillText("Upload map image", 14, 22);
-    return;
+  if (state.mapper.image) {
+    const image = state.mapper.image;
+    const scale = Math.min(w / image.width, h / image.height);
+    const drawW = image.width * scale;
+    const drawH = image.height * scale;
+    const drawX = (w - drawW) / 2;
+    const drawY = (h - drawH) / 2;
+    state.mapper.imageFit = { drawX, drawY, drawW, drawH, scale, offsetX: 0, offsetY: 0, virtual: false };
+
+    mapperCtx.drawImage(image, drawX, drawY, drawW, drawH);
+
+    mapperCtx.strokeStyle = "rgba(176, 212, 232, 0.5)";
+    mapperCtx.lineWidth = 1;
+    mapperCtx.strokeRect(drawX, drawY, drawW, drawH);
+  } else {
+    const virtualFit = computeMapperVirtualFit(w, h);
+    if (!virtualFit) {
+      state.mapper.imageFit = null;
+      mapperCtx.fillStyle = "#9fb9c7";
+      mapperCtx.font = "12px Sora, sans-serif";
+      mapperCtx.fillText("Upload map image or open a saved map", 14, 22);
+      return;
+    }
+    state.mapper.imageFit = virtualFit;
+    mapperCtx.fillStyle = "rgba(8, 25, 36, 0.62)";
+    mapperCtx.fillRect(virtualFit.drawX, virtualFit.drawY, virtualFit.drawW, virtualFit.drawH);
+    mapperCtx.strokeStyle = "rgba(176, 212, 232, 0.5)";
+    mapperCtx.lineWidth = 1;
+    mapperCtx.strokeRect(virtualFit.drawX, virtualFit.drawY, virtualFit.drawW, virtualFit.drawH);
+    mapperCtx.fillStyle = "rgba(168, 206, 223, 0.92)";
+    mapperCtx.font = "11px Sora, sans-serif";
+    mapperCtx.fillText("No background image loaded. Editing vector map.", virtualFit.drawX + 8, virtualFit.drawY + 16);
   }
-
-  const image = state.mapper.image;
-  const scale = Math.min(w / image.width, h / image.height);
-  const drawW = image.width * scale;
-  const drawH = image.height * scale;
-  const drawX = (w - drawW) / 2;
-  const drawY = (h - drawH) / 2;
-  state.mapper.imageFit = { drawX, drawY, drawW, drawH, scale };
-
-  mapperCtx.drawImage(image, drawX, drawY, drawW, drawH);
-
-  mapperCtx.strokeStyle = "rgba(176, 212, 232, 0.5)";
-  mapperCtx.lineWidth = 1;
-  mapperCtx.strokeRect(drawX, drawY, drawW, drawH);
 
   if (state.mapper.scalePointsPx.length > 0) {
     const p0 = mapperImageToCanvasPoint(state.mapper.scalePointsPx[0]);
@@ -8665,8 +8721,8 @@ function bindRouteMapperUi() {
   });
 
   dom.mapperScaleMode.addEventListener("click", () => {
-    if (!state.mapper.image) {
-      alert("Upload the map image first.");
+    if (!state.mapper.image && !state.mapper.pathPointsPx.length && !state.mapper.checkpointsPx.length) {
+      alert("Upload the map image or open a saved map first.");
       return;
     }
     state.mapper.mode = "scale";
@@ -8678,8 +8734,8 @@ function bindRouteMapperUi() {
   });
 
   dom.mapperPathMode.addEventListener("click", () => {
-    if (!state.mapper.image) {
-      alert("Upload the map image first.");
+    if (!state.mapper.image && !state.mapper.pathPointsPx.length) {
+      alert("Upload the map image or open a saved map first.");
       return;
     }
     if (!state.mapper.metersPerPixel) {
@@ -8707,8 +8763,8 @@ function bindRouteMapperUi() {
   });
 
   dom.mapperNewSegment.addEventListener("click", () => {
-    if (!state.mapper.image) {
-      alert("Upload the map image first.");
+    if (!state.mapper.image && !state.mapper.pathPointsPx.length) {
+      alert("Upload the map image or open a saved map first.");
       return;
     }
     if (!state.mapper.pathPointsPx.length) {
@@ -8724,8 +8780,8 @@ function bindRouteMapperUi() {
   });
 
   dom.mapperPlaceCheckpoint.addEventListener("click", () => {
-    if (!state.mapper.image) {
-      alert("Upload the map image first.");
+    if (!state.mapper.image && !state.mapper.pathPointsPx.length) {
+      alert("Upload the map image or open a saved map first.");
       return;
     }
     state.mapper.pendingCheckpointType = dom.mapperCheckpointType.value;
