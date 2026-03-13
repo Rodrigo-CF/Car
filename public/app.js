@@ -399,7 +399,7 @@ function mapperDefaultMeta(type) {
     return { lane, laneCount, bumpHeightM: 0.1 };
   }
   if (type === "start_canopy") {
-    return { lengthM: 8.6, heightM: 3.25 };
+    return { lengthM: 4.3, heightM: 3.25 };
   }
   if (type === "tree") {
     return { size: 1 };
@@ -747,7 +747,14 @@ function mapperBuildRouteAFromCanvas() {
       if (Number.isFinite(placement.segmentIndex)) {
         meta.snapSegmentIndex = placement.segmentIndex;
       }
-      meta.lengthM = Math.max(5.2, Math.min(15.5, Number(meta.lengthM) || 8.6));
+      let canopyLength = Number(meta.lengthM);
+      if (!Number.isFinite(canopyLength)) {
+        canopyLength = 4.3;
+      } else if (canopyLength > 7.8) {
+        // Backward-compatible shrink for old maps saved with the previous long default.
+        canopyLength *= 0.5;
+      }
+      meta.lengthM = Math.max(2.6, Math.min(7.75, canopyLength));
       meta.heightM = Math.max(2.3, Math.min(5.2, Number(meta.heightM) || 3.25));
     }
     if (cp.type === "speed_bump" || cp.type === "stop_line" || cp.type === "stop_line_free") {
@@ -3982,10 +3989,56 @@ function guardTowerPlacement(checkpoint) {
 function startCanopyPlacement(checkpoint) {
   const heading = checkpointHeadingAt(checkpoint);
   const roadWidth = routeRoadWidthAt(checkpoint.x, checkpoint.y);
-  const length = Math.max(5.2, Math.min(15.5, Number(checkpoint.meta?.lengthM) || 8.6));
+  let rawLength = Number(checkpoint.meta?.lengthM);
+  if (!Number.isFinite(rawLength)) {
+    rawLength = 4.3;
+  } else if (rawLength > 7.8) {
+    // Backward-compatible shrink for legacy checkpoints.
+    rawLength *= 0.5;
+  }
+  const length = Math.max(2.6, Math.min(7.75, rawLength));
   const height = Math.max(2.3, Math.min(5.2, Number(checkpoint.meta?.heightM) || 3.25));
   const roofWidth = roadWidth + 1.0;
   return { heading, roadWidth, length, height, roofWidth };
+}
+
+function createCanopyLabelTexture(THREE, text, options = {}) {
+  const width = Math.max(64, Math.round(Number(options.width) || 512));
+  const height = Math.max(64, Math.round(Number(options.height) || 192));
+  const bg = options.bg || "rgba(0, 0, 0, 0)";
+  const stroke = options.stroke || "rgba(3, 16, 28, 0.7)";
+  const fill = options.fill || "#f2f7ff";
+  const fontScale = Math.max(0.2, Math.min(0.9, Number(options.fontScale) || 0.54));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx2d = canvas.getContext("2d");
+  if (!ctx2d) {
+    return null;
+  }
+
+  ctx2d.clearRect(0, 0, width, height);
+  ctx2d.fillStyle = bg;
+  ctx2d.fillRect(0, 0, width, height);
+  ctx2d.textAlign = "center";
+  ctx2d.textBaseline = "middle";
+  ctx2d.font = `800 ${Math.round(height * fontScale)}px Sora, Manrope, sans-serif`;
+  ctx2d.lineWidth = Math.max(2, Math.round(height * 0.06));
+  ctx2d.strokeStyle = stroke;
+  ctx2d.strokeText(text, width * 0.5, height * 0.52);
+  ctx2d.fillStyle = fill;
+  ctx2d.fillText(text, width * 0.5, height * 0.52);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.ClampToEdgeWrapping;
+  texture.wrapT = THREE.ClampToEdgeWrapping;
+  texture.needsUpdate = true;
+  if ("colorSpace" in texture && THREE.SRGBColorSpace) {
+    texture.colorSpace = THREE.SRGBColorSpace;
+  } else if ("encoding" in texture && THREE.sRGBEncoding) {
+    texture.encoding = THREE.sRGBEncoding;
+  }
+  return texture;
 }
 
 function clearThreeGroup(group) {
@@ -4235,6 +4288,99 @@ function buildStartCanopyGroup(THREE, checkpoint) {
     rib.position.set(0, roofY + 0.055, z);
     group.add(rib);
   }
+
+  const laneWidth = placement.roadWidth * 0.5;
+  const laneOffset = laneWidth * 0.5;
+  const labelLength = Math.max(2.2, placement.length * 0.6);
+  const labelLaneDepth = Math.max(0.95, laneWidth * 0.68);
+  const labelRoofDepth = Math.max(1.05, placement.roofWidth * 0.26);
+
+  const roofTextureA = createCanopyLabelTexture(THREE, "RUTA A", {
+    width: 512,
+    height: 176,
+    bg: "rgba(0, 0, 0, 0.02)",
+    fill: "#eaf3ff",
+    stroke: "rgba(12, 28, 48, 0.78)",
+    fontScale: 0.56,
+  });
+  const roofTextureB = createCanopyLabelTexture(THREE, "RUTA B", {
+    width: 512,
+    height: 176,
+    bg: "rgba(0, 0, 0, 0.02)",
+    fill: "#eaf3ff",
+    stroke: "rgba(12, 28, 48, 0.78)",
+    fontScale: 0.56,
+  });
+  const laneTextureA = createCanopyLabelTexture(THREE, "RUTA A", {
+    width: 512,
+    height: 192,
+    bg: "rgba(0, 0, 0, 0)",
+    fill: "rgba(247, 252, 255, 0.98)",
+    stroke: "rgba(24, 45, 70, 0.62)",
+    fontScale: 0.54,
+  });
+  const laneTextureB = createCanopyLabelTexture(THREE, "RUTA B", {
+    width: 512,
+    height: 192,
+    bg: "rgba(0, 0, 0, 0)",
+    fill: "rgba(247, 252, 255, 0.98)",
+    stroke: "rgba(24, 45, 70, 0.62)",
+    fontScale: 0.54,
+  });
+
+  const buildLabelMaterial = (texture) =>
+    new THREE.MeshBasicMaterial({
+      map: texture || null,
+      color: 0xffffff,
+      transparent: true,
+      opacity: 1,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    });
+
+  const roofLabelMatA = buildLabelMaterial(roofTextureA);
+  const roofLabelMatB = buildLabelMaterial(roofTextureB);
+  const laneLabelMatA = buildLabelMaterial(laneTextureA);
+  const laneLabelMatB = buildLabelMaterial(laneTextureB);
+
+  const roofLabelA = new THREE.Mesh(
+    new THREE.PlaneGeometry(labelLength, labelRoofDepth),
+    roofLabelMatA,
+  );
+  roofLabelA.rotation.x = -Math.PI / 2;
+  roofLabelA.position.set(0, roofY + 0.102, -placement.roofWidth * 0.25);
+  roofLabelA.renderOrder = 6;
+  group.add(roofLabelA);
+
+  const roofLabelB = new THREE.Mesh(
+    new THREE.PlaneGeometry(labelLength, labelRoofDepth),
+    roofLabelMatB,
+  );
+  roofLabelB.rotation.x = -Math.PI / 2;
+  roofLabelB.position.set(0, roofY + 0.102, placement.roofWidth * 0.25);
+  roofLabelB.renderOrder = 6;
+  group.add(roofLabelB);
+
+  const laneLabelA = new THREE.Mesh(
+    new THREE.PlaneGeometry(labelLength, labelLaneDepth),
+    laneLabelMatA,
+  );
+  laneLabelA.rotation.x = -Math.PI / 2;
+  laneLabelA.position.set(0, 0.056, -laneOffset);
+  laneLabelA.renderOrder = 5;
+  group.add(laneLabelA);
+
+  const laneLabelB = new THREE.Mesh(
+    new THREE.PlaneGeometry(labelLength, labelLaneDepth),
+    laneLabelMatB,
+  );
+  laneLabelB.rotation.x = -Math.PI / 2;
+  laneLabelB.position.set(0, 0.056, laneOffset);
+  laneLabelB.renderOrder = 5;
+  group.add(laneLabelB);
 
   return group;
 }
