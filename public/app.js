@@ -238,6 +238,8 @@ const dom = {
   resetPenaltyBtn: document.querySelector("#reset-penalty"),
   simWebglStatus: document.querySelector("#sim-webgl-status"),
   simPenaltyCard: document.querySelector("#sim-penalty-card"),
+  simSignalLeft: document.querySelector("#sim-signal-left"),
+  simSignalRight: document.querySelector("#sim-signal-right"),
   mapperImageFile: document.querySelector("#mapper-image-file"),
   mapperLaneWidth: document.querySelector("#mapper-lane-width"),
   mapperScaleMode: document.querySelector("#mapper-scale-mode"),
@@ -1613,6 +1615,12 @@ function handleMapperCanvasPointerUp() {
 function updateHudOverlay() {
   dom.hudSpeed.textContent = `Speed: ${Math.max(0, state.sim.car?.speedKmh ?? 0).toFixed(1)} km/h`;
   dom.hudSignal.textContent = `Signal: ${state.sim.lastSignal || "off"}`;
+  if (dom.simSignalLeft) {
+    dom.simSignalLeft.classList.toggle("active", state.sim.lastSignal === "left");
+  }
+  if (dom.simSignalRight) {
+    dom.simSignalRight.classList.toggle("active", state.sim.lastSignal === "right");
+  }
   dom.hudCam.textContent = `Cam: ${state.sim.camera}`;
   const penaltyTotal = Math.max(0, Math.round(state.sim.penaltyPoints || 0));
   if (dom.hudPenalty) {
@@ -7681,8 +7689,14 @@ function drawSimulation() {
   }
 }
 
-function setSignal(signal) {
-  state.sim.lastSignal = signal;
+function setSignal(signal, options = {}) {
+  const toggle = Boolean(options?.toggle);
+  if (toggle && state.sim.lastSignal === signal) {
+    state.sim.lastSignal = null;
+  } else {
+    state.sim.lastSignal = signal;
+  }
+  updateHudOverlay();
 }
 
 function simInputIdleTimeoutMs() {
@@ -8865,11 +8879,11 @@ function handleControlKey(key) {
   }
 
   if (key === "q") {
-    setSignal("left");
+    setSignal("left", { toggle: true });
     return;
   }
   if (key === "e") {
-    setSignal("right");
+    setSignal("right", { toggle: true });
     return;
   }
   if (key === "c") {
@@ -8927,15 +8941,10 @@ window.addEventListener("keyup", (event) => {
   }
 
   state.keys.delete(key);
-
-  if (key === "q" || key === "e") {
-    state.sim.lastSignal = null;
-  }
 });
 
 window.addEventListener("blur", () => {
   state.keys.clear();
-  state.sim.lastSignal = null;
   broadcastLocalPose(Date.now(), { force: true });
 });
 

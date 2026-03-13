@@ -558,6 +558,76 @@ pre {
   backdrop-filter: blur(4px);
 }
 
+.sim-signal-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 18px;
+}
+
+.sim-signal-flasher {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  opacity: 0;
+  filter: drop-shadow(0 0 0 rgba(255, 198, 94, 0));
+  transform: translateX(0);
+}
+
+.sim-signal-left {
+  transform: translateX(-10px);
+}
+
+.sim-signal-right {
+  transform: translateX(10px);
+}
+
+.sim-signal-flasher.active {
+  animation: simSignalBlink 0.95s steps(1, end) infinite;
+}
+
+.sim-signal-chevron {
+  width: 20px;
+  height: 20px;
+  border-top: 4px solid #ffc765;
+  border-right: 4px solid #ffc765;
+  border-radius: 2px;
+}
+
+.sim-signal-left .sim-signal-chevron {
+  transform: rotate(225deg);
+}
+
+.sim-signal-right .sim-signal-chevron {
+  transform: rotate(45deg);
+}
+
+@keyframes simSignalBlink {
+  0% {
+    opacity: 0.98;
+    filter: drop-shadow(0 0 12px rgba(255, 182, 62, 0.82));
+  }
+
+  44% {
+    opacity: 0.98;
+    filter: drop-shadow(0 0 14px rgba(255, 182, 62, 0.82));
+  }
+
+  45% {
+    opacity: 0.15;
+    filter: drop-shadow(0 0 0 rgba(255, 182, 62, 0));
+  }
+
+  100% {
+    opacity: 0.15;
+    filter: drop-shadow(0 0 0 rgba(255, 182, 62, 0));
+  }
+}
+
 .mini-map-canvas {
   position: absolute;
   right: 14px;

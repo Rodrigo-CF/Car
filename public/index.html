@@ -112,7 +112,7 @@
             <div class="kbd-grid">
               <p><strong>W/S</strong> accelerate/brake</p>
               <p><strong>A/D</strong> steer</p>
-              <p><strong>Q/E</strong> indicators</p>
+              <p><strong>Q/E</strong> toggle indicators</p>
               <p><strong>Space</strong> handbrake</p>
               <p><strong>C</strong> camera switch</p>
               <p><strong>R</strong> reset position</p>
@@ -129,6 +129,18 @@
             <canvas id="sim-gl-canvas" width="960" height="540"></canvas>
             <canvas id="sim-canvas" width="960" height="540"></canvas>
             <div id="sim-penalty-card" class="sim-penalty-card hidden" role="alert"></div>
+            <div id="sim-signal-overlay" class="sim-signal-overlay" aria-hidden="true">
+              <div id="sim-signal-left" class="sim-signal-flasher sim-signal-left">
+                <span class="sim-signal-chevron"></span>
+                <span class="sim-signal-chevron"></span>
+                <span class="sim-signal-chevron"></span>
+              </div>
+              <div id="sim-signal-right" class="sim-signal-flasher sim-signal-right">
+                <span class="sim-signal-chevron"></span>
+                <span class="sim-signal-chevron"></span>
+                <span class="sim-signal-chevron"></span>
+              </div>
+            </div>
             <div id="sim-hud" class="sim-hud">
               <span id="hud-speed">Speed: 0.0 km/h</span>
               <span id="hud-signal">Signal: off</span>
