@@ -4022,12 +4022,24 @@ function createCanopyLabelTexture(THREE, text, options = {}) {
   ctx2d.fillRect(0, 0, width, height);
   ctx2d.textAlign = "center";
   ctx2d.textBaseline = "middle";
-  ctx2d.font = `800 ${Math.round(height * fontScale)}px Sora, Manrope, sans-serif`;
-  ctx2d.lineWidth = Math.max(2, Math.round(height * 0.06));
+  const rawLines = String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const lines = rawLines.length ? rawLines : [String(text || "")];
+  const fontPx = Math.round(height * fontScale);
+  const lineHeight = Math.max(12, Math.round(fontPx * 0.88));
+  const totalTextHeight = lineHeight * (lines.length - 1);
+  const startY = height * 0.52 - totalTextHeight * 0.5;
+  ctx2d.font = `800 ${fontPx}px Sora, Manrope, sans-serif`;
+  ctx2d.lineWidth = Math.max(2, Math.round(height * 0.05));
   ctx2d.strokeStyle = stroke;
-  ctx2d.strokeText(text, width * 0.5, height * 0.52);
   ctx2d.fillStyle = fill;
-  ctx2d.fillText(text, width * 0.5, height * 0.52);
+  for (let i = 0; i < lines.length; i += 1) {
+    const y = startY + i * lineHeight;
+    ctx2d.strokeText(lines[i], width * 0.5, y);
+    ctx2d.fillText(lines[i], width * 0.5, y);
+  }
 
   const texture = new THREE.CanvasTexture(canvas);
   texture.wrapS = THREE.ClampToEdgeWrapping;
@@ -4295,37 +4307,37 @@ function buildStartCanopyGroup(THREE, checkpoint) {
   const labelLaneDepth = Math.max(0.95, laneWidth * 0.68);
   const labelRoofDepth = Math.max(1.05, placement.roofWidth * 0.26);
 
-  const roofTextureA = createCanopyLabelTexture(THREE, "RUTA A", {
+  const roofTextureA = createCanopyLabelTexture(THREE, "RUTA\nA", {
     width: 512,
     height: 176,
     bg: "rgba(0, 0, 0, 0.02)",
     fill: "#eaf3ff",
     stroke: "rgba(12, 28, 48, 0.78)",
-    fontScale: 0.56,
+    fontScale: 0.44,
   });
-  const roofTextureB = createCanopyLabelTexture(THREE, "RUTA B", {
+  const roofTextureB = createCanopyLabelTexture(THREE, "RUTA\nB", {
     width: 512,
     height: 176,
     bg: "rgba(0, 0, 0, 0.02)",
     fill: "#eaf3ff",
     stroke: "rgba(12, 28, 48, 0.78)",
-    fontScale: 0.56,
+    fontScale: 0.44,
   });
-  const laneTextureA = createCanopyLabelTexture(THREE, "RUTA A", {
+  const laneTextureA = createCanopyLabelTexture(THREE, "RUTA\nA", {
     width: 512,
     height: 192,
     bg: "rgba(0, 0, 0, 0)",
     fill: "rgba(247, 252, 255, 0.98)",
     stroke: "rgba(24, 45, 70, 0.62)",
-    fontScale: 0.54,
+    fontScale: 0.42,
   });
-  const laneTextureB = createCanopyLabelTexture(THREE, "RUTA B", {
+  const laneTextureB = createCanopyLabelTexture(THREE, "RUTA\nB", {
     width: 512,
     height: 192,
     bg: "rgba(0, 0, 0, 0)",
     fill: "rgba(247, 252, 255, 0.98)",
     stroke: "rgba(24, 45, 70, 0.62)",
-    fontScale: 0.54,
+    fontScale: 0.42,
   });
 
   const buildLabelMaterial = (texture) =>
@@ -4350,7 +4362,7 @@ function buildStartCanopyGroup(THREE, checkpoint) {
     new THREE.PlaneGeometry(labelLength, labelRoofDepth),
     roofLabelMatA,
   );
-  roofLabelA.rotation.x = -Math.PI / 2;
+  roofLabelA.rotation.set(-Math.PI / 2, Math.PI / 2, 0);
   roofLabelA.position.set(0, roofY + 0.102, -placement.roofWidth * 0.25);
   roofLabelA.renderOrder = 6;
   group.add(roofLabelA);
@@ -4359,7 +4371,7 @@ function buildStartCanopyGroup(THREE, checkpoint) {
     new THREE.PlaneGeometry(labelLength, labelRoofDepth),
     roofLabelMatB,
   );
-  roofLabelB.rotation.x = -Math.PI / 2;
+  roofLabelB.rotation.set(-Math.PI / 2, Math.PI / 2, 0);
   roofLabelB.position.set(0, roofY + 0.102, placement.roofWidth * 0.25);
   roofLabelB.renderOrder = 6;
   group.add(roofLabelB);
@@ -4368,7 +4380,7 @@ function buildStartCanopyGroup(THREE, checkpoint) {
     new THREE.PlaneGeometry(labelLength, labelLaneDepth),
     laneLabelMatA,
   );
-  laneLabelA.rotation.x = -Math.PI / 2;
+  laneLabelA.rotation.set(-Math.PI / 2, Math.PI / 2, 0);
   laneLabelA.position.set(0, 0.056, -laneOffset);
   laneLabelA.renderOrder = 5;
   group.add(laneLabelA);
@@ -4377,7 +4389,7 @@ function buildStartCanopyGroup(THREE, checkpoint) {
     new THREE.PlaneGeometry(labelLength, labelLaneDepth),
     laneLabelMatB,
   );
-  laneLabelB.rotation.x = -Math.PI / 2;
+  laneLabelB.rotation.set(-Math.PI / 2, Math.PI / 2, 0);
   laneLabelB.position.set(0, 0.056, laneOffset);
   laneLabelB.renderOrder = 5;
   group.add(laneLabelB);
