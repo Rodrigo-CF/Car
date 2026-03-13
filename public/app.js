@@ -192,6 +192,11 @@ const MAPPER_STORAGE_KEY = "routeA_override_v1";
 const MAPPER_SNAP_CANVAS_PX = 10;
 const PARALLEL_PARK_BOX_L_M = 6.2;
 const PARALLEL_PARK_BOX_W_M = 2.9;
+const ROAD_BASE_WIDTH_M = 8.0;
+const ROAD_THREE_LANE_WIDTH_M = 11.4;
+const ROAD_EXTRA_LANE_WIDTH_M = ROAD_THREE_LANE_WIDTH_M - ROAD_BASE_WIDTH_M;
+const ROAD_SHOULDER_HALF_EXTRA_M = 2.2;
+const LANE_ADD_EFFECT_RADIUS_M = 14;
 const ROAD_RENDER_SMOOTH_ITERATIONS = 1;
 const ROAD_RENDER_JOINT_SEGMENTS = 24;
 const CAMERA_MODE_CYCLE = ["first", "third", "right", "front", "left", "top"];
@@ -344,6 +349,7 @@ function mapperCheckpointColor(type) {
     parking_parallel: "#ffd166",
     parking_diagonal: "#ba68ff",
     speed_bump: "#ff9554",
+    lane_add: "#8f9bff",
     start_canopy: "#6ea8ff",
     tree: "#4fc46b",
     guard_tower: "#c8d8ff",
@@ -354,6 +360,7 @@ function mapperCheckpointColor(type) {
 function mapperAllowsMultiple(type) {
   return (
     type === "speed_bump" ||
+    type === "lane_add" ||
     type === "stop_line" ||
     type === "stop_line_free" ||
     type === "start_canopy" ||
@@ -398,6 +405,9 @@ function mapperDefaultMeta(type) {
     const { lane, laneCount } = mapperLaneSelection();
     return { lane, laneCount, bumpHeightM: 0.1 };
   }
+  if (type === "lane_add") {
+    return { extraLanes: 1 };
+  }
   if (type === "start_canopy") {
     return { lengthM: 4.3, heightM: 3.25 };
   }
@@ -434,6 +444,9 @@ function mapperCheckpointPrefix(type) {
   }
   if (type === "speed_bump") {
     return "A_BP";
+  }
+  if (type === "lane_add") {
+    return "A_LX";
   }
   if (type === "start_canopy") {
     return "A_SC";
@@ -756,6 +769,21 @@ function mapperBuildRouteAFromCanvas() {
       }
       meta.lengthM = Math.max(2.6, Math.min(7.75, canopyLength));
       meta.heightM = Math.max(2.3, Math.min(5.2, Number(meta.heightM) || 3.25));
+    }
+    if (cp.type === "lane_add") {
+      const preferredSeg = Number.isFinite(meta.snapSegmentIndex) ? Number(meta.snapSegmentIndex) : null;
+      const preferredHeading = preferredSeg != null ? Number(meta.headingDeg) : null;
+      const placement = inferParkingPlacement(world, preferredHeading, preferredSeg);
+      cpX = placement.snappedX;
+      cpY = placement.snappedY;
+      if (Number.isFinite(placement.headingRad)) {
+        meta.headingDeg = mapperRound((placement.headingRad * 180) / Math.PI, 1);
+      }
+      meta.sideSign = placement.sideSign || Math.sign(Number(meta.sideSign) || 0) || 1;
+      if (Number.isFinite(placement.segmentIndex)) {
+        meta.snapSegmentIndex = placement.segmentIndex;
+      }
+      meta.extraLanes = Math.max(1, Math.min(2, Math.round(Number(meta.extraLanes) || 1)));
     }
     if (cp.type === "speed_bump" || cp.type === "stop_line" || cp.type === "stop_line_free") {
       const preferredSeg = Number.isFinite(meta.snapSegmentIndex) ? Number(meta.snapSegmentIndex) : null;
@@ -1469,6 +1497,7 @@ function updateMapperCheckpointUi() {
     parking_parallel: "Parking Parallel: choose number of slots, then click left/right of path; bays auto-snap to that road edge.",
     parking_diagonal: "Parking Diagonal: choose slots/angle, then click left/right of path; bays auto-snap to that road edge.",
     speed_bump: "Speed Bump: choose lanes + lane side, then place the bump on that lane.",
+    lane_add: "Lane Add: click to one side of a path segment and that side gains +1 lane on that tramo.",
     start_canopy: "Start Canopy: click near the route and it auto-snaps to a segment center, covering both lanes.",
     tree: "Tree: place decorative trees around the circuit.",
     guard_tower: "Guard Tower: place a veedor cabin/checkpoint prop near the route (cute low-poly style).",
@@ -1548,10 +1577,15 @@ function handleMapperCanvasClick(event) {
       (type === "speed_bump" ||
         type === "stop_line" ||
         type === "stop_line_free" ||
-        type === "start_canopy") &&
+        type === "start_canopy" ||
+        type === "lane_add") &&
       Number.isFinite(frame?.segmentIndex)
     ) {
       meta.snapSegmentIndex = Math.max(0, Math.round(frame.segmentIndex));
+    }
+    if (type === "lane_add" && frame?.sideSign) {
+      meta.sideSign = frame.sideSign;
+      meta.extraLanes = Math.max(1, Math.min(2, Math.round(Number(meta.extraLanes) || 1)));
     }
     if (type === "traffic_light") {
       meta.facing = dom.mapperTrafficFacing.value === "reverse" ? "reverse" : "with_path";
@@ -1659,6 +1693,7 @@ function handleMapperCanvasPointerUp() {
       cp?.type === "stop_line" ||
       cp?.type === "stop_line_free" ||
       cp?.type === "speed_bump" ||
+      cp?.type === "lane_add" ||
       cp?.type === "start_canopy" ||
       cp?.type === "guard_tower"
     ) {
@@ -1666,7 +1701,7 @@ function handleMapperCanvasPointerUp() {
       if (frame && Number.isFinite(frame.headingDeg)) {
         cp.meta = cp.meta && typeof cp.meta === "object" ? cp.meta : {};
         cp.meta.headingDeg = mapperRound(frame.headingDeg, 1);
-        if ((cp.type === "traffic_light" || cp.type === "guard_tower") && frame.sideSign) {
+        if ((cp.type === "traffic_light" || cp.type === "guard_tower" || cp.type === "lane_add") && frame.sideSign) {
           cp.meta.sideSign = frame.sideSign;
         }
         if (Number.isFinite(frame.segmentIndex)) {
@@ -3124,6 +3159,7 @@ function colorForCheckpoint(checkpointType) {
     stop_line: "#f5f8ff",
     stop_line_free: "#dce8ff",
     speed_bump: "#ff9554",
+    lane_add: "#8f9bff",
     start_canopy: "#6ea8ff",
     tree: "#4fc46b",
     guard_tower: "#c8d8ff",
@@ -3168,25 +3204,26 @@ function normalizeHeadingDeltaRad(a, b) {
   return Math.abs(delta);
 }
 
-function routeFrameAt(x, y, preferredHeading = null) {
+function routeFrameAt(x, y, preferredHeading = null, preferredSegmentIndex = null) {
   const routePath = state.sim.routePath?.length ? state.sim.routePath : state.sim.routeDensePath;
   if (routePath.length >= 2) {
     let best = null;
     let bestScore = Number.POSITIVE_INFINITY;
     const useHeadingHint = Number.isFinite(preferredHeading);
+    const useSegmentHint = Number.isFinite(preferredSegmentIndex);
 
-    for (let i = 0; i < routePath.length - 1; i += 1) {
+    const evaluateSegment = (i) => {
       const a = routePath[i];
       const b = routePath[i + 1];
       if (!a || !b || b.move) {
-        continue;
+        return null;
       }
 
       const abx = b.x - a.x;
       const aby = b.y - a.y;
       const abLenSq = abx * abx + aby * aby;
       if (abLenSq < 1e-6) {
-        continue;
+        return null;
       }
 
       const apx = x - a.x;
@@ -3203,9 +3240,25 @@ function routeFrameAt(x, y, preferredHeading = null) {
         const headingPenaltyM = delta * 6;
         score += headingPenaltyM * headingPenaltyM;
       }
-      if (score < bestScore) {
-        bestScore = score;
-        best = { abx, aby, qx, qy };
+      return { abx, aby, qx, qy, heading, distSq, score, segmentIndex: i };
+    };
+
+    for (let i = 0; i < routePath.length - 1; i += 1) {
+      const candidate = evaluateSegment(i);
+      if (!candidate) {
+        continue;
+      }
+      if (candidate.score < bestScore) {
+        bestScore = candidate.score;
+        best = candidate;
+      }
+    }
+
+    if (useSegmentHint && preferredSegmentIndex >= 0 && preferredSegmentIndex < routePath.length - 1) {
+      const preferredCandidate = evaluateSegment(preferredSegmentIndex);
+      // At intersections, keep user-selected segment when still close enough.
+      if (preferredCandidate && preferredCandidate.distSq <= 64) {
+        best = preferredCandidate;
       }
     }
 
@@ -3220,6 +3273,7 @@ function routeFrameAt(x, y, preferredHeading = null) {
         right,
         center: { x: best.qx, y: best.qy },
         lateral,
+        segmentIndex: best.segmentIndex,
       };
     }
   }
@@ -3231,6 +3285,7 @@ function routeFrameAt(x, y, preferredHeading = null) {
     right: { x: Math.sin(heading), y: -Math.cos(heading) },
     center: { x, y },
     lateral: 0,
+    segmentIndex: null,
   };
 }
 
@@ -3246,7 +3301,8 @@ function checkpointHeadingAt(checkpoint) {
   return routeHeadingAt(checkpoint.x, checkpoint.y);
 }
 
-function routeRoadWidthAt(x, y) {
+function routeRoadHalfWidthsAt(x, y, preferredHeading = null, preferredSegmentIndex = null) {
+  const frame = routeFrameAt(x, y, preferredHeading, preferredSegmentIndex);
   let laneCount = 2;
   const checkpoints = state.sim.route?.checkpoints || [];
 
@@ -3273,7 +3329,57 @@ function routeRoadWidthAt(x, y) {
     }
   }
 
-  return laneCount >= 3 ? 11.4 : 8.0;
+  const baseRoadWidth = laneCount >= 3 ? ROAD_THREE_LANE_WIDTH_M : ROAD_BASE_WIDTH_M;
+  let leftHalf = baseRoadWidth * 0.5;
+  let rightHalf = baseRoadWidth * 0.5;
+
+  for (const checkpoint of checkpoints) {
+    if (checkpoint.type !== "lane_add") {
+      continue;
+    }
+
+    const dist = Math.hypot(x - checkpoint.x, y - checkpoint.y);
+    const cpSeg = Number(checkpoint.meta?.snapSegmentIndex);
+    const frameSeg = Number(frame.segmentIndex);
+    if (Number.isFinite(cpSeg) && Number.isFinite(frameSeg)) {
+      const segDiff = Math.abs(Math.round(cpSeg) - Math.round(frameSeg));
+      if (segDiff > 1) {
+        continue;
+      }
+      if (segDiff === 1 && dist > LANE_ADD_EFFECT_RADIUS_M * 0.72) {
+        continue;
+      }
+    } else if (dist > LANE_ADD_EFFECT_RADIUS_M) {
+      continue;
+    }
+
+    let sideSign = Math.sign(Number(checkpoint.meta?.sideSign) || 0);
+    if (!sideSign) {
+      const lateral =
+        (checkpoint.x - frame.center.x) * frame.right.x +
+        (checkpoint.y - frame.center.y) * frame.right.y;
+      sideSign = Math.sign(lateral) || 1;
+    }
+    const extraLanes = Math.max(1, Math.min(2, Math.round(Number(checkpoint.meta?.extraLanes) || 1)));
+    const addedWidth = ROAD_EXTRA_LANE_WIDTH_M * extraLanes;
+    if (sideSign > 0) {
+      rightHalf = Math.max(rightHalf, baseRoadWidth * 0.5 + addedWidth);
+    } else {
+      leftHalf = Math.max(leftHalf, baseRoadWidth * 0.5 + addedWidth);
+    }
+  }
+
+  return {
+    left: leftHalf,
+    right: rightHalf,
+    roadWidth: leftHalf + rightHalf,
+    laneCount,
+    frame,
+  };
+}
+
+function routeRoadWidthAt(x, y, preferredHeading = null, preferredSegmentIndex = null) {
+  return routeRoadHalfWidthsAt(x, y, preferredHeading, preferredSegmentIndex).roadWidth;
 }
 
 function parkingShape(checkpoint) {
@@ -3295,7 +3401,8 @@ function parkingShape(checkpoint) {
   const metaSideSign = Math.sign(Number(checkpoint?.meta?.sideSign) || 0);
   const detectedSide = Math.sign(frame.lateral);
   const sideSign = metaSideSign || detectedSide || defaultSide;
-  const roadHalfWidth = routeRoadWidthAt(frame.center.x, frame.center.y) * 0.5;
+  const halfWidths = routeRoadHalfWidthsAt(frame.center.x, frame.center.y, baseHeading, frame.segmentIndex);
+  const roadHalfWidth = sideSign > 0 ? halfWidths.right : halfWidths.left;
   const outsideOffset = checkpoint.type === "parking_diagonal" ? Math.max(0.9, boxW * 0.55) : 0.02;
   const edgeOffset = roadHalfWidth + outsideOffset;
   const curbGap = 0.0;
@@ -3950,7 +4057,11 @@ function trafficLightPlacement(checkpoint) {
   const facing = checkpoint.meta?.facing === "reverse" ? "reverse" : "with_path";
   const signalHeading = facing === "reverse" ? heading + Math.PI : heading;
   const sideSign = Math.sign(Number(checkpoint.meta?.sideSign) || 0) || 1;
-  const roadHalfWidth = routeRoadWidthAt(checkpoint.x, checkpoint.y) * 0.5;
+  const preferredSeg = Number.isFinite(Number(checkpoint.meta?.snapSegmentIndex))
+    ? Number(checkpoint.meta.snapSegmentIndex)
+    : null;
+  const halfWidths = routeRoadHalfWidthsAt(checkpoint.x, checkpoint.y, heading, preferredSeg);
+  const roadHalfWidth = sideSign > 0 ? halfWidths.right : halfWidths.left;
   const right = { x: Math.sin(heading), y: -Math.cos(heading) };
   const poleOffset = roadHalfWidth + 0.9;
   const poleBase = {
@@ -3970,7 +4081,11 @@ function guardTowerPlacement(checkpoint) {
   const heading = checkpointHeadingAt(checkpoint);
   const size = Math.max(0.75, Math.min(1.8, Number(checkpoint.meta?.size) || 1));
   const sideSign = Math.sign(Number(checkpoint.meta?.sideSign) || 0) || 1;
-  const roadHalfWidth = routeRoadWidthAt(checkpoint.x, checkpoint.y) * 0.5;
+  const preferredSeg = Number.isFinite(Number(checkpoint.meta?.snapSegmentIndex))
+    ? Number(checkpoint.meta.snapSegmentIndex)
+    : null;
+  const halfWidths = routeRoadHalfWidthsAt(checkpoint.x, checkpoint.y, heading, preferredSeg);
+  const roadHalfWidth = sideSign > 0 ? halfWidths.right : halfWidths.left;
   const right = { x: Math.sin(heading), y: -Math.cos(heading) };
   // Keep the tower just outside the gray road edge (inside shoulder start), not outside the brown shoulder.
   // Offset is computed from tower depth so its near face sits a tiny gap from the road edge.
@@ -3988,7 +4103,11 @@ function guardTowerPlacement(checkpoint) {
 
 function startCanopyPlacement(checkpoint) {
   const heading = checkpointHeadingAt(checkpoint);
-  const roadWidth = routeRoadWidthAt(checkpoint.x, checkpoint.y);
+  const preferredSeg = Number.isFinite(Number(checkpoint.meta?.snapSegmentIndex))
+    ? Number(checkpoint.meta.snapSegmentIndex)
+    : null;
+  const halfWidths = routeRoadHalfWidthsAt(checkpoint.x, checkpoint.y, heading, preferredSeg);
+  const roadWidth = halfWidths.roadWidth;
   let rawLength = Number(checkpoint.meta?.lengthM);
   if (!Number.isFinite(rawLength)) {
     rawLength = 4.3;
@@ -4873,23 +4992,50 @@ function rebuildThreeRouteScene() {
     const angle = Math.atan2(dz, dx);
     const mx = (ax + bx) / 2;
     const mz = (az + bz) / 2;
-    const roadWidth = routeRoadWidthAt(mx, -mz);
-    const shoulderWidth = roadWidth + 4.2;
+    const segHeadingMap = Math.atan2(b.y - a.y, b.x - a.x);
+    const halfWidths = routeRoadHalfWidthsAt(mx, -mz, segHeadingMap);
+    const roadLeft = halfWidths.left;
+    const roadRight = halfWidths.right;
+    const shoulderLeft = roadLeft + ROAD_SHOULDER_HALF_EXTRA_M;
+    const shoulderRight = roadRight + ROAD_SHOULDER_HALF_EXTRA_M;
+    const rightMap = { x: Math.sin(segHeadingMap), y: -Math.cos(segHeadingMap) };
 
-    const shoulder = new THREE.Mesh(new THREE.BoxGeometry(len, 0.03, shoulderWidth), shoulderMat);
-    shoulder.position.set(mx, 0.005, mz);
-    shoulder.rotation.y = -angle;
+    const shoulderCorners = [
+      { x: a.x - rightMap.x * shoulderLeft, y: a.y - rightMap.y * shoulderLeft },
+      { x: b.x - rightMap.x * shoulderLeft, y: b.y - rightMap.y * shoulderLeft },
+      { x: b.x + rightMap.x * shoulderRight, y: b.y + rightMap.y * shoulderRight },
+      { x: a.x + rightMap.x * shoulderRight, y: a.y + rightMap.y * shoulderRight },
+    ];
+    const shoulder = new THREE.Mesh(buildGroundQuadGeometry(THREE, shoulderCorners), shoulderMat);
+    shoulder.position.y = 0.005;
     routeGroup.add(shoulder);
 
-    const road = new THREE.Mesh(new THREE.BoxGeometry(len, 0.04, roadWidth), roadMat);
-    road.position.set(mx, 0.02, mz);
-    road.rotation.y = -angle;
+    const roadCorners = [
+      { x: a.x - rightMap.x * roadLeft, y: a.y - rightMap.y * roadLeft },
+      { x: b.x - rightMap.x * roadLeft, y: b.y - rightMap.y * roadLeft },
+      { x: b.x + rightMap.x * roadRight, y: b.y + rightMap.y * roadRight },
+      { x: a.x + rightMap.x * roadRight, y: a.y + rightMap.y * roadRight },
+    ];
+    const road = new THREE.Mesh(buildGroundQuadGeometry(THREE, roadCorners), roadMat);
+    road.position.y = 0.02;
     routeGroup.add(road);
 
     const centerLine = new THREE.Mesh(new THREE.BoxGeometry(len * 0.8, 0.042, 0.16), lineMat);
     centerLine.position.set(mx, 0.043, mz);
     centerLine.rotation.y = -angle;
     routeGroup.add(centerLine);
+
+    const sideDiff = roadRight - roadLeft;
+    if (Math.abs(sideDiff) > ROAD_EXTRA_LANE_WIDTH_M * 0.35) {
+      const sideSign = sideDiff > 0 ? 1 : -1;
+      const dividerOffset = Math.min(roadLeft, roadRight) * sideSign;
+      const dividerX = mx + rightMap.x * dividerOffset;
+      const dividerY = -mz + rightMap.y * dividerOffset;
+      const extraLaneDivider = new THREE.Mesh(new THREE.BoxGeometry(len * 0.76, 0.042, 0.12), lineMat);
+      extraLaneDivider.position.set(dividerX, 0.043, -dividerY);
+      extraLaneDivider.rotation.y = -angle;
+      routeGroup.add(extraLaneDivider);
+    }
   }
 
   // Fill segment joints with rounded caps so curves/roundabouts look smooth
@@ -4907,18 +5053,19 @@ function rebuildThreeRouteScene() {
       continue;
     }
 
-    const roadWidth = routeRoadWidthAt(point.x, point.y);
-    const shoulderWidth = roadWidth + 4.2;
+    const halfWidths = routeRoadHalfWidthsAt(point.x, point.y);
+    const roadRadius = Math.max(halfWidths.left, halfWidths.right);
+    const shoulderRadius = roadRadius + ROAD_SHOULDER_HALF_EXTRA_M;
 
     const shoulderCap = new THREE.Mesh(
-      new THREE.CylinderGeometry(shoulderWidth * 0.5, shoulderWidth * 0.5, 0.03, ROAD_RENDER_JOINT_SEGMENTS),
+      new THREE.CylinderGeometry(shoulderRadius, shoulderRadius, 0.03, ROAD_RENDER_JOINT_SEGMENTS),
       shoulderMat,
     );
     shoulderCap.position.set(point.x, 0.005, -point.y);
     routeGroup.add(shoulderCap);
 
     const roadCap = new THREE.Mesh(
-      new THREE.CylinderGeometry(roadWidth * 0.5, roadWidth * 0.5, 0.04, ROAD_RENDER_JOINT_SEGMENTS),
+      new THREE.CylinderGeometry(roadRadius, roadRadius, 0.04, ROAD_RENDER_JOINT_SEGMENTS),
       roadMat,
     );
     roadCap.position.set(point.x, 0.02, -point.y);
@@ -7565,12 +7712,31 @@ function drawRoadPerspective(horizonY) {
   for (let i = 0; i < sampled.length - 1; i += 1) {
     const far = sampled[i];
     const near = sampled[i + 1];
-    const segmentRoadWidth = routeRoadWidthAt((far.x + near.x) * 0.5, (far.y + near.y) * 0.5);
+    const farFrame = routeFrameAt(far.x, far.y);
+    const nearFrame = routeFrameAt(near.x, near.y);
+    const farHalfWidths = routeRoadHalfWidthsAt(far.x, far.y, farFrame.heading, farFrame.segmentIndex);
+    const nearHalfWidths = routeRoadHalfWidthsAt(near.x, near.y, nearFrame.heading, nearFrame.segmentIndex);
 
-    const shoulderFarLeft = projectPerspective(far.right - (segmentRoadWidth / 2 + 2.2), far.forward, horizonY);
-    const shoulderFarRight = projectPerspective(far.right + (segmentRoadWidth / 2 + 2.2), far.forward, horizonY);
-    const shoulderNearLeft = projectPerspective(near.right - (segmentRoadWidth / 2 + 2.2), near.forward, horizonY);
-    const shoulderNearRight = projectPerspective(near.right + (segmentRoadWidth / 2 + 2.2), near.forward, horizonY);
+    const shoulderFarLeft = projectWorldPoint(
+      far.x - farFrame.right.x * (farHalfWidths.left + ROAD_SHOULDER_HALF_EXTRA_M),
+      far.y - farFrame.right.y * (farHalfWidths.left + ROAD_SHOULDER_HALF_EXTRA_M),
+      horizonY,
+    );
+    const shoulderFarRight = projectWorldPoint(
+      far.x + farFrame.right.x * (farHalfWidths.right + ROAD_SHOULDER_HALF_EXTRA_M),
+      far.y + farFrame.right.y * (farHalfWidths.right + ROAD_SHOULDER_HALF_EXTRA_M),
+      horizonY,
+    );
+    const shoulderNearLeft = projectWorldPoint(
+      near.x - nearFrame.right.x * (nearHalfWidths.left + ROAD_SHOULDER_HALF_EXTRA_M),
+      near.y - nearFrame.right.y * (nearHalfWidths.left + ROAD_SHOULDER_HALF_EXTRA_M),
+      horizonY,
+    );
+    const shoulderNearRight = projectWorldPoint(
+      near.x + nearFrame.right.x * (nearHalfWidths.right + ROAD_SHOULDER_HALF_EXTRA_M),
+      near.y + nearFrame.right.y * (nearHalfWidths.right + ROAD_SHOULDER_HALF_EXTRA_M),
+      horizonY,
+    );
 
     if (!shoulderFarLeft || !shoulderFarRight || !shoulderNearLeft || !shoulderNearRight) {
       continue;
@@ -7585,10 +7751,26 @@ function drawRoadPerspective(horizonY) {
     ctx.closePath();
     ctx.fill();
 
-    const roadFarLeft = projectPerspective(far.right - segmentRoadWidth / 2, far.forward, horizonY);
-    const roadFarRight = projectPerspective(far.right + segmentRoadWidth / 2, far.forward, horizonY);
-    const roadNearLeft = projectPerspective(near.right - segmentRoadWidth / 2, near.forward, horizonY);
-    const roadNearRight = projectPerspective(near.right + segmentRoadWidth / 2, near.forward, horizonY);
+    const roadFarLeft = projectWorldPoint(
+      far.x - farFrame.right.x * farHalfWidths.left,
+      far.y - farFrame.right.y * farHalfWidths.left,
+      horizonY,
+    );
+    const roadFarRight = projectWorldPoint(
+      far.x + farFrame.right.x * farHalfWidths.right,
+      far.y + farFrame.right.y * farHalfWidths.right,
+      horizonY,
+    );
+    const roadNearLeft = projectWorldPoint(
+      near.x - nearFrame.right.x * nearHalfWidths.left,
+      near.y - nearFrame.right.y * nearHalfWidths.left,
+      horizonY,
+    );
+    const roadNearRight = projectWorldPoint(
+      near.x + nearFrame.right.x * nearHalfWidths.right,
+      near.y + nearFrame.right.y * nearHalfWidths.right,
+      horizonY,
+    );
 
     if (!roadFarLeft || !roadFarRight || !roadNearLeft || !roadNearRight) {
       continue;
@@ -7626,7 +7808,8 @@ function drawCheckpointSigns(horizonY) {
       checkpoint.type === "parking_diagonal" ||
       checkpoint.type === "traffic_light" ||
       checkpoint.type === "stop_line" ||
-      checkpoint.type === "stop_line_free"
+      checkpoint.type === "stop_line_free" ||
+      checkpoint.type === "lane_add"
     ) {
       continue;
     }
@@ -7666,6 +7849,7 @@ function drawCheckpointSigns(horizonY) {
       .replace("speed_zone", "spd")
       .replace("roundabout", "ovl")
       .replace("speed_bump", "bmp")
+      .replace("lane_add", "lane+")
       .replace("start_canopy", "canopy")
       .replace("guard_tower", "gtw")
       .replace("tree", "tree");
@@ -8072,7 +8256,8 @@ function drawThirdPersonScene() {
       checkpoint.type === "parking_parallel" ||
       checkpoint.type === "parking_diagonal" ||
       checkpoint.type === "stop_line" ||
-      checkpoint.type === "stop_line_free"
+      checkpoint.type === "stop_line_free" ||
+      checkpoint.type === "lane_add"
     ) {
       continue;
     }
