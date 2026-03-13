@@ -344,6 +344,7 @@ function mapperCheckpointColor(type) {
     parking_parallel: "#ffd166",
     parking_diagonal: "#ba68ff",
     speed_bump: "#ff9554",
+    start_canopy: "#6ea8ff",
     tree: "#4fc46b",
     guard_tower: "#c8d8ff",
   };
@@ -355,6 +356,7 @@ function mapperAllowsMultiple(type) {
     type === "speed_bump" ||
     type === "stop_line" ||
     type === "stop_line_free" ||
+    type === "start_canopy" ||
     type === "tree" ||
     type === "guard_tower" ||
     type === "traffic_light"
@@ -396,6 +398,9 @@ function mapperDefaultMeta(type) {
     const { lane, laneCount } = mapperLaneSelection();
     return { lane, laneCount, bumpHeightM: 0.1 };
   }
+  if (type === "start_canopy") {
+    return { lengthM: 8.6, heightM: 3.25 };
+  }
   if (type === "tree") {
     return { size: 1 };
   }
@@ -429,6 +434,9 @@ function mapperCheckpointPrefix(type) {
   }
   if (type === "speed_bump") {
     return "A_BP";
+  }
+  if (type === "start_canopy") {
+    return "A_SC";
   }
   if (type === "tree") {
     return "A_TR";
@@ -726,6 +734,21 @@ function mapperBuildRouteAFromCanvas() {
       if (Number.isFinite(placement.segmentIndex)) {
         meta.snapSegmentIndex = placement.segmentIndex;
       }
+    }
+    if (cp.type === "start_canopy") {
+      const preferredSeg = Number.isFinite(meta.snapSegmentIndex) ? Number(meta.snapSegmentIndex) : null;
+      const preferredHeading = preferredSeg != null ? Number(meta.headingDeg) : null;
+      const placement = inferParkingPlacement(world, preferredHeading, preferredSeg);
+      cpX = placement.snappedX;
+      cpY = placement.snappedY;
+      if (Number.isFinite(placement.headingRad)) {
+        meta.headingDeg = mapperRound((placement.headingRad * 180) / Math.PI, 1);
+      }
+      if (Number.isFinite(placement.segmentIndex)) {
+        meta.snapSegmentIndex = placement.segmentIndex;
+      }
+      meta.lengthM = Math.max(5.2, Math.min(15.5, Number(meta.lengthM) || 8.6));
+      meta.heightM = Math.max(2.3, Math.min(5.2, Number(meta.heightM) || 3.25));
     }
     if (cp.type === "speed_bump" || cp.type === "stop_line" || cp.type === "stop_line_free") {
       const preferredSeg = Number.isFinite(meta.snapSegmentIndex) ? Number(meta.snapSegmentIndex) : null;
@@ -1439,6 +1462,7 @@ function updateMapperCheckpointUi() {
     parking_parallel: "Parking Parallel: choose number of slots, then click left/right of path; bays auto-snap to that road edge.",
     parking_diagonal: "Parking Diagonal: choose slots/angle, then click left/right of path; bays auto-snap to that road edge.",
     speed_bump: "Speed Bump: choose lanes + lane side, then place the bump on that lane.",
+    start_canopy: "Start Canopy: click near the route and it auto-snaps to a segment center, covering both lanes.",
     tree: "Tree: place decorative trees around the circuit.",
     guard_tower: "Guard Tower: place a veedor cabin/checkpoint prop near the route (cute low-poly style).",
   };
@@ -1513,7 +1537,13 @@ function handleMapperCanvasClick(event) {
       // Persist chosen side so parking auto-snaps to road edge without manual offset hunting.
       meta.sideSign = frame.sideSign;
     }
-    if ((type === "speed_bump" || type === "stop_line" || type === "stop_line_free") && Number.isFinite(frame?.segmentIndex)) {
+    if (
+      (type === "speed_bump" ||
+        type === "stop_line" ||
+        type === "stop_line_free" ||
+        type === "start_canopy") &&
+      Number.isFinite(frame?.segmentIndex)
+    ) {
       meta.snapSegmentIndex = Math.max(0, Math.round(frame.segmentIndex));
     }
     if (type === "traffic_light") {
@@ -1622,6 +1652,7 @@ function handleMapperCanvasPointerUp() {
       cp?.type === "stop_line" ||
       cp?.type === "stop_line_free" ||
       cp?.type === "speed_bump" ||
+      cp?.type === "start_canopy" ||
       cp?.type === "guard_tower"
     ) {
       const frame = mapperFrameAtImagePoint(cp);
@@ -3086,6 +3117,7 @@ function colorForCheckpoint(checkpointType) {
     stop_line: "#f5f8ff",
     stop_line_free: "#dce8ff",
     speed_bump: "#ff9554",
+    start_canopy: "#6ea8ff",
     tree: "#4fc46b",
     guard_tower: "#c8d8ff",
     start: "#9fd3ff",
@@ -3947,6 +3979,15 @@ function guardTowerPlacement(checkpoint) {
   return { center, faceHeading, heading, sideSign };
 }
 
+function startCanopyPlacement(checkpoint) {
+  const heading = checkpointHeadingAt(checkpoint);
+  const roadWidth = routeRoadWidthAt(checkpoint.x, checkpoint.y);
+  const length = Math.max(5.2, Math.min(15.5, Number(checkpoint.meta?.lengthM) || 8.6));
+  const height = Math.max(2.3, Math.min(5.2, Number(checkpoint.meta?.heightM) || 3.25));
+  const roofWidth = roadWidth + 1.0;
+  return { heading, roadWidth, length, height, roofWidth };
+}
+
 function clearThreeGroup(group) {
   if (!group) {
     return;
@@ -4129,6 +4170,71 @@ function buildGuardTowerGroup(THREE, checkpoint) {
   cap.position.set(0, 0.76 * size, 0);
   cap.scale.y = 0.55;
   observer.add(cap);
+
+  return group;
+}
+
+function buildStartCanopyGroup(THREE, checkpoint) {
+  const placement = startCanopyPlacement(checkpoint);
+  const group = new THREE.Group();
+  group.position.set(checkpoint.x, 0, -checkpoint.y);
+  group.rotation.y = placement.heading;
+
+  const postMat = new THREE.MeshStandardMaterial({ color: 0xf2f5f8, roughness: 0.9, metalness: 0.04 });
+  const beamMat = new THREE.MeshStandardMaterial({ color: 0xa36a3f, roughness: 0.78, metalness: 0.08 });
+  const roofMat = new THREE.MeshStandardMaterial({ color: 0x3f73bd, roughness: 0.66, metalness: 0.16 });
+  const ridgeMat = new THREE.MeshStandardMaterial({ color: 0x2f5d9f, roughness: 0.62, metalness: 0.2 });
+
+  const roofY = placement.height;
+  const postHeight = Math.max(2.0, roofY - 0.14);
+  const postInsetX = Math.max(0.45, placement.length * 0.5 - 0.55);
+  const postInsetZ = Math.max(0.45, placement.roofWidth * 0.5 - 0.4);
+
+  const addPost = (x, z) => {
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, postHeight, 10), postMat);
+    post.position.set(x, postHeight * 0.5, z);
+    group.add(post);
+  };
+  addPost(-postInsetX, -postInsetZ);
+  addPost(-postInsetX, postInsetZ);
+  addPost(postInsetX, -postInsetZ);
+  addPost(postInsetX, postInsetZ);
+
+  const beamY = postHeight - 0.12;
+  const frontBeam = new THREE.Mesh(
+    new THREE.BoxGeometry(placement.length + 0.22, 0.12, 0.12),
+    beamMat,
+  );
+  frontBeam.position.set(0, beamY, postInsetZ);
+  group.add(frontBeam);
+  const backBeam = frontBeam.clone();
+  backBeam.position.z = -postInsetZ;
+  group.add(backBeam);
+
+  const sideBeamGeo = new THREE.BoxGeometry(0.12, 0.12, placement.roofWidth + 0.22);
+  const sideBeamL = new THREE.Mesh(sideBeamGeo, beamMat);
+  sideBeamL.position.set(-postInsetX, beamY, 0);
+  group.add(sideBeamL);
+  const sideBeamR = sideBeamL.clone();
+  sideBeamR.position.x = postInsetX;
+  group.add(sideBeamR);
+
+  const roof = new THREE.Mesh(
+    new THREE.BoxGeometry(placement.length + 0.68, 0.09, placement.roofWidth + 0.48),
+    roofMat,
+  );
+  roof.position.y = roofY;
+  group.add(roof);
+
+  const ribCount = Math.max(10, Math.round((placement.roofWidth + 0.48) / 0.32));
+  const ribSpan = placement.roofWidth + 0.42;
+  for (let i = 0; i < ribCount; i += 1) {
+    const t = ribCount === 1 ? 0.5 : i / (ribCount - 1);
+    const z = -ribSpan * 0.5 + t * ribSpan;
+    const rib = new THREE.Mesh(new THREE.BoxGeometry(placement.length + 0.72, 0.026, 0.062), ridgeMat);
+    rib.position.set(0, roofY + 0.055, z);
+    group.add(rib);
+  }
 
   return group;
 }
@@ -4762,6 +4868,12 @@ function rebuildThreeRouteScene() {
     );
     lineMesh.position.y = 0.063;
     routeGroup.add(lineMesh);
+  }
+
+  const startCanopyCheckpoints = routeCheckpoints("start_canopy");
+  for (const checkpoint of startCanopyCheckpoints) {
+    const canopyGroup = buildStartCanopyGroup(THREE, checkpoint);
+    routeGroup.add(canopyGroup);
   }
 
   const trafficCps = routeCheckpoints("traffic_light");
@@ -7396,6 +7508,7 @@ function drawCheckpointSigns(horizonY) {
       .replace("speed_zone", "spd")
       .replace("roundabout", "ovl")
       .replace("speed_bump", "bmp")
+      .replace("start_canopy", "canopy")
       .replace("guard_tower", "gtw")
       .replace("tree", "tree");
 
