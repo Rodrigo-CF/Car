@@ -345,6 +345,7 @@ function mapperCheckpointColor(type) {
     parking_diagonal: "#ba68ff",
     speed_bump: "#ff9554",
     tree: "#4fc46b",
+    guard_tower: "#c8d8ff",
   };
   return palette[type] || "#d4e7f1";
 }
@@ -355,6 +356,7 @@ function mapperAllowsMultiple(type) {
     type === "stop_line" ||
     type === "stop_line_free" ||
     type === "tree" ||
+    type === "guard_tower" ||
     type === "traffic_light"
   );
 }
@@ -397,6 +399,9 @@ function mapperDefaultMeta(type) {
   if (type === "tree") {
     return { size: 1 };
   }
+  if (type === "guard_tower") {
+    return { size: 1 };
+  }
   return {};
 }
 
@@ -427,6 +432,9 @@ function mapperCheckpointPrefix(type) {
   }
   if (type === "tree") {
     return "A_TR";
+  }
+  if (type === "guard_tower") {
+    return "A_GT";
   }
   return "A_CP";
 }
@@ -1418,6 +1426,7 @@ function updateMapperCheckpointUi() {
     parking_diagonal: "Parking Diagonal: choose slots/angle, then click left/right of path; bays auto-snap to that road edge.",
     speed_bump: "Speed Bump: choose lanes + lane side, then place the bump on that lane.",
     tree: "Tree: place decorative trees around the circuit.",
+    guard_tower: "Guard Tower: place a veedor cabin/checkpoint prop near the route (cute low-poly style).",
   };
   dom.mapperCheckpointHelp.textContent =
     helpByType[type] || "Select a type, click Place Checkpoint, then click on the map.";
@@ -3055,6 +3064,7 @@ function colorForCheckpoint(checkpointType) {
     stop_line_free: "#dce8ff",
     speed_bump: "#ff9554",
     tree: "#4fc46b",
+    guard_tower: "#c8d8ff",
     start: "#9fd3ff",
   };
 
@@ -3940,6 +3950,119 @@ function buildGroundLoopGeometry(THREE, corners) {
   return new THREE.BufferGeometry().setFromPoints(points);
 }
 
+function buildGuardTowerGroup(THREE, checkpoint) {
+  const size = Math.max(0.75, Math.min(1.8, Number(checkpoint.meta?.size) || 1));
+  const headingDeg = Number(checkpoint.meta?.headingDeg);
+  const heading = Number.isFinite(headingDeg) ? toRadians(headingDeg) : routeHeadingAt(checkpoint.x, checkpoint.y);
+  const group = new THREE.Group();
+  group.position.set(checkpoint.x, 0, -checkpoint.y);
+  group.rotation.y = -heading;
+
+  const slabMat = new THREE.MeshStandardMaterial({ color: 0x71767b, roughness: 0.9, metalness: 0.06 });
+  const wallMat = new THREE.MeshStandardMaterial({ color: 0xf2f5f8, roughness: 0.94, metalness: 0.02 });
+  const roofMat = new THREE.MeshStandardMaterial({ color: 0x7f888f, roughness: 0.78, metalness: 0.12 });
+  const railMat = new THREE.MeshStandardMaterial({ color: 0x3c4349, roughness: 0.75, metalness: 0.22 });
+  const glassMat = new THREE.MeshStandardMaterial({
+    color: 0xa7c6d1,
+    roughness: 0.2,
+    metalness: 0.08,
+    transparent: true,
+    opacity: 0.58,
+  });
+  const legoBlueMat = new THREE.MeshStandardMaterial({ color: 0x3f7ce4, roughness: 0.75, metalness: 0.05 });
+  const legoSkinMat = new THREE.MeshStandardMaterial({ color: 0xffd19e, roughness: 0.8, metalness: 0.02 });
+  const legoDarkMat = new THREE.MeshStandardMaterial({ color: 0x1f232a, roughness: 0.82, metalness: 0.02 });
+
+  const basePad = new THREE.Mesh(new THREE.BoxGeometry(3.4 * size, 0.08 * size, 3.2 * size), slabMat);
+  basePad.position.y = 0.04 * size;
+  group.add(basePad);
+
+  const towerBody = new THREE.Mesh(new THREE.CylinderGeometry(0.8 * size, 1.1 * size, 2.45 * size, 4), wallMat);
+  towerBody.position.y = 1.23 * size;
+  towerBody.rotation.y = Math.PI * 0.25;
+  group.add(towerBody);
+
+  const cabin = new THREE.Mesh(new THREE.BoxGeometry(2.15 * size, 1.1 * size, 2.15 * size), wallMat);
+  cabin.position.y = 2.45 * size;
+  group.add(cabin);
+
+  const roof = new THREE.Mesh(new THREE.ConeGeometry(2.35 * size, 0.58 * size, 4), roofMat);
+  roof.position.y = 3.32 * size;
+  roof.rotation.y = Math.PI * 0.25;
+  group.add(roof);
+
+  const addWindow = (x, z, rotationY) => {
+    const panel = new THREE.Mesh(new THREE.PlaneGeometry(1.25 * size, 0.48 * size), glassMat);
+    panel.position.set(x, 2.52 * size, z);
+    panel.rotation.y = rotationY;
+    group.add(panel);
+  };
+  addWindow(0, 1.09 * size, 0);
+  addWindow(0, -1.09 * size, Math.PI);
+  addWindow(1.09 * size, 0, -Math.PI * 0.5);
+  addWindow(-1.09 * size, 0, Math.PI * 0.5);
+
+  const landing = new THREE.Mesh(new THREE.BoxGeometry(1.2 * size, 0.08 * size, 0.95 * size), wallMat);
+  landing.position.set(1.32 * size, 1.8 * size, 0.82 * size);
+  group.add(landing);
+
+  for (let step = 0; step < 6; step += 1) {
+    const stair = new THREE.Mesh(new THREE.BoxGeometry(0.58 * size, 0.08 * size, 0.26 * size), wallMat);
+    stair.position.set(
+      1.35 * size,
+      (0.16 + step * 0.27) * size,
+      (1.6 - step * 0.22) * size,
+    );
+    group.add(stair);
+  }
+
+  const addRailPole = (x, y, z) => {
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.018 * size, 0.018 * size, 0.52 * size, 8), railMat);
+    pole.position.set(x, y, z);
+    group.add(pole);
+  };
+  addRailPole(1.84 * size, 2.08 * size, 1.25 * size);
+  addRailPole(1.84 * size, 2.08 * size, 0.66 * size);
+  addRailPole(1.84 * size, 1.55 * size, 1.45 * size);
+
+  const railTop = new THREE.Mesh(new THREE.BoxGeometry(0.04 * size, 0.04 * size, 0.62 * size), railMat);
+  railTop.position.set(1.84 * size, 2.34 * size, 0.95 * size);
+  group.add(railTop);
+
+  const observer = new THREE.Group();
+  observer.position.set(0.02 * size, 2.08 * size, 0.45 * size);
+  group.add(observer);
+
+  const legL = new THREE.Mesh(new THREE.BoxGeometry(0.12 * size, 0.24 * size, 0.12 * size), legoDarkMat);
+  legL.position.set(-0.08 * size, 0.12 * size, 0);
+  observer.add(legL);
+  const legR = legL.clone();
+  legR.position.x = 0.08 * size;
+  observer.add(legR);
+
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.34 * size, 0.32 * size, 0.2 * size), legoBlueMat);
+  torso.position.set(0, 0.4 * size, 0);
+  observer.add(torso);
+
+  const armL = new THREE.Mesh(new THREE.BoxGeometry(0.09 * size, 0.25 * size, 0.09 * size), legoBlueMat);
+  armL.position.set(-0.24 * size, 0.4 * size, 0);
+  observer.add(armL);
+  const armR = armL.clone();
+  armR.position.x = 0.24 * size;
+  observer.add(armR);
+
+  const head = new THREE.Mesh(new THREE.CylinderGeometry(0.1 * size, 0.1 * size, 0.14 * size, 10), legoSkinMat);
+  head.position.set(0, 0.66 * size, 0);
+  observer.add(head);
+
+  const cap = new THREE.Mesh(new THREE.SphereGeometry(0.11 * size, 10, 10), legoDarkMat);
+  cap.position.set(0, 0.76 * size, 0);
+  cap.scale.y = 0.55;
+  observer.add(cap);
+
+  return group;
+}
+
 function buildDashDisplayGeometry(THREE, topScale = 0.78) {
   const clampedTop = Math.max(0.45, Math.min(1, topScale));
   const halfBottom = 0.5;
@@ -4610,6 +4733,12 @@ function rebuildThreeRouteScene() {
 
     routeGroup.add(tlGroup);
     three.trafficLightRefs.push({ redMat, greenMat });
+  }
+
+  const guardTowerCheckpoints = routeCheckpoints("guard_tower");
+  for (const checkpoint of guardTowerCheckpoints) {
+    const towerGroup = buildGuardTowerGroup(THREE, checkpoint);
+    routeGroup.add(towerGroup);
   }
 
   const treeCheckpoints = routeCheckpoints("tree");
@@ -7197,6 +7326,7 @@ function drawCheckpointSigns(horizonY) {
       .replace("speed_zone", "spd")
       .replace("roundabout", "ovl")
       .replace("speed_bump", "bmp")
+      .replace("guard_tower", "gtw")
       .replace("tree", "tree");
 
     ctx.fillText(shortText, screen.x + size * 1.25, screen.y + size * 1.5);
