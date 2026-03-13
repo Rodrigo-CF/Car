@@ -592,6 +592,7 @@ pre {
   width: 110px;
   height: 72px;
   display: block;
+  transform-origin: 50% 50%;
 }
 
 .sim-signal-icon path {
@@ -602,7 +603,7 @@ pre {
   stroke-linejoin: round;
 }
 
-.sim-signal-left .sim-signal-icon {
+.sim-signal-right .sim-signal-icon {
   transform: scaleX(-1);
 }
 
