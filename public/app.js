@@ -3929,10 +3929,15 @@ function trafficLightPlacement(checkpoint) {
 
 function guardTowerPlacement(checkpoint) {
   const heading = checkpointHeadingAt(checkpoint);
+  const size = Math.max(0.75, Math.min(1.8, Number(checkpoint.meta?.size) || 1));
   const sideSign = Math.sign(Number(checkpoint.meta?.sideSign) || 0) || 1;
   const roadHalfWidth = routeRoadWidthAt(checkpoint.x, checkpoint.y) * 0.5;
   const right = { x: Math.sin(heading), y: -Math.cos(heading) };
-  const centerOffset = roadHalfWidth + 2.05;
+  // Keep the tower just outside the gray road edge (inside shoulder start), not outside the brown shoulder.
+  // Offset is computed from tower depth so its near face sits a tiny gap from the road edge.
+  const towerDepth = 3.2 * size;
+  const nearGap = 0.08;
+  const centerOffset = roadHalfWidth + towerDepth * 0.5 + nearGap;
   const center = {
     x: checkpoint.x + right.x * centerOffset * sideSign,
     y: checkpoint.y + right.y * centerOffset * sideSign,
