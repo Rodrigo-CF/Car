@@ -199,6 +199,7 @@ const ROAD_SHOULDER_HALF_EXTRA_M = 2.2;
 const LANE_ADD_EFFECT_RADIUS_M = 14;
 const ROAD_RENDER_SMOOTH_ITERATIONS = 1;
 const ROAD_RENDER_JOINT_SEGMENTS = 24;
+const ROAD_RENDER_JOINT_MIN_ANGLE_RAD = toRadians(7);
 const CAMERA_MODE_CYCLE = ["first", "third", "right", "front", "left", "top"];
 const EXTERNAL_CAMERA_MODES = new Set(["third", "right", "front", "left", "top"]);
 
@@ -3091,6 +3092,34 @@ function smoothRenderPath(points) {
   return output;
 }
 
+function connectedPrevPoint(path, index) {
+  for (let i = index - 1; i >= 0; i -= 1) {
+    const point = path[i];
+    if (!point) {
+      continue;
+    }
+    if (i > 0 && point.move) {
+      break;
+    }
+    return point;
+  }
+  return null;
+}
+
+function connectedNextPoint(path, index) {
+  for (let i = index + 1; i < path.length; i += 1) {
+    const point = path[i];
+    if (!point) {
+      continue;
+    }
+    if (point.move) {
+      break;
+    }
+    return point;
+  }
+  return null;
+}
+
 function computeRouteBounds(points) {
   if (!points.length) {
     return { minX: 0, maxX: 1, minY: 0, maxY: 1 };
@@ -4996,29 +5025,46 @@ function rebuildThreeRouteScene() {
     const halfWidths = routeRoadHalfWidthsAt(mx, -mz, segHeadingMap);
     const roadLeft = halfWidths.left;
     const roadRight = halfWidths.right;
-    const shoulderLeft = roadLeft + ROAD_SHOULDER_HALF_EXTRA_M;
-    const shoulderRight = roadRight + ROAD_SHOULDER_HALF_EXTRA_M;
-    const rightMap = { x: Math.sin(segHeadingMap), y: -Math.cos(segHeadingMap) };
+    const isAsymmetric = Math.abs(roadRight - roadLeft) > 0.05;
 
-    const shoulderCorners = [
-      { x: a.x - rightMap.x * shoulderLeft, y: a.y - rightMap.y * shoulderLeft },
-      { x: b.x - rightMap.x * shoulderLeft, y: b.y - rightMap.y * shoulderLeft },
-      { x: b.x + rightMap.x * shoulderRight, y: b.y + rightMap.y * shoulderRight },
-      { x: a.x + rightMap.x * shoulderRight, y: a.y + rightMap.y * shoulderRight },
-    ];
-    const shoulder = new THREE.Mesh(buildGroundQuadGeometry(THREE, shoulderCorners), shoulderMat);
-    shoulder.position.y = 0.005;
-    routeGroup.add(shoulder);
+    if (!isAsymmetric) {
+      const roadWidth = roadLeft + roadRight;
+      const shoulderWidth = roadWidth + ROAD_SHOULDER_HALF_EXTRA_M * 2;
 
-    const roadCorners = [
-      { x: a.x - rightMap.x * roadLeft, y: a.y - rightMap.y * roadLeft },
-      { x: b.x - rightMap.x * roadLeft, y: b.y - rightMap.y * roadLeft },
-      { x: b.x + rightMap.x * roadRight, y: b.y + rightMap.y * roadRight },
-      { x: a.x + rightMap.x * roadRight, y: a.y + rightMap.y * roadRight },
-    ];
-    const road = new THREE.Mesh(buildGroundQuadGeometry(THREE, roadCorners), roadMat);
-    road.position.y = 0.02;
-    routeGroup.add(road);
+      const shoulder = new THREE.Mesh(new THREE.BoxGeometry(len, 0.03, shoulderWidth), shoulderMat);
+      shoulder.position.set(mx, 0.005, mz);
+      shoulder.rotation.y = -angle;
+      routeGroup.add(shoulder);
+
+      const road = new THREE.Mesh(new THREE.BoxGeometry(len, 0.04, roadWidth), roadMat);
+      road.position.set(mx, 0.02, mz);
+      road.rotation.y = -angle;
+      routeGroup.add(road);
+    } else {
+      const shoulderLeft = roadLeft + ROAD_SHOULDER_HALF_EXTRA_M;
+      const shoulderRight = roadRight + ROAD_SHOULDER_HALF_EXTRA_M;
+      const rightMap = { x: Math.sin(segHeadingMap), y: -Math.cos(segHeadingMap) };
+
+      const shoulderCorners = [
+        { x: a.x - rightMap.x * shoulderLeft, y: a.y - rightMap.y * shoulderLeft },
+        { x: b.x - rightMap.x * shoulderLeft, y: b.y - rightMap.y * shoulderLeft },
+        { x: b.x + rightMap.x * shoulderRight, y: b.y + rightMap.y * shoulderRight },
+        { x: a.x + rightMap.x * shoulderRight, y: a.y + rightMap.y * shoulderRight },
+      ];
+      const shoulder = new THREE.Mesh(buildGroundQuadGeometry(THREE, shoulderCorners), shoulderMat);
+      shoulder.position.y = 0.005;
+      routeGroup.add(shoulder);
+
+      const roadCorners = [
+        { x: a.x - rightMap.x * roadLeft, y: a.y - rightMap.y * roadLeft },
+        { x: b.x - rightMap.x * roadLeft, y: b.y - rightMap.y * roadLeft },
+        { x: b.x + rightMap.x * roadRight, y: b.y + rightMap.y * roadRight },
+        { x: a.x + rightMap.x * roadRight, y: a.y + rightMap.y * roadRight },
+      ];
+      const road = new THREE.Mesh(buildGroundQuadGeometry(THREE, roadCorners), roadMat);
+      road.position.y = 0.02;
+      routeGroup.add(road);
+    }
 
     const centerLine = new THREE.Mesh(new THREE.BoxGeometry(len * 0.8, 0.042, 0.16), lineMat);
     centerLine.position.set(mx, 0.043, mz);
@@ -5027,6 +5073,7 @@ function rebuildThreeRouteScene() {
 
     const sideDiff = roadRight - roadLeft;
     if (Math.abs(sideDiff) > ROAD_EXTRA_LANE_WIDTH_M * 0.35) {
+      const rightMap = { x: Math.sin(segHeadingMap), y: -Math.cos(segHeadingMap) };
       const sideSign = sideDiff > 0 ? 1 : -1;
       const dividerOffset = Math.min(roadLeft, roadRight) * sideSign;
       const dividerX = mx + rightMap.x * dividerOffset;
@@ -5046,29 +5093,49 @@ function rebuildThreeRouteScene() {
       continue;
     }
 
-    const next = path[i + 1] || null;
-    const hasPrevConnection = i > 0 && !point.move;
-    const hasNextConnection = Boolean(next && !next.move);
+    const prev = connectedPrevPoint(path, i);
+    const next = connectedNextPoint(path, i);
+    const hasPrevConnection = Boolean(prev);
+    const hasNextConnection = Boolean(next);
     if (!hasPrevConnection && !hasNextConnection) {
       continue;
     }
 
+    if (hasPrevConnection && hasNextConnection) {
+      const inVecX = point.x - prev.x;
+      const inVecY = point.y - prev.y;
+      const outVecX = next.x - point.x;
+      const outVecY = next.y - point.y;
+      const inLen = Math.hypot(inVecX, inVecY);
+      const outLen = Math.hypot(outVecX, outVecY);
+      if (inLen < 0.001 || outLen < 0.001) {
+        continue;
+      }
+      const dot = clamp((inVecX * outVecX + inVecY * outVecY) / (inLen * outLen), -1, 1);
+      const jointAngle = Math.acos(dot);
+      if (jointAngle < ROAD_RENDER_JOINT_MIN_ANGLE_RAD) {
+        continue;
+      }
+    } else {
+      // Avoid rounded caps at segment endpoints to keep straights crisp.
+      continue;
+    }
+
     const halfWidths = routeRoadHalfWidthsAt(point.x, point.y);
-    const roadRadius = Math.max(halfWidths.left, halfWidths.right);
+    const capOffset = (halfWidths.right - halfWidths.left) * 0.5;
+    const capCenterX = point.x + halfWidths.frame.right.x * capOffset;
+    const capCenterY = point.y + halfWidths.frame.right.y * capOffset;
+    const roadRadius = (halfWidths.left + halfWidths.right) * 0.5;
     const shoulderRadius = roadRadius + ROAD_SHOULDER_HALF_EXTRA_M;
 
-    const shoulderCap = new THREE.Mesh(
-      new THREE.CylinderGeometry(shoulderRadius, shoulderRadius, 0.03, ROAD_RENDER_JOINT_SEGMENTS),
-      shoulderMat,
-    );
-    shoulderCap.position.set(point.x, 0.005, -point.y);
+    const shoulderCap = new THREE.Mesh(new THREE.CircleGeometry(shoulderRadius, ROAD_RENDER_JOINT_SEGMENTS), shoulderMat);
+    shoulderCap.rotation.x = -Math.PI / 2;
+    shoulderCap.position.set(capCenterX, 0.005, -capCenterY);
     routeGroup.add(shoulderCap);
 
-    const roadCap = new THREE.Mesh(
-      new THREE.CylinderGeometry(roadRadius, roadRadius, 0.04, ROAD_RENDER_JOINT_SEGMENTS),
-      roadMat,
-    );
-    roadCap.position.set(point.x, 0.02, -point.y);
+    const roadCap = new THREE.Mesh(new THREE.CircleGeometry(roadRadius, ROAD_RENDER_JOINT_SEGMENTS), roadMat);
+    roadCap.rotation.x = -Math.PI / 2;
+    roadCap.position.set(capCenterX, 0.02, -capCenterY);
     routeGroup.add(roadCap);
   }
 
