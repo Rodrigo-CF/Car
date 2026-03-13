@@ -713,6 +713,20 @@ function mapperBuildRouteAFromCanvas() {
         meta.snapSegmentIndex = placement.segmentIndex;
       }
     }
+    if (cp.type === "guard_tower") {
+      const preferredSeg = Number.isFinite(meta.snapSegmentIndex) ? Number(meta.snapSegmentIndex) : null;
+      const preferredHeading = preferredSeg != null ? Number(meta.headingDeg) : null;
+      const placement = inferParkingPlacement(world, preferredHeading, preferredSeg);
+      cpX = placement.snappedX;
+      cpY = placement.snappedY;
+      if (Number.isFinite(placement.headingRad)) {
+        meta.headingDeg = mapperRound((placement.headingRad * 180) / Math.PI, 1);
+      }
+      meta.sideSign = placement.sideSign || Math.sign(Number(meta.sideSign) || 0) || 1;
+      if (Number.isFinite(placement.segmentIndex)) {
+        meta.snapSegmentIndex = placement.segmentIndex;
+      }
+    }
     if (cp.type === "speed_bump" || cp.type === "stop_line" || cp.type === "stop_line_free") {
       const preferredSeg = Number.isFinite(meta.snapSegmentIndex) ? Number(meta.snapSegmentIndex) : null;
       const preferredHeading = preferredSeg != null ? Number(meta.headingDeg) : null;
@@ -1511,6 +1525,14 @@ function handleMapperCanvasClick(event) {
         meta.snapSegmentIndex = Math.max(0, Math.round(frame.segmentIndex));
       }
     }
+    if (type === "guard_tower") {
+      if (frame?.sideSign) {
+        meta.sideSign = frame.sideSign;
+      }
+      if (Number.isFinite(frame?.segmentIndex)) {
+        meta.snapSegmentIndex = Math.max(0, Math.round(frame.segmentIndex));
+      }
+    }
     const newId = mapperCheckpointId(type, state.mapper.checkpointsPx);
     state.mapper.checkpointsPx.push({
       ...imagePoint,
@@ -1599,13 +1621,14 @@ function handleMapperCanvasPointerUp() {
       cp?.type === "traffic_light" ||
       cp?.type === "stop_line" ||
       cp?.type === "stop_line_free" ||
-      cp?.type === "speed_bump"
+      cp?.type === "speed_bump" ||
+      cp?.type === "guard_tower"
     ) {
       const frame = mapperFrameAtImagePoint(cp);
       if (frame && Number.isFinite(frame.headingDeg)) {
         cp.meta = cp.meta && typeof cp.meta === "object" ? cp.meta : {};
         cp.meta.headingDeg = mapperRound(frame.headingDeg, 1);
-        if (cp.type === "traffic_light" && frame.sideSign) {
+        if ((cp.type === "traffic_light" || cp.type === "guard_tower") && frame.sideSign) {
           cp.meta.sideSign = frame.sideSign;
         }
         if (Number.isFinite(frame.segmentIndex)) {
@@ -3904,6 +3927,21 @@ function trafficLightPlacement(checkpoint) {
   };
 }
 
+function guardTowerPlacement(checkpoint) {
+  const heading = checkpointHeadingAt(checkpoint);
+  const sideSign = Math.sign(Number(checkpoint.meta?.sideSign) || 0) || 1;
+  const roadHalfWidth = routeRoadWidthAt(checkpoint.x, checkpoint.y) * 0.5;
+  const right = { x: Math.sin(heading), y: -Math.cos(heading) };
+  const centerOffset = roadHalfWidth + 2.05;
+  const center = {
+    x: checkpoint.x + right.x * centerOffset * sideSign,
+    y: checkpoint.y + right.y * centerOffset * sideSign,
+  };
+  const towardRoad = { x: -right.x * sideSign, y: -right.y * sideSign };
+  const faceHeading = Math.atan2(towardRoad.y, towardRoad.x);
+  return { center, faceHeading, heading, sideSign };
+}
+
 function clearThreeGroup(group) {
   if (!group) {
     return;
@@ -3952,22 +3990,22 @@ function buildGroundLoopGeometry(THREE, corners) {
 
 function buildGuardTowerGroup(THREE, checkpoint) {
   const size = Math.max(0.75, Math.min(1.8, Number(checkpoint.meta?.size) || 1));
-  const headingDeg = Number(checkpoint.meta?.headingDeg);
-  const heading = Number.isFinite(headingDeg) ? toRadians(headingDeg) : routeHeadingAt(checkpoint.x, checkpoint.y);
+  const placement = guardTowerPlacement(checkpoint);
   const group = new THREE.Group();
-  group.position.set(checkpoint.x, 0, -checkpoint.y);
-  group.rotation.y = -heading;
+  group.position.set(placement.center.x, 0, -placement.center.y);
+  // Local "front" points +Z; rotate so the cabin faces toward the road.
+  group.rotation.y = Math.PI / 2 + placement.faceHeading;
 
   const slabMat = new THREE.MeshStandardMaterial({ color: 0x71767b, roughness: 0.9, metalness: 0.06 });
   const wallMat = new THREE.MeshStandardMaterial({ color: 0xf2f5f8, roughness: 0.94, metalness: 0.02 });
   const roofMat = new THREE.MeshStandardMaterial({ color: 0x7f888f, roughness: 0.78, metalness: 0.12 });
   const railMat = new THREE.MeshStandardMaterial({ color: 0x3c4349, roughness: 0.75, metalness: 0.22 });
   const glassMat = new THREE.MeshStandardMaterial({
-    color: 0xa7c6d1,
+    color: 0xbfd4dd,
     roughness: 0.2,
-    metalness: 0.08,
+    metalness: 0.03,
     transparent: true,
-    opacity: 0.58,
+    opacity: 0.24,
   });
   const legoBlueMat = new THREE.MeshStandardMaterial({ color: 0x3f7ce4, roughness: 0.75, metalness: 0.05 });
   const legoSkinMat = new THREE.MeshStandardMaterial({ color: 0xffd19e, roughness: 0.8, metalness: 0.02 });
@@ -3982,9 +4020,36 @@ function buildGuardTowerGroup(THREE, checkpoint) {
   towerBody.rotation.y = Math.PI * 0.25;
   group.add(towerBody);
 
-  const cabin = new THREE.Mesh(new THREE.BoxGeometry(2.15 * size, 1.1 * size, 2.15 * size), wallMat);
-  cabin.position.y = 2.45 * size;
-  group.add(cabin);
+  const boothFloor = new THREE.Mesh(new THREE.BoxGeometry(2.18 * size, 0.08 * size, 2.18 * size), wallMat);
+  boothFloor.position.y = 1.95 * size;
+  group.add(boothFloor);
+
+  const sillN = new THREE.Mesh(new THREE.BoxGeometry(1.95 * size, 0.24 * size, 0.08 * size), wallMat);
+  sillN.position.set(0, 2.14 * size, 1.03 * size);
+  group.add(sillN);
+  const sillS = sillN.clone();
+  sillS.position.z = -1.03 * size;
+  group.add(sillS);
+  const sillE = new THREE.Mesh(new THREE.BoxGeometry(0.08 * size, 0.24 * size, 1.95 * size), wallMat);
+  sillE.position.set(1.03 * size, 2.14 * size, 0);
+  group.add(sillE);
+  const sillW = sillE.clone();
+  sillW.position.x = -1.03 * size;
+  group.add(sillW);
+
+  const postGeo = new THREE.BoxGeometry(0.1 * size, 0.95 * size, 0.1 * size);
+  const postNW = new THREE.Mesh(postGeo, wallMat);
+  postNW.position.set(-1.02 * size, 2.5 * size, 1.02 * size);
+  group.add(postNW);
+  const postNE = postNW.clone();
+  postNE.position.x = 1.02 * size;
+  group.add(postNE);
+  const postSW = postNW.clone();
+  postSW.position.z = -1.02 * size;
+  group.add(postSW);
+  const postSE = postSW.clone();
+  postSE.position.x = 1.02 * size;
+  group.add(postSE);
 
   const roof = new THREE.Mesh(new THREE.ConeGeometry(2.35 * size, 0.58 * size, 4), roofMat);
   roof.position.y = 3.32 * size;
@@ -3992,7 +4057,7 @@ function buildGuardTowerGroup(THREE, checkpoint) {
   group.add(roof);
 
   const addWindow = (x, z, rotationY) => {
-    const panel = new THREE.Mesh(new THREE.PlaneGeometry(1.25 * size, 0.48 * size), glassMat);
+    const panel = new THREE.Mesh(new THREE.PlaneGeometry(1.22 * size, 0.52 * size), glassMat);
     panel.position.set(x, 2.52 * size, z);
     panel.rotation.y = rotationY;
     group.add(panel);
