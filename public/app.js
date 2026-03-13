@@ -4362,7 +4362,7 @@ function buildStartCanopyGroup(THREE, checkpoint) {
     new THREE.PlaneGeometry(labelLength, labelRoofDepth),
     roofLabelMatA,
   );
-  roofLabelA.rotation.set(-Math.PI / 2, 0, Math.PI / 2);
+  roofLabelA.rotation.set(-Math.PI / 2, 0, -Math.PI / 2);
   roofLabelA.position.set(0, roofY + 0.102, -placement.roofWidth * 0.25);
   roofLabelA.renderOrder = 6;
   group.add(roofLabelA);
@@ -4371,7 +4371,7 @@ function buildStartCanopyGroup(THREE, checkpoint) {
     new THREE.PlaneGeometry(labelLength, labelRoofDepth),
     roofLabelMatB,
   );
-  roofLabelB.rotation.set(-Math.PI / 2, 0, Math.PI / 2);
+  roofLabelB.rotation.set(-Math.PI / 2, 0, -Math.PI / 2);
   roofLabelB.position.set(0, roofY + 0.102, placement.roofWidth * 0.25);
   roofLabelB.renderOrder = 6;
   group.add(roofLabelB);
@@ -4380,7 +4380,7 @@ function buildStartCanopyGroup(THREE, checkpoint) {
     new THREE.PlaneGeometry(labelLength, labelLaneDepth),
     laneLabelMatA,
   );
-  laneLabelA.rotation.set(-Math.PI / 2, 0, Math.PI / 2);
+  laneLabelA.rotation.set(-Math.PI / 2, 0, -Math.PI / 2);
   laneLabelA.position.set(0, 0.056, -laneOffset);
   laneLabelA.renderOrder = 5;
   group.add(laneLabelA);
@@ -4389,7 +4389,7 @@ function buildStartCanopyGroup(THREE, checkpoint) {
     new THREE.PlaneGeometry(labelLength, labelLaneDepth),
     laneLabelMatB,
   );
-  laneLabelB.rotation.set(-Math.PI / 2, 0, Math.PI / 2);
+  laneLabelB.rotation.set(-Math.PI / 2, 0, -Math.PI / 2);
   laneLabelB.position.set(0, 0.056, laneOffset);
   laneLabelB.renderOrder = 5;
   group.add(laneLabelB);
