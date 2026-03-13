@@ -4303,9 +4303,9 @@ function buildStartCanopyGroup(THREE, checkpoint) {
 
   const laneWidth = placement.roadWidth * 0.5;
   const laneOffset = laneWidth * 0.5;
-  const labelLength = Math.max(2.8, placement.length * 0.78);
-  const labelLaneDepth = Math.max(1.18, laneWidth * 0.86);
-  const labelRoofDepth = Math.max(1.35, placement.roofWidth * 0.34);
+  const labelLength = Math.max(3.15, placement.length * 0.88);
+  const labelLaneDepth = Math.max(1.34, laneWidth * 0.96);
+  const labelRoofDepth = Math.max(1.52, placement.roofWidth * 0.39);
 
   const roofTextureA = createCanopyLabelTexture(THREE, "RUTA\nA", {
     width: 512,
@@ -4313,7 +4313,7 @@ function buildStartCanopyGroup(THREE, checkpoint) {
     bg: "rgba(0, 0, 0, 0.02)",
     fill: "#eaf3ff",
     stroke: "rgba(12, 28, 48, 0.78)",
-    fontScale: 0.52,
+    fontScale: 0.57,
   });
   const roofTextureB = createCanopyLabelTexture(THREE, "RUTA\nB", {
     width: 512,
@@ -4321,7 +4321,7 @@ function buildStartCanopyGroup(THREE, checkpoint) {
     bg: "rgba(0, 0, 0, 0.02)",
     fill: "#eaf3ff",
     stroke: "rgba(12, 28, 48, 0.78)",
-    fontScale: 0.52,
+    fontScale: 0.57,
   });
   const laneTextureA = createCanopyLabelTexture(THREE, "RUTA\nA", {
     width: 512,
@@ -4329,7 +4329,7 @@ function buildStartCanopyGroup(THREE, checkpoint) {
     bg: "rgba(0, 0, 0, 0)",
     fill: "rgba(247, 252, 255, 0.98)",
     stroke: "rgba(24, 45, 70, 0.62)",
-    fontScale: 0.5,
+    fontScale: 0.54,
   });
   const laneTextureB = createCanopyLabelTexture(THREE, "RUTA\nB", {
     width: 512,
@@ -4337,7 +4337,7 @@ function buildStartCanopyGroup(THREE, checkpoint) {
     bg: "rgba(0, 0, 0, 0)",
     fill: "rgba(247, 252, 255, 0.98)",
     stroke: "rgba(24, 45, 70, 0.62)",
-    fontScale: 0.5,
+    fontScale: 0.54,
   });
 
   const buildLabelMaterial = (texture) =>
