@@ -1112,6 +1112,36 @@ function mapperHitTest(imagePoint) {
   return bestDist <= radius ? best : null;
 }
 
+function mapperCoincidentPathIndices(index) {
+  if (index < 0 || index >= state.mapper.pathPointsPx.length) {
+    return [];
+  }
+
+  const origin = state.mapper.pathPointsPx[index];
+  if (!origin) {
+    return [];
+  }
+
+  const fit = state.mapper.imageFit;
+  const coincidenceRadius = fit
+    ? Math.max(0.001, (MAPPER_SNAP_CANVAS_PX * 0.4) / Math.max(0.001, fit.scale))
+    : 0.001;
+
+  const indices = [];
+  for (let i = 0; i < state.mapper.pathPointsPx.length; i += 1) {
+    const point = state.mapper.pathPointsPx[i];
+    if (!point) {
+      continue;
+    }
+    const dist = Math.hypot(point.x - origin.x, point.y - origin.y);
+    if (dist <= coincidenceRadius) {
+      indices.push(i);
+    }
+  }
+
+  return indices.length ? indices : [index];
+}
+
 function deleteMapperPathPoint(index) {
   if (index < 0 || index >= state.mapper.pathPointsPx.length) {
     return false;
@@ -1697,11 +1727,13 @@ function handleMapperCanvasPointerDown(event) {
   if (hit.kind === "checkpoint") {
     state.mapper.selectedCheckpointIndex = hit.index;
     state.mapper.selectedPathIndex = -1;
+    state.mapper.dragging = { kind: hit.kind, index: hit.index };
   } else {
     state.mapper.selectedPathIndex = hit.index;
     state.mapper.selectedCheckpointIndex = -1;
+    const linkedPathIndices = mapperCoincidentPathIndices(hit.index);
+    state.mapper.dragging = { kind: hit.kind, index: hit.index, linkedPathIndices };
   }
-  state.mapper.dragging = { kind: hit.kind, index: hit.index };
   drawMapperCanvas();
 }
 
@@ -1729,8 +1761,19 @@ function handleMapperCanvasPointerMove(event) {
     if (!point) {
       return;
     }
-    point.x = imagePoint.x;
-    point.y = imagePoint.y;
+    const linked = Array.isArray(drag.linkedPathIndices) && drag.linkedPathIndices.length
+      ? [...new Set(drag.linkedPathIndices)]
+      : [drag.index];
+    const dx = imagePoint.x - point.x;
+    const dy = imagePoint.y - point.y;
+    for (const index of linked) {
+      const linkedPoint = state.mapper.pathPointsPx[index];
+      if (!linkedPoint) {
+        continue;
+      }
+      linkedPoint.x += dx;
+      linkedPoint.y += dy;
+    }
     state.mapper.selectedPathIndex = drag.index;
     state.mapper.selectedCheckpointIndex = -1;
   }
@@ -3400,11 +3443,8 @@ function routeRoadHalfWidthsAt(x, y, preferredHeading = null, preferredSegmentIn
     const cpSeg = Number(checkpoint.meta?.snapSegmentIndex);
     const frameSeg = Number(frame.segmentIndex);
     if (Number.isFinite(cpSeg) && Number.isFinite(frameSeg)) {
-      const segDiff = Math.abs(Math.round(cpSeg) - Math.round(frameSeg));
-      if (segDiff > 1) {
-        continue;
-      }
-      if (segDiff === 1 && dist > LANE_ADD_EFFECT_RADIUS_M * 0.72) {
+      // Keep +1 lane scoped to the exact selected tramo only.
+      if (Math.round(cpSeg) !== Math.round(frameSeg)) {
         continue;
       }
     } else if (dist > LANE_ADD_EFFECT_RADIUS_M) {
@@ -5122,18 +5162,36 @@ function rebuildThreeRouteScene() {
       continue;
     }
 
+    const prev = i > 0 ? path[i - 1] : null;
     const next = path[i + 1] || null;
-    const hasPrevConnection = i > 0 && !point.move;
+    const hasPrevConnection = Boolean(prev && !point.move);
     const hasNextConnection = Boolean(next && !next.move);
-    if (!hasPrevConnection && !hasNextConnection) {
+    if (!(hasPrevConnection && hasNextConnection)) {
       continue;
     }
 
-    const halfWidths = routeRoadHalfWidthsAt(point.x, point.y);
-    const capOffset = (halfWidths.right - halfWidths.left) * 0.5;
-    const capCenterX = point.x + halfWidths.frame.right.x * capOffset;
-    const capCenterY = point.y + halfWidths.frame.right.y * capOffset;
-    const roadRadius = (halfWidths.left + halfWidths.right) * 0.5;
+    const prevHeading = Math.atan2(point.y - prev.y, point.x - prev.x);
+    const nextHeading = Math.atan2(next.y - point.y, next.x - point.x);
+    const prevMid = { x: (prev.x + point.x) * 0.5, y: (prev.y + point.y) * 0.5 };
+    const nextMid = { x: (next.x + point.x) * 0.5, y: (next.y + point.y) * 0.5 };
+    const prevHalf = routeRoadHalfWidthsAt(prevMid.x, prevMid.y, prevHeading, i - 1);
+    const nextHalf = routeRoadHalfWidthsAt(nextMid.x, nextMid.y, nextHeading, i);
+
+    const leftDiff = Math.abs(prevHalf.left - nextHalf.left);
+    const rightDiff = Math.abs(prevHalf.right - nextHalf.right);
+    // Do not round-off transitions where width changes (e.g. +1 lane starts/ends),
+    // otherwise caps visually extend the widened tramo.
+    if (leftDiff > 0.15 || rightDiff > 0.15) {
+      continue;
+    }
+
+    const avgLeft = (prevHalf.left + nextHalf.left) * 0.5;
+    const avgRight = (prevHalf.right + nextHalf.right) * 0.5;
+    const capOffset = (avgRight - avgLeft) * 0.5;
+    const capFrame = routeFrameAt(point.x, point.y, nextHeading, i);
+    const capCenterX = point.x + capFrame.right.x * capOffset;
+    const capCenterY = point.y + capFrame.right.y * capOffset;
+    const roadRadius = (avgLeft + avgRight) * 0.5;
     const shoulderRadius = roadRadius + ROAD_SHOULDER_HALF_EXTRA_M;
 
     const shoulderCap = new THREE.Mesh(
