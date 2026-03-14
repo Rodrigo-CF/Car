@@ -250,6 +250,7 @@ const dom = {
   mapperScaleMode: document.querySelector("#mapper-scale-mode"),
   mapperPathMode: document.querySelector("#mapper-path-mode"),
   mapperNewSegment: document.querySelector("#mapper-new-segment"),
+  mapperInsertNode: document.querySelector("#mapper-insert-node"),
   mapperCheckpointType: document.querySelector("#mapper-checkpoint-type"),
   mapperCheckpointHelp: document.querySelector("#mapper-checkpoint-help"),
   mapperTrafficFields: document.querySelector("#mapper-traffic-fields"),
@@ -1130,6 +1131,45 @@ function deleteMapperPathPoint(index) {
   return true;
 }
 
+function insertMapperPathPointAtSegment(imagePoint) {
+  if (!imagePoint || state.mapper.pathPointsPx.length < 2) {
+    return { ok: false, message: "Add at least two path points first." };
+  }
+
+  const frame = mapperFrameAtImagePoint(imagePoint);
+  if (!frame || !Number.isFinite(frame.segmentIndex)) {
+    return { ok: false, message: "Could not find a valid segment near click." };
+  }
+
+  const segmentIndex = Math.max(
+    0,
+    Math.min(state.mapper.pathPointsPx.length - 2, Math.round(Number(frame.segmentIndex) || 0)),
+  );
+  const a = state.mapper.pathPointsPx[segmentIndex];
+  const b = state.mapper.pathPointsPx[segmentIndex + 1];
+  if (!a || !b || b.move) {
+    return { ok: false, message: "Click a continuous segment between two connected nodes." };
+  }
+
+  const insertPoint = {
+    x: Number.isFinite(frame.snappedX) ? frame.snappedX : imagePoint.x,
+    y: Number.isFinite(frame.snappedY) ? frame.snappedY : imagePoint.y,
+    move: false,
+  };
+
+  const fit = state.mapper.imageFit;
+  const minNodeGap = fit ? (MAPPER_SNAP_CANVAS_PX * 0.65) / Math.max(0.001, fit.scale) : 0.9;
+  const distA = Math.hypot(insertPoint.x - a.x, insertPoint.y - a.y);
+  const distB = Math.hypot(insertPoint.x - b.x, insertPoint.y - b.y);
+  if (distA < minNodeGap || distB < minNodeGap) {
+    return { ok: false, message: "Click farther from the segment endpoints to insert a new node." };
+  }
+
+  const insertIndex = segmentIndex + 1;
+  state.mapper.pathPointsPx.splice(insertIndex, 0, insertPoint);
+  return { ok: true, segmentIndex, insertIndex };
+}
+
 function loadRouteIntoMapperEditor(route, options = {}) {
   if (!route || !Array.isArray(route.path) || !Array.isArray(route.checkpoints)) {
     throw new Error("Route is invalid for mapper editing.");
@@ -1556,6 +1596,24 @@ function handleMapperCanvasClick(event) {
     } else {
       setMapperStatus(`path point ${state.mapper.pathPointsPx.length} added.`);
     }
+  } else if (state.mapper.mode === "insert_path") {
+    clearMapperSelection();
+    state.mapper.routeOverrideA = null;
+    persistMapperRouteOverride();
+    const result = insertMapperPathPointAtSegment(imagePoint);
+    state.mapper.mode = "idle";
+    state.mapper.pathNextMove = false;
+    if (!result.ok) {
+      setMapperStatus(result.message || "Could not insert node.");
+      refreshMapperJsonPreview();
+      drawMapperCanvas();
+      return;
+    }
+    state.mapper.selectedPathIndex = result.insertIndex;
+    state.mapper.selectedCheckpointIndex = -1;
+    setMapperStatus(
+      `node inserted between path points ${result.segmentIndex + 1} and ${result.segmentIndex + 2}.`,
+    );
   } else if (state.mapper.mode === "checkpoint") {
     clearMapperSelection();
     state.mapper.routeOverrideA = null;
@@ -9730,6 +9788,24 @@ function bindRouteMapperUi() {
     state.mapper.dragging = null;
     state.mapper.pathNextMove = true;
     setMapperStatus("new segment armed. Next path click will start a branch without connecting line.");
+    drawMapperCanvas();
+  });
+
+  dom.mapperInsertNode.addEventListener("click", () => {
+    if (!state.mapper.image && !state.mapper.pathPointsPx.length) {
+      alert("Upload the map image or open a saved map first.");
+      return;
+    }
+    if (state.mapper.pathPointsPx.length < 2) {
+      alert("Add at least two path points first.");
+      return;
+    }
+    state.mapper.mode = "insert_path";
+    clearMapperSelection();
+    state.mapper.dragging = null;
+    state.mapper.pathNextMove = false;
+    state.mapper.pendingCheckpointType = null;
+    setMapperStatus("insert node mode active. Click a segment between two nodes.");
     drawMapperCanvas();
   });
 
