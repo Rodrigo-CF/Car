@@ -199,7 +199,6 @@ const ROAD_SHOULDER_HALF_EXTRA_M = 2.2;
 const LANE_ADD_EFFECT_RADIUS_M = 14;
 const ROAD_RENDER_SMOOTH_ITERATIONS = 1;
 const ROAD_RENDER_JOINT_SEGMENTS = 24;
-const ROAD_RENDER_JOINT_MIN_ANGLE_RAD = toRadians(7);
 const CAMERA_MODE_CYCLE = ["first", "third", "right", "front", "left", "top"];
 const EXTERNAL_CAMERA_MODES = new Set(["third", "right", "front", "left", "top"]);
 
@@ -3092,34 +3091,6 @@ function smoothRenderPath(points) {
   return output;
 }
 
-function connectedPrevPoint(path, index) {
-  for (let i = index - 1; i >= 0; i -= 1) {
-    const point = path[i];
-    if (!point) {
-      continue;
-    }
-    if (i > 0 && point.move) {
-      break;
-    }
-    return point;
-  }
-  return null;
-}
-
-function connectedNextPoint(path, index) {
-  for (let i = index + 1; i < path.length; i += 1) {
-    const point = path[i];
-    if (!point) {
-      continue;
-    }
-    if (point.move) {
-      break;
-    }
-    return point;
-  }
-  return null;
-}
-
 function computeRouteBounds(points) {
   if (!points.length) {
     return { minX: 0, maxX: 1, minY: 0, maxY: 1 };
@@ -5093,31 +5064,10 @@ function rebuildThreeRouteScene() {
       continue;
     }
 
-    const prev = connectedPrevPoint(path, i);
-    const next = connectedNextPoint(path, i);
-    const hasPrevConnection = Boolean(prev);
-    const hasNextConnection = Boolean(next);
+    const next = path[i + 1] || null;
+    const hasPrevConnection = i > 0 && !point.move;
+    const hasNextConnection = Boolean(next && !next.move);
     if (!hasPrevConnection && !hasNextConnection) {
-      continue;
-    }
-
-    if (hasPrevConnection && hasNextConnection) {
-      const inVecX = point.x - prev.x;
-      const inVecY = point.y - prev.y;
-      const outVecX = next.x - point.x;
-      const outVecY = next.y - point.y;
-      const inLen = Math.hypot(inVecX, inVecY);
-      const outLen = Math.hypot(outVecX, outVecY);
-      if (inLen < 0.001 || outLen < 0.001) {
-        continue;
-      }
-      const dot = clamp((inVecX * outVecX + inVecY * outVecY) / (inLen * outLen), -1, 1);
-      const jointAngle = Math.acos(dot);
-      if (jointAngle < ROAD_RENDER_JOINT_MIN_ANGLE_RAD) {
-        continue;
-      }
-    } else {
-      // Avoid rounded caps at segment endpoints to keep straights crisp.
       continue;
     }
 
@@ -5128,13 +5078,17 @@ function rebuildThreeRouteScene() {
     const roadRadius = (halfWidths.left + halfWidths.right) * 0.5;
     const shoulderRadius = roadRadius + ROAD_SHOULDER_HALF_EXTRA_M;
 
-    const shoulderCap = new THREE.Mesh(new THREE.CircleGeometry(shoulderRadius, ROAD_RENDER_JOINT_SEGMENTS), shoulderMat);
-    shoulderCap.rotation.x = -Math.PI / 2;
+    const shoulderCap = new THREE.Mesh(
+      new THREE.CylinderGeometry(shoulderRadius, shoulderRadius, 0.03, ROAD_RENDER_JOINT_SEGMENTS),
+      shoulderMat,
+    );
     shoulderCap.position.set(capCenterX, 0.005, -capCenterY);
     routeGroup.add(shoulderCap);
 
-    const roadCap = new THREE.Mesh(new THREE.CircleGeometry(roadRadius, ROAD_RENDER_JOINT_SEGMENTS), roadMat);
-    roadCap.rotation.x = -Math.PI / 2;
+    const roadCap = new THREE.Mesh(
+      new THREE.CylinderGeometry(roadRadius, roadRadius, 0.04, ROAD_RENDER_JOINT_SEGMENTS),
+      roadMat,
+    );
     roadCap.position.set(capCenterX, 0.02, -capCenterY);
     routeGroup.add(roadCap);
   }
