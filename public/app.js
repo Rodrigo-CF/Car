@@ -106,6 +106,7 @@ const state = {
     selectedPathIndex: -1,
     selectedCheckpointIndex: -1,
     dragging: null,
+    lane3DraftStartIndex: -1,
   },
   multiplayer: {
     configLoaded: false,
@@ -197,6 +198,9 @@ const ROAD_THREE_LANE_WIDTH_M = 11.4;
 const ROAD_EXTRA_LANE_WIDTH_M = ROAD_THREE_LANE_WIDTH_M - ROAD_BASE_WIDTH_M;
 const ROAD_SHOULDER_HALF_EXTRA_M = 2.2;
 const LANE_ADD_EFFECT_RADIUS_M = 14;
+const LANE_PROFILE_TRANSITION_DEFAULT_M = 8;
+const LANE_PROFILE_TRANSITION_MIN_M = 1.5;
+const LANE_PROFILE_TRANSITION_MAX_M = 20;
 const ROAD_RENDER_SMOOTH_ITERATIONS = 1;
 const ROAD_RENDER_JOINT_SEGMENTS = 24;
 const CAMERA_MODE_CYCLE = ["first", "third", "right", "front", "left", "top"];
@@ -251,6 +255,11 @@ const dom = {
   mapperPathMode: document.querySelector("#mapper-path-mode"),
   mapperNewSegment: document.querySelector("#mapper-new-segment"),
   mapperInsertNode: document.querySelector("#mapper-insert-node"),
+  mapperLane3Segment: document.querySelector("#mapper-lane3-segment"),
+  mapperLane3Fields: document.querySelector("#mapper-lane3-fields"),
+  mapperLane3StartEdge: document.querySelector("#mapper-lane3-start-edge"),
+  mapperLane3EndEdge: document.querySelector("#mapper-lane3-end-edge"),
+  mapperLane3Transition: document.querySelector("#mapper-lane3-transition"),
   mapperCheckpointType: document.querySelector("#mapper-checkpoint-type"),
   mapperCheckpointHelp: document.querySelector("#mapper-checkpoint-help"),
   mapperTrafficFields: document.querySelector("#mapper-traffic-fields"),
@@ -351,6 +360,7 @@ function mapperCheckpointColor(type) {
     parking_diagonal: "#ba68ff",
     speed_bump: "#ff9554",
     lane_add: "#8f9bff",
+    lane_profile_3: "#85f0ff",
     start_canopy: "#6ea8ff",
     tree: "#4fc46b",
     guard_tower: "#c8d8ff",
@@ -362,6 +372,7 @@ function mapperAllowsMultiple(type) {
   return (
     type === "speed_bump" ||
     type === "lane_add" ||
+    type === "lane_profile_3" ||
     type === "stop_line" ||
     type === "stop_line_free" ||
     type === "start_canopy" ||
@@ -409,6 +420,15 @@ function mapperDefaultMeta(type) {
   if (type === "lane_add") {
     return { extraLanes: 1 };
   }
+  if (type === "lane_profile_3") {
+    return {
+      startNodeIndex: 0,
+      endNodeIndex: 1,
+      startAnchorSide: "right",
+      endAnchorSide: "right",
+      transitionLengthM: LANE_PROFILE_TRANSITION_DEFAULT_M,
+    };
+  }
   if (type === "start_canopy") {
     return { lengthM: 4.3, heightM: 3.25 };
   }
@@ -448,6 +468,9 @@ function mapperCheckpointPrefix(type) {
   }
   if (type === "lane_add") {
     return "A_LX";
+  }
+  if (type === "lane_profile_3") {
+    return "A_L3";
   }
   if (type === "start_canopy") {
     return "A_SC";
@@ -614,6 +637,11 @@ function mapperBuildRouteAFromCanvas() {
     move: Boolean(p.move),
   }));
 
+  const laneProfileValidation = mapperValidateLaneProfile3Ranges(state.mapper.checkpointsPx, state.mapper.pathPointsPx);
+  if (!laneProfileValidation.ok) {
+    throw new Error(laneProfileValidation.message);
+  }
+
   const startIndex = path.findIndex((point) => !Number.isNaN(point.x) && !Number.isNaN(point.y));
   const start = path[Math.max(0, startIndex)];
   let nextIndex = Math.max(0, startIndex) + 1;
@@ -706,6 +734,27 @@ function mapperBuildRouteAFromCanvas() {
     const meta = cp.meta && typeof cp.meta === "object" ? { ...cp.meta } : {};
     let cpX = world.x;
     let cpY = world.y;
+
+    if (cp.type === "lane_profile_3") {
+      const normalized = mapperNormalizeLaneProfile3Meta(meta, state.mapper.pathPointsPx);
+      if (!normalized) {
+        throw new Error(`Tramo 3 carriles invalido en ${cp.id || "A_L3"}: revisa nodos inicio/fin.`);
+      }
+      const startNode = path[normalized.startNodeIndex];
+      const endNode = path[normalized.endNodeIndex];
+      if (!startNode || !endNode) {
+        throw new Error(`Tramo 3 carriles invalido en ${cp.id || "A_L3"}: nodos fuera de rango.`);
+      }
+      cpX = mapperRound((startNode.x + endNode.x) * 0.5, 3);
+      cpY = mapperRound((startNode.y + endNode.y) * 0.5, 3);
+      meta.startNodeIndex = normalized.startNodeIndex;
+      meta.endNodeIndex = normalized.endNodeIndex;
+      meta.startSegmentIndex = normalized.startSegmentIndex;
+      meta.endSegmentIndex = normalized.endSegmentIndex;
+      meta.startAnchorSide = normalized.startAnchorSide;
+      meta.endAnchorSide = normalized.endAnchorSide;
+      meta.transitionLengthM = mapperRound(normalized.transitionLengthM, 2);
+    }
 
     if (cp.type === "parking_parallel" || cp.type === "parking_diagonal") {
       const placement = inferParkingPlacement(world, Number(meta.headingDeg));
@@ -1112,6 +1161,229 @@ function mapperHitTest(imagePoint) {
   return bestDist <= radius ? best : null;
 }
 
+function mapperHitPathNode(imagePoint) {
+  if (!imagePoint || !state.mapper.imageFit || !state.mapper.pathPointsPx.length) {
+    return -1;
+  }
+  const fit = state.mapper.imageFit;
+  const radius = MAPPER_SNAP_CANVAS_PX / Math.max(0.001, fit.scale);
+  let bestIndex = -1;
+  let bestDist = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < state.mapper.pathPointsPx.length; i += 1) {
+    const point = state.mapper.pathPointsPx[i];
+    if (!point) {
+      continue;
+    }
+    const dist = Math.hypot(imagePoint.x - point.x, imagePoint.y - point.y);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestIndex = i;
+    }
+  }
+  return bestDist <= radius ? bestIndex : -1;
+}
+
+function mapperPathSubpathStartIndex(nodeIndex, points = state.mapper.pathPointsPx) {
+  let start = Math.max(0, Math.min(points.length - 1, Number(nodeIndex) || 0));
+  while (start > 0 && !points[start].move) {
+    start -= 1;
+  }
+  return start;
+}
+
+function mapperNormalizeLaneProfile3Meta(meta, points = state.mapper.pathPointsPx) {
+  if (!meta || !Array.isArray(points) || points.length < 2) {
+    return null;
+  }
+  let startNodeIndex = Math.round(Number(meta.startNodeIndex));
+  let endNodeIndex = Math.round(Number(meta.endNodeIndex));
+  if (!Number.isFinite(startNodeIndex) || !Number.isFinite(endNodeIndex)) {
+    return null;
+  }
+
+  startNodeIndex = Math.max(0, Math.min(points.length - 1, startNodeIndex));
+  endNodeIndex = Math.max(0, Math.min(points.length - 1, endNodeIndex));
+  let startAnchorSide = meta.startAnchorSide === "left" ? "left" : "right";
+  let endAnchorSide = meta.endAnchorSide === "left" ? "left" : "right";
+  if (endNodeIndex < startNodeIndex) {
+    [startNodeIndex, endNodeIndex] = [endNodeIndex, startNodeIndex];
+    [startAnchorSide, endAnchorSide] = [endAnchorSide, startAnchorSide];
+  }
+
+  if (endNodeIndex - startNodeIndex < 1) {
+    return null;
+  }
+
+  for (let i = startNodeIndex + 1; i <= endNodeIndex; i += 1) {
+    if (points[i]?.move) {
+      return null;
+    }
+  }
+
+  const transitionLengthM = Math.max(
+    LANE_PROFILE_TRANSITION_MIN_M,
+    Math.min(LANE_PROFILE_TRANSITION_MAX_M, Number(meta.transitionLengthM) || LANE_PROFILE_TRANSITION_DEFAULT_M),
+  );
+  const startSegmentIndex = startNodeIndex;
+  const endSegmentIndex = endNodeIndex - 1;
+  return {
+    startNodeIndex,
+    endNodeIndex,
+    startSegmentIndex,
+    endSegmentIndex,
+    startAnchorSide,
+    endAnchorSide,
+    transitionLengthM,
+    subpathStartIndex: mapperPathSubpathStartIndex(startNodeIndex, points),
+  };
+}
+
+function mapperRefreshLaneProfile3Checkpoint(checkpoint, points = state.mapper.pathPointsPx) {
+  if (!checkpoint || checkpoint.type !== "lane_profile_3") {
+    return false;
+  }
+  const normalized = mapperNormalizeLaneProfile3Meta(checkpoint.meta, points);
+  if (!normalized) {
+    return false;
+  }
+  checkpoint.meta = {
+    ...(checkpoint.meta && typeof checkpoint.meta === "object" ? checkpoint.meta : {}),
+    ...normalized,
+  };
+  const a = points[normalized.startNodeIndex];
+  const b = points[normalized.endNodeIndex];
+  checkpoint.x = (Number(a?.x) + Number(b?.x)) * 0.5;
+  checkpoint.y = (Number(a?.y) + Number(b?.y)) * 0.5;
+  return true;
+}
+
+function mapperValidateLaneProfile3Ranges(checkpoints = state.mapper.checkpointsPx, points = state.mapper.pathPointsPx) {
+  const profiles = [];
+  for (let i = 0; i < checkpoints.length; i += 1) {
+    const checkpoint = checkpoints[i];
+    if (!checkpoint || checkpoint.type !== "lane_profile_3") {
+      continue;
+    }
+    const normalized = mapperNormalizeLaneProfile3Meta(checkpoint.meta, points);
+    if (!normalized) {
+      return {
+        ok: false,
+        message: `El tramo ${checkpoint.id || "3L"} es invalido: revisa nodos inicio/fin y continuidad del path.`,
+      };
+    }
+    profiles.push({ index: i, id: checkpoint.id || `A_L3_${i + 1}`, ...normalized });
+  }
+
+  for (let i = 0; i < profiles.length; i += 1) {
+    const a = profiles[i];
+    for (let j = i + 1; j < profiles.length; j += 1) {
+      const b = profiles[j];
+      if (a.subpathStartIndex !== b.subpathStartIndex) {
+        continue;
+      }
+      const overlap = !(a.endSegmentIndex < b.startSegmentIndex || b.endSegmentIndex < a.startSegmentIndex);
+      if (overlap) {
+        return {
+          ok: false,
+          message: `Los tramos 3L ${a.id} y ${b.id} se solapan en el mismo subpath.`,
+        };
+      }
+    }
+  }
+
+  return { ok: true, profiles };
+}
+
+function mapperReindexLaneProfilesAfterInsert(insertIndex) {
+  for (const checkpoint of state.mapper.checkpointsPx) {
+    if (!checkpoint || checkpoint.type !== "lane_profile_3") {
+      continue;
+    }
+    const meta = checkpoint.meta && typeof checkpoint.meta === "object" ? checkpoint.meta : {};
+    let startNodeIndex = Math.round(Number(meta.startNodeIndex));
+    let endNodeIndex = Math.round(Number(meta.endNodeIndex));
+    if (!Number.isFinite(startNodeIndex) || !Number.isFinite(endNodeIndex)) {
+      continue;
+    }
+    if (insertIndex <= startNodeIndex) {
+      startNodeIndex += 1;
+      endNodeIndex += 1;
+    } else if (insertIndex > startNodeIndex && insertIndex < endNodeIndex) {
+      endNodeIndex += 1;
+    }
+    checkpoint.meta = { ...meta, startNodeIndex, endNodeIndex };
+    mapperRefreshLaneProfile3Checkpoint(checkpoint);
+  }
+}
+
+function mapperReindexLaneProfilesAfterDelete(deleteIndex) {
+  if (!state.mapper.checkpointsPx.length) {
+    return 0;
+  }
+  const nextCheckpoints = [];
+  let removedCount = 0;
+  for (const checkpoint of state.mapper.checkpointsPx) {
+    if (!checkpoint || checkpoint.type !== "lane_profile_3") {
+      nextCheckpoints.push(checkpoint);
+      continue;
+    }
+    const meta = checkpoint.meta && typeof checkpoint.meta === "object" ? checkpoint.meta : {};
+    let startNodeIndex = Math.round(Number(meta.startNodeIndex));
+    let endNodeIndex = Math.round(Number(meta.endNodeIndex));
+    if (!Number.isFinite(startNodeIndex) || !Number.isFinite(endNodeIndex)) {
+      removedCount += 1;
+      continue;
+    }
+    if (deleteIndex < startNodeIndex) {
+      startNodeIndex -= 1;
+      endNodeIndex -= 1;
+    } else if (deleteIndex === startNodeIndex || deleteIndex === endNodeIndex) {
+      removedCount += 1;
+      continue;
+    } else if (deleteIndex > startNodeIndex && deleteIndex < endNodeIndex) {
+      endNodeIndex -= 1;
+    }
+    if (endNodeIndex - startNodeIndex < 1) {
+      removedCount += 1;
+      continue;
+    }
+    checkpoint.meta = { ...meta, startNodeIndex, endNodeIndex };
+    if (!mapperRefreshLaneProfile3Checkpoint(checkpoint)) {
+      removedCount += 1;
+      continue;
+    }
+    nextCheckpoints.push(checkpoint);
+  }
+  state.mapper.checkpointsPx = nextCheckpoints;
+  return removedCount;
+}
+
+function mapperRefreshAllLaneProfiles(points = state.mapper.pathPointsPx) {
+  if (!state.mapper.checkpointsPx.length) {
+    return { removedCount: 0, overlapError: null };
+  }
+
+  const next = [];
+  let removedCount = 0;
+  for (const checkpoint of state.mapper.checkpointsPx) {
+    if (!checkpoint || checkpoint.type !== "lane_profile_3") {
+      next.push(checkpoint);
+      continue;
+    }
+    if (!mapperRefreshLaneProfile3Checkpoint(checkpoint, points)) {
+      removedCount += 1;
+      continue;
+    }
+    next.push(checkpoint);
+  }
+  state.mapper.checkpointsPx = next;
+  const validation = mapperValidateLaneProfile3Ranges(state.mapper.checkpointsPx, points);
+  return {
+    removedCount,
+    overlapError: validation.ok ? null : validation.message,
+  };
+}
+
 function mapperCoincidentPathIndices(index) {
   if (index < 0 || index >= state.mapper.pathPointsPx.length) {
     return [];
@@ -1144,13 +1416,13 @@ function mapperCoincidentPathIndices(index) {
 
 function deleteMapperPathPoint(index) {
   if (index < 0 || index >= state.mapper.pathPointsPx.length) {
-    return false;
+    return { ok: false, removedLaneProfiles: 0 };
   }
   const points = state.mapper.pathPointsPx;
   const removed = points[index];
   points.splice(index, 1);
   if (!points.length) {
-    return true;
+    return { ok: true, removedLaneProfiles: 0 };
   }
   if (index === 0) {
     points[0].move = true;
@@ -1158,7 +1430,8 @@ function deleteMapperPathPoint(index) {
   if (removed?.move && index < points.length) {
     points[index].move = true;
   }
-  return true;
+  const removedLaneProfiles = mapperReindexLaneProfilesAfterDelete(index);
+  return { ok: true, removedLaneProfiles };
 }
 
 function insertMapperPathPointAtSegment(imagePoint) {
@@ -1197,6 +1470,7 @@ function insertMapperPathPointAtSegment(imagePoint) {
 
   const insertIndex = segmentIndex + 1;
   state.mapper.pathPointsPx.splice(insertIndex, 0, insertPoint);
+  mapperReindexLaneProfilesAfterInsert(insertIndex);
   return { ok: true, segmentIndex, insertIndex };
 }
 
@@ -1258,8 +1532,14 @@ function loadRouteIntoMapperEditor(route, options = {}) {
     }));
   }
 
+  const lane3Repair = mapperRefreshAllLaneProfiles(state.mapper.pathPointsPx);
+  if (lane3Repair.overlapError) {
+    throw new Error(lane3Repair.overlapError);
+  }
+
   state.mapper.mode = "idle";
   state.mapper.pathNextMove = false;
+  state.mapper.lane3DraftStartIndex = -1;
   state.mapper.pendingCheckpointType = null;
   clearMapperSelection();
   state.mapper.dragging = null;
@@ -1269,6 +1549,9 @@ function loadRouteIntoMapperEditor(route, options = {}) {
     refreshMapperJsonPreview();
   } else {
     dom.mapperJson.textContent = formatJson(state.mapper.routeOverrideA);
+  }
+  if (lane3Repair.removedCount > 0) {
+    setMapperStatus(`${lane3Repair.removedCount} tramo(s) 3L invalido(s) fueron removidos al cargar el mapa.`);
   }
   drawMapperCanvas();
 }
@@ -1486,6 +1769,49 @@ function drawMapperCanvas() {
     }
     mapperCtx.stroke();
 
+    const lane3Profiles = state.mapper.checkpointsPx
+      .filter((checkpoint) => checkpoint?.type === "lane_profile_3")
+      .map((checkpoint) => ({
+        checkpoint,
+        normalized: mapperNormalizeLaneProfile3Meta(checkpoint.meta, state.mapper.pathPointsPx),
+      }))
+      .filter((entry) => Boolean(entry.normalized));
+
+    for (const entry of lane3Profiles) {
+      const { normalized } = entry;
+      mapperCtx.strokeStyle = "rgba(133, 240, 255, 0.32)";
+      mapperCtx.lineWidth = 11;
+      mapperCtx.lineCap = "round";
+      mapperCtx.lineJoin = "round";
+      mapperCtx.beginPath();
+      let startedOverlay = false;
+      for (let i = normalized.startNodeIndex; i < normalized.endNodeIndex; i += 1) {
+        const a = state.mapper.pathPointsPx[i];
+        const b = state.mapper.pathPointsPx[i + 1];
+        if (!a || !b || b.move) {
+          continue;
+        }
+        const ca = mapperImageToCanvasPoint(a);
+        const cb = mapperImageToCanvasPoint(b);
+        if (!ca || !cb) {
+          continue;
+        }
+        if (!startedOverlay) {
+          mapperCtx.moveTo(ca.x, ca.y);
+          startedOverlay = true;
+        }
+        mapperCtx.lineTo(cb.x, cb.y);
+      }
+      mapperCtx.stroke();
+
+      const center = mapperImageToCanvasPoint(entry.checkpoint);
+      if (center) {
+        mapperCtx.fillStyle = "rgba(133, 240, 255, 0.95)";
+        mapperCtx.font = "bold 10px Sora, sans-serif";
+        mapperCtx.fillText("3L", center.x + 8, center.y + 4);
+      }
+    }
+
     for (let i = 0; i < state.mapper.pathPointsPx.length; i += 1) {
       const c = mapperImageToCanvasPoint(state.mapper.pathPointsPx[i]);
       if (!c) {
@@ -1495,6 +1821,21 @@ function drawMapperCanvas() {
       mapperCtx.beginPath();
       mapperCtx.arc(c.x, c.y, i === 0 ? 4.5 : 3, 0, Math.PI * 2);
       mapperCtx.fill();
+    }
+
+    if (state.mapper.mode === "lane3_pick_end" && state.mapper.lane3DraftStartIndex >= 0) {
+      const startPoint = state.mapper.pathPointsPx[state.mapper.lane3DraftStartIndex];
+      const c = startPoint ? mapperImageToCanvasPoint(startPoint) : null;
+      if (c) {
+        mapperCtx.strokeStyle = "#85f0ff";
+        mapperCtx.lineWidth = 2.5;
+        mapperCtx.beginPath();
+        mapperCtx.arc(c.x, c.y, 9, 0, Math.PI * 2);
+        mapperCtx.stroke();
+        mapperCtx.fillStyle = "#85f0ff";
+        mapperCtx.font = "bold 10px Sora, sans-serif";
+        mapperCtx.fillText("3L start", c.x + 10, c.y - 10);
+      }
     }
   }
 
@@ -1582,6 +1923,82 @@ function handleMapperCanvasClick(event) {
     return;
   }
 
+  if (state.mapper.mode === "lane3_pick_start") {
+    clearMapperSelection();
+    state.mapper.routeOverrideA = null;
+    persistMapperRouteOverride();
+    const startNodeIndex = mapperHitPathNode(imagePoint);
+    if (startNodeIndex < 0) {
+      setMapperStatus("3L segment: click directly on an existing path node for start.");
+      drawMapperCanvas();
+      return;
+    }
+    state.mapper.lane3DraftStartIndex = startNodeIndex;
+    state.mapper.mode = "lane3_pick_end";
+    setMapperStatus(`3L start node selected (#${startNodeIndex + 1}). Now click end node.`);
+    refreshMapperJsonPreview();
+    drawMapperCanvas();
+    return;
+  }
+
+  if (state.mapper.mode === "lane3_pick_end") {
+    clearMapperSelection();
+    state.mapper.routeOverrideA = null;
+    persistMapperRouteOverride();
+    const endNodeIndex = mapperHitPathNode(imagePoint);
+    if (endNodeIndex < 0) {
+      setMapperStatus("3L segment: click directly on an existing path node for end.");
+      drawMapperCanvas();
+      return;
+    }
+    const startNodeIndex = Math.max(0, Math.min(state.mapper.pathPointsPx.length - 1, state.mapper.lane3DraftStartIndex));
+    const draftMeta = {
+      startNodeIndex,
+      endNodeIndex,
+      startAnchorSide: dom.mapperLane3StartEdge?.value === "left" ? "left" : "right",
+      endAnchorSide: dom.mapperLane3EndEdge?.value === "left" ? "left" : "right",
+      transitionLengthM: Number(dom.mapperLane3Transition?.value),
+    };
+    const checkpoint = {
+      x: imagePoint.x,
+      y: imagePoint.y,
+      id: mapperCheckpointId("lane_profile_3", state.mapper.checkpointsPx),
+      type: "lane_profile_3",
+      meta: draftMeta,
+    };
+    if (!mapperRefreshLaneProfile3Checkpoint(checkpoint, state.mapper.pathPointsPx)) {
+      state.mapper.mode = "idle";
+      state.mapper.lane3DraftStartIndex = -1;
+      setMapperStatus("3L segment invalid: start/end must be on same continuous subpath and cover at least 1 segment.");
+      refreshMapperJsonPreview();
+      drawMapperCanvas();
+      return;
+    }
+    const validation = mapperValidateLaneProfile3Ranges(
+      [...state.mapper.checkpointsPx, checkpoint],
+      state.mapper.pathPointsPx,
+    );
+    if (!validation.ok) {
+      state.mapper.mode = "idle";
+      state.mapper.lane3DraftStartIndex = -1;
+      setMapperStatus(validation.message);
+      refreshMapperJsonPreview();
+      drawMapperCanvas();
+      return;
+    }
+    state.mapper.checkpointsPx.push(checkpoint);
+    state.mapper.selectedCheckpointIndex = state.mapper.checkpointsPx.length - 1;
+    state.mapper.selectedPathIndex = -1;
+    state.mapper.mode = "idle";
+    state.mapper.lane3DraftStartIndex = -1;
+    setMapperStatus(
+      `3L segment created (${checkpoint.id}): nodes ${checkpoint.meta.startNodeIndex + 1} -> ${checkpoint.meta.endNodeIndex + 1}.`,
+    );
+    refreshMapperJsonPreview();
+    drawMapperCanvas();
+    return;
+  }
+
   if (state.mapper.mode === "scale") {
     clearMapperSelection();
     state.mapper.routeOverrideA = null;
@@ -1620,6 +2037,14 @@ function handleMapperCanvasClick(event) {
       ...point,
       move: isNewSegment,
     });
+    const lane3Repair = mapperRefreshAllLaneProfiles(state.mapper.pathPointsPx);
+    if (lane3Repair.overlapError) {
+      state.mapper.pathPointsPx.pop();
+      setMapperStatus(lane3Repair.overlapError);
+      refreshMapperJsonPreview();
+      drawMapperCanvas();
+      return;
+    }
     state.mapper.pathNextMove = false;
     if (snapped) {
       setMapperStatus(`path point ${state.mapper.pathPointsPx.length} added (snapped to node ${snapped.index + 1}).`);
@@ -1635,6 +2060,13 @@ function handleMapperCanvasClick(event) {
     state.mapper.pathNextMove = false;
     if (!result.ok) {
       setMapperStatus(result.message || "Could not insert node.");
+      refreshMapperJsonPreview();
+      drawMapperCanvas();
+      return;
+    }
+    const lane3Repair = mapperRefreshAllLaneProfiles(state.mapper.pathPointsPx);
+    if (lane3Repair.overlapError) {
+      setMapperStatus(lane3Repair.overlapError);
       refreshMapperJsonPreview();
       drawMapperCanvas();
       return;
@@ -1727,7 +2159,13 @@ function handleMapperCanvasPointerDown(event) {
   if (hit.kind === "checkpoint") {
     state.mapper.selectedCheckpointIndex = hit.index;
     state.mapper.selectedPathIndex = -1;
-    state.mapper.dragging = { kind: hit.kind, index: hit.index };
+    const checkpoint = state.mapper.checkpointsPx[hit.index];
+    if (checkpoint?.type === "lane_profile_3") {
+      state.mapper.dragging = null;
+      setMapperStatus("3L segment selected. Drag disabled; use delete + recreate to edit geometry.");
+    } else {
+      state.mapper.dragging = { kind: hit.kind, index: hit.index };
+    }
   } else {
     state.mapper.selectedPathIndex = hit.index;
     state.mapper.selectedCheckpointIndex = -1;
@@ -1750,6 +2188,9 @@ function handleMapperCanvasPointerMove(event) {
   if (drag.kind === "checkpoint") {
     const cp = state.mapper.checkpointsPx[drag.index];
     if (!cp) {
+      return;
+    }
+    if (cp.type === "lane_profile_3") {
       return;
     }
     cp.x = imagePoint.x;
@@ -1776,6 +2217,13 @@ function handleMapperCanvasPointerMove(event) {
     }
     state.mapper.selectedPathIndex = drag.index;
     state.mapper.selectedCheckpointIndex = -1;
+    const lane3Repair = mapperRefreshAllLaneProfiles(state.mapper.pathPointsPx);
+    if (lane3Repair.overlapError) {
+      setMapperStatus(lane3Repair.overlapError);
+    }
+    if (lane3Repair.removedCount > 0) {
+      setMapperStatus(`${lane3Repair.removedCount} tramo(s) 3L invalido(s) removidos por mover nodos.`);
+    }
   }
   state.mapper.routeOverrideA = null;
   persistMapperRouteOverride();
@@ -3326,6 +3774,7 @@ function routeFrameAt(x, y, preferredHeading = null, preferredSegmentIndex = nul
       if (abLenSq < 1e-6) {
         return null;
       }
+      const abLen = Math.sqrt(abLenSq);
 
       const apx = x - a.x;
       const apy = y - a.y;
@@ -3341,7 +3790,7 @@ function routeFrameAt(x, y, preferredHeading = null, preferredSegmentIndex = nul
         const headingPenaltyM = delta * 6;
         score += headingPenaltyM * headingPenaltyM;
       }
-      return { abx, aby, qx, qy, heading, distSq, score, segmentIndex: i };
+      return { abx, aby, abLen, t, qx, qy, heading, distSq, score, segmentIndex: i };
     };
 
     for (let i = 0; i < routePath.length - 1; i += 1) {
@@ -3375,6 +3824,8 @@ function routeFrameAt(x, y, preferredHeading = null, preferredSegmentIndex = nul
         center: { x: best.qx, y: best.qy },
         lateral,
         segmentIndex: best.segmentIndex,
+        segmentT: best.t,
+        segmentLength: best.abLen,
       };
     }
   }
@@ -3387,6 +3838,8 @@ function routeFrameAt(x, y, preferredHeading = null, preferredSegmentIndex = nul
     center: { x, y },
     lateral: 0,
     segmentIndex: null,
+    segmentT: 0,
+    segmentLength: 0,
   };
 }
 
@@ -3402,8 +3855,184 @@ function checkpointHeadingAt(checkpoint) {
   return routeHeadingAt(checkpoint.x, checkpoint.y);
 }
 
+function clamp01(value) {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(1, value));
+}
+
+function lerpNumber(a, b, t) {
+  return a + (b - a) * clamp01(t);
+}
+
+function routeSegmentLength(path, segmentIndex) {
+  const i = Math.max(0, Math.round(Number(segmentIndex) || 0));
+  const a = path[i];
+  const b = path[i + 1];
+  if (!a || !b || b.move) {
+    return 0;
+  }
+  return Math.hypot(Number(b.x) - Number(a.x), Number(b.y) - Number(a.y));
+}
+
+function laneProfile3RuntimeMeta(checkpoint, routePath) {
+  const meta = checkpoint?.meta && typeof checkpoint.meta === "object" ? checkpoint.meta : null;
+  if (!meta || !Array.isArray(routePath) || routePath.length < 2) {
+    return null;
+  }
+
+  let startNodeIndex = Math.round(Number(meta.startNodeIndex));
+  let endNodeIndex = Math.round(Number(meta.endNodeIndex));
+  let startAnchorSide = meta.startAnchorSide === "left" ? "left" : "right";
+  let endAnchorSide = meta.endAnchorSide === "left" ? "left" : "right";
+
+  if (!Number.isFinite(startNodeIndex) || !Number.isFinite(endNodeIndex)) {
+    const startSegFallback = Math.round(Number(meta.startSegmentIndex));
+    const endSegFallback = Math.round(Number(meta.endSegmentIndex));
+    if (!Number.isFinite(startSegFallback) || !Number.isFinite(endSegFallback)) {
+      return null;
+    }
+    startNodeIndex = Math.max(0, Math.min(routePath.length - 2, startSegFallback));
+    endNodeIndex = Math.max(startNodeIndex + 1, Math.min(routePath.length - 1, endSegFallback + 1));
+  }
+
+  startNodeIndex = Math.max(0, Math.min(routePath.length - 1, startNodeIndex));
+  endNodeIndex = Math.max(0, Math.min(routePath.length - 1, endNodeIndex));
+  if (endNodeIndex < startNodeIndex) {
+    [startNodeIndex, endNodeIndex] = [endNodeIndex, startNodeIndex];
+    [startAnchorSide, endAnchorSide] = [endAnchorSide, startAnchorSide];
+  }
+  if (endNodeIndex - startNodeIndex < 1) {
+    return null;
+  }
+  for (let i = startNodeIndex + 1; i <= endNodeIndex; i += 1) {
+    if (routePath[i]?.move) {
+      return null;
+    }
+  }
+
+  const startSegmentIndex = startNodeIndex;
+  const endSegmentIndex = endNodeIndex - 1;
+  if (endSegmentIndex < startSegmentIndex) {
+    return null;
+  }
+
+  let totalLength = 0;
+  for (let i = startSegmentIndex; i <= endSegmentIndex; i += 1) {
+    const len = routeSegmentLength(routePath, i);
+    if (len <= 1e-5) {
+      continue;
+    }
+    totalLength += len;
+  }
+  if (totalLength <= 1e-5) {
+    return null;
+  }
+
+  return {
+    startNodeIndex,
+    endNodeIndex,
+    startSegmentIndex,
+    endSegmentIndex,
+    startAnchorSide,
+    endAnchorSide,
+    transitionLengthM: Math.max(
+      LANE_PROFILE_TRANSITION_MIN_M,
+      Math.min(LANE_PROFILE_TRANSITION_MAX_M, Number(meta.transitionLengthM) || LANE_PROFILE_TRANSITION_DEFAULT_M),
+    ),
+    totalLength,
+  };
+}
+
+function laneProfile3StateAtFrame(frame, checkpoints, routePath) {
+  const frameSeg = Math.round(Number(frame?.segmentIndex));
+  if (!Number.isFinite(frameSeg) || !Array.isArray(checkpoints) || !checkpoints.length) {
+    return null;
+  }
+
+  for (const checkpoint of checkpoints) {
+    if (checkpoint?.type !== "lane_profile_3") {
+      continue;
+    }
+    const profile = laneProfile3RuntimeMeta(checkpoint, routePath);
+    if (!profile) {
+      continue;
+    }
+    if (frameSeg < profile.startSegmentIndex || frameSeg > profile.endSegmentIndex) {
+      continue;
+    }
+
+    let d = 0;
+    for (let i = profile.startSegmentIndex; i <= profile.endSegmentIndex; i += 1) {
+      const len = routeSegmentLength(routePath, i);
+      if (i < frameSeg) {
+        d += len;
+      } else if (i === frameSeg) {
+        d += len * clamp01(Number(frame.segmentT));
+      }
+    }
+    const L = profile.totalLength;
+    const Lt = Math.max(
+      LANE_PROFILE_TRANSITION_MIN_M,
+      Math.min(LANE_PROFILE_TRANSITION_MAX_M, Number(profile.transitionLengthM) || LANE_PROFILE_TRANSITION_DEFAULT_M),
+    );
+    const entry = clamp01(d / Math.max(0.0001, Lt));
+    const exit = clamp01((L - d) / Math.max(0.0001, Lt));
+    const w = ROAD_EXTRA_LANE_WIDTH_M * Math.min(entry, exit);
+    if (w <= 1e-4) {
+      return {
+        ...profile,
+        d,
+        w: 0,
+        s: profile.startAnchorSide === "right" ? 1 : -1,
+      };
+    }
+
+    const sStart = profile.startAnchorSide === "right" ? 1 : -1;
+    const sEnd = profile.endAnchorSide === "right" ? 1 : -1;
+    let s;
+    if (L <= 2 * Lt) {
+      s = lerpNumber(sStart, sEnd, d / Math.max(0.0001, L));
+    } else if (d <= Lt) {
+      s = sStart;
+    } else if (d >= L - Lt) {
+      s = sEnd;
+    } else {
+      s = lerpNumber(sStart, sEnd, (d - Lt) / Math.max(0.0001, L - 2 * Lt));
+    }
+    return {
+      ...profile,
+      d,
+      w,
+      s: Math.max(-1, Math.min(1, s)),
+    };
+  }
+
+  return null;
+}
+
+function routeLaneDividerOffsets(halfWidths) {
+  const left = Number(halfWidths?.left) || ROAD_BASE_WIDTH_M * 0.5;
+  const right = Number(halfWidths?.right) || ROAD_BASE_WIDTH_M * 0.5;
+  const totalExtra = Math.max(0, left + right - ROAD_BASE_WIDTH_M);
+  if (totalExtra < 0.12) {
+    return [0];
+  }
+  const blend = Math.max(0, Math.min(1, totalExtra / Math.max(0.0001, ROAD_EXTRA_LANE_WIDTH_M)));
+  const sideBias = Math.max(-1, Math.min(1, (right - left) / Math.max(0.0001, totalExtra)));
+  const t = (sideBias + 1) * 0.5;
+  const leftDivider = (-ROAD_BASE_WIDTH_M * 0.5 + ROAD_BASE_WIDTH_M * 0.5 * t) * blend;
+  const rightDivider = (ROAD_BASE_WIDTH_M * 0.5 * t) * blend;
+  if (Math.abs(leftDivider - rightDivider) < 0.08) {
+    return [leftDivider];
+  }
+  return [leftDivider, rightDivider];
+}
+
 function routeRoadHalfWidthsAt(x, y, preferredHeading = null, preferredSegmentIndex = null) {
   const frame = routeFrameAt(x, y, preferredHeading, preferredSegmentIndex);
+  const routePath = state.sim.routePath?.length ? state.sim.routePath : state.sim.routeDensePath;
   let laneCount = 2;
   const checkpoints = state.sim.route?.checkpoints || [];
 
@@ -3430,12 +4059,28 @@ function routeRoadHalfWidthsAt(x, y, preferredHeading = null, preferredSegmentIn
     }
   }
 
-  const baseRoadWidth = laneCount >= 3 ? ROAD_THREE_LANE_WIDTH_M : ROAD_BASE_WIDTH_M;
-  let leftHalf = baseRoadWidth * 0.5;
-  let rightHalf = baseRoadWidth * 0.5;
+  const defaultBaseHalf = ROAD_BASE_WIDTH_M * 0.5;
+  let leftHalf = (laneCount >= 3 ? ROAD_THREE_LANE_WIDTH_M : ROAD_BASE_WIDTH_M) * 0.5;
+  let rightHalf = leftHalf;
+
+  const profileState = laneProfile3StateAtFrame(frame, checkpoints, routePath);
+  const profileActive = Boolean(profileState);
+  if (profileState) {
+    const s = Math.max(-1, Math.min(1, Number(profileState.s) || 0));
+    const w = Math.max(0, Number(profileState.w) || 0);
+    leftHalf = defaultBaseHalf + ((1 - s) * w) / 2;
+    rightHalf = defaultBaseHalf + ((1 + s) * w) / 2;
+    if (w > 0.08) {
+      laneCount = Math.max(laneCount, 3);
+    }
+  }
 
   for (const checkpoint of checkpoints) {
     if (checkpoint.type !== "lane_add") {
+      continue;
+    }
+    if (profileActive) {
+      // lane_profile_3 has priority over lane_add on overlapping segments.
       continue;
     }
 
@@ -3459,20 +4104,25 @@ function routeRoadHalfWidthsAt(x, y, preferredHeading = null, preferredSegmentIn
       sideSign = Math.sign(lateral) || 1;
     }
     const extraLanes = Math.max(1, Math.min(2, Math.round(Number(checkpoint.meta?.extraLanes) || 1)));
+    const baseHalf = defaultBaseHalf;
     const addedWidth = ROAD_EXTRA_LANE_WIDTH_M * extraLanes;
     if (sideSign > 0) {
-      rightHalf = Math.max(rightHalf, baseRoadWidth * 0.5 + addedWidth);
+      rightHalf = Math.max(rightHalf, baseHalf + addedWidth);
     } else {
-      leftHalf = Math.max(leftHalf, baseRoadWidth * 0.5 + addedWidth);
+      leftHalf = Math.max(leftHalf, baseHalf + addedWidth);
     }
+    laneCount = Math.max(laneCount, 2 + extraLanes);
   }
 
+  const roadWidth = leftHalf + rightHalf;
   return {
     left: leftHalf,
     right: rightHalf,
-    roadWidth: leftHalf + rightHalf,
+    roadWidth,
     laneCount,
     frame,
+    extraWidth: Math.max(0, roadWidth - ROAD_BASE_WIDTH_M),
+    profileState,
   };
 }
 
@@ -5091,6 +5741,7 @@ function rebuildThreeRouteScene() {
     const mx = (ax + bx) / 2;
     const mz = (az + bz) / 2;
     const segHeadingMap = Math.atan2(b.y - a.y, b.x - a.x);
+    const rightMap = { x: Math.sin(segHeadingMap), y: -Math.cos(segHeadingMap) };
     const halfWidths = routeRoadHalfWidthsAt(mx, -mz, segHeadingMap);
     const roadLeft = halfWidths.left;
     const roadRight = halfWidths.right;
@@ -5113,7 +5764,6 @@ function rebuildThreeRouteScene() {
       const roadWidth = roadLeft + roadRight;
       const shoulderWidth = roadWidth + ROAD_SHOULDER_HALF_EXTRA_M * 2;
       const centerShift = (roadRight - roadLeft) * 0.5;
-      const rightMap = { x: Math.sin(segHeadingMap), y: -Math.cos(segHeadingMap) };
       const centerX = mx + rightMap.x * centerShift;
       const centerY = -mz + rightMap.y * centerShift;
       const centerZ = -centerY;
@@ -5129,22 +5779,13 @@ function rebuildThreeRouteScene() {
       routeGroup.add(road);
     }
 
-    const centerLine = new THREE.Mesh(new THREE.BoxGeometry(len * 0.8, 0.042, 0.16), lineMat);
-    centerLine.position.set(mx, 0.043, mz);
-    centerLine.rotation.y = -angle;
-    routeGroup.add(centerLine);
-
-    const sideDiff = roadRight - roadLeft;
-    if (Math.abs(sideDiff) > ROAD_EXTRA_LANE_WIDTH_M * 0.35) {
-      const rightMap = { x: Math.sin(segHeadingMap), y: -Math.cos(segHeadingMap) };
-      const sideSign = sideDiff > 0 ? 1 : -1;
-      const dividerOffset = Math.min(roadLeft, roadRight) * sideSign;
+    for (const dividerOffset of routeLaneDividerOffsets(halfWidths)) {
       const dividerX = mx + rightMap.x * dividerOffset;
       const dividerY = -mz + rightMap.y * dividerOffset;
-      const extraLaneDivider = new THREE.Mesh(new THREE.BoxGeometry(len * 0.76, 0.042, 0.12), lineMat);
-      extraLaneDivider.position.set(dividerX, 0.043, -dividerY);
-      extraLaneDivider.rotation.y = -angle;
-      routeGroup.add(extraLaneDivider);
+      const divider = new THREE.Mesh(new THREE.BoxGeometry(len * 0.8, 0.042, 0.14), lineMat);
+      divider.position.set(dividerX, 0.043, -dividerY);
+      divider.rotation.y = -angle;
+      routeGroup.add(divider);
     }
   }
 
@@ -5480,6 +6121,9 @@ function drawMiniMapOverlay() {
   ctxMini.stroke();
 
   for (const checkpoint of state.sim.route.checkpoints) {
+    if (checkpoint.type === "lane_profile_3") {
+      continue;
+    }
     const p = mp(checkpoint);
     ctxMini.fillStyle = colorForCheckpoint(checkpoint.type);
     ctxMini.beginPath();
@@ -7917,15 +8561,29 @@ function drawRoadPerspective(horizonY) {
     ctx.fill();
 
     if (i % 2 === 0) {
-      const centerFar = projectPerspective(far.right, far.forward, horizonY);
-      const centerNear = projectPerspective(near.right, near.forward, horizonY);
-
-      if (centerFar && centerNear) {
+      const dividerOffsets = routeLaneDividerOffsets({
+        left: (farHalfWidths.left + nearHalfWidths.left) * 0.5,
+        right: (farHalfWidths.right + nearHalfWidths.right) * 0.5,
+      });
+      for (const offset of dividerOffsets) {
+        const dividerFar = projectWorldPoint(
+          far.x + farFrame.right.x * offset,
+          far.y + farFrame.right.y * offset,
+          horizonY,
+        );
+        const dividerNear = projectWorldPoint(
+          near.x + nearFrame.right.x * offset,
+          near.y + nearFrame.right.y * offset,
+          horizonY,
+        );
+        if (!dividerFar || !dividerNear) {
+          continue;
+        }
         ctx.strokeStyle = "#f2f4f7";
         ctx.lineWidth = Math.max(1, 6 / Math.max(near.forward, 1));
         ctx.beginPath();
-        ctx.moveTo(centerFar.x, centerFar.y);
-        ctx.lineTo(centerNear.x, centerNear.y);
+        ctx.moveTo(dividerFar.x, dividerFar.y);
+        ctx.lineTo(dividerNear.x, dividerNear.y);
         ctx.stroke();
       }
     }
@@ -7940,7 +8598,8 @@ function drawCheckpointSigns(horizonY) {
       checkpoint.type === "traffic_light" ||
       checkpoint.type === "stop_line" ||
       checkpoint.type === "stop_line_free" ||
-      checkpoint.type === "lane_add"
+      checkpoint.type === "lane_add" ||
+      checkpoint.type === "lane_profile_3"
     ) {
       continue;
     }
@@ -8060,6 +8719,9 @@ function drawMiniMap() {
   ctx.stroke();
 
   for (const checkpoint of state.sim.route.checkpoints) {
+    if (checkpoint.type === "lane_profile_3") {
+      continue;
+    }
     const p = mapPoint(checkpoint);
     ctx.fillStyle = colorForCheckpoint(checkpoint.type);
     ctx.beginPath();
@@ -8388,7 +9050,8 @@ function drawThirdPersonScene() {
       checkpoint.type === "parking_diagonal" ||
       checkpoint.type === "stop_line" ||
       checkpoint.type === "stop_line_free" ||
-      checkpoint.type === "lane_add"
+      checkpoint.type === "lane_add" ||
+      checkpoint.type === "lane_profile_3"
     ) {
       continue;
     }
@@ -9790,6 +10453,7 @@ function bindRouteMapperUi() {
       return;
     }
     state.mapper.mode = "scale";
+    state.mapper.lane3DraftStartIndex = -1;
     clearMapperSelection();
     state.mapper.dragging = null;
     state.mapper.scalePointsPx = [];
@@ -9807,6 +10471,7 @@ function bindRouteMapperUi() {
       return;
     }
     state.mapper.mode = "path";
+    state.mapper.lane3DraftStartIndex = -1;
     clearMapperSelection();
     state.mapper.dragging = null;
     setMapperStatus("path mode active. Click route centerline points in order (auto-snap to existing nodes).");
@@ -9819,6 +10484,7 @@ function bindRouteMapperUi() {
       return;
     }
     state.mapper.mode = "idle";
+    state.mapper.lane3DraftStartIndex = -1;
     state.mapper.pendingCheckpointType = null;
     state.mapper.pathNextMove = false;
     state.mapper.dragging = null;
@@ -9836,6 +10502,7 @@ function bindRouteMapperUi() {
       return;
     }
     state.mapper.mode = "path";
+    state.mapper.lane3DraftStartIndex = -1;
     clearMapperSelection();
     state.mapper.dragging = null;
     state.mapper.pathNextMove = true;
@@ -9853,11 +10520,30 @@ function bindRouteMapperUi() {
       return;
     }
     state.mapper.mode = "insert_path";
+    state.mapper.lane3DraftStartIndex = -1;
     clearMapperSelection();
     state.mapper.dragging = null;
     state.mapper.pathNextMove = false;
     state.mapper.pendingCheckpointType = null;
     setMapperStatus("insert node mode active. Click a segment between two nodes.");
+    drawMapperCanvas();
+  });
+
+  dom.mapperLane3Segment.addEventListener("click", () => {
+    if (!state.mapper.image && !state.mapper.pathPointsPx.length) {
+      alert("Upload the map image or open a saved map first.");
+      return;
+    }
+    if (state.mapper.pathPointsPx.length < 2) {
+      alert("Add at least two path nodes first.");
+      return;
+    }
+    state.mapper.mode = "lane3_pick_start";
+    state.mapper.lane3DraftStartIndex = -1;
+    state.mapper.pendingCheckpointType = null;
+    clearMapperSelection();
+    state.mapper.dragging = null;
+    setMapperStatus("3L segment mode: click START node, then END node on the same continuous path.");
     drawMapperCanvas();
   });
 
@@ -9868,6 +10554,7 @@ function bindRouteMapperUi() {
     }
     state.mapper.pendingCheckpointType = dom.mapperCheckpointType.value;
     state.mapper.mode = "checkpoint";
+    state.mapper.lane3DraftStartIndex = -1;
     clearMapperSelection();
     state.mapper.dragging = null;
     setMapperStatus(`${state.mapper.pendingCheckpointType} mode. Click checkpoint location.`);
@@ -9886,9 +10573,15 @@ function bindRouteMapperUi() {
         setMapperStatus("Selected checkpoint deleted.");
       }
     } else if (selected.kind === "path") {
-      const removed = deleteMapperPathPoint(selected.index);
-      if (removed) {
-        setMapperStatus("Selected path point deleted.");
+      const result = deleteMapperPathPoint(selected.index);
+      if (result.ok) {
+        if (result.removedLaneProfiles > 0) {
+          setMapperStatus(
+            `Selected path point deleted. ${result.removedLaneProfiles} tramo(s) 3L invalidado(s) por editar nodo boundary.`,
+          );
+        } else {
+          setMapperStatus("Selected path point deleted.");
+        }
       }
     }
     clearMapperSelection();
@@ -9901,11 +10594,17 @@ function bindRouteMapperUi() {
 
   dom.mapperUndo.addEventListener("click", () => {
     if (state.mapper.mode === "path" && state.mapper.pathPointsPx.length > 0) {
+      const removedPathIndex = state.mapper.pathPointsPx.length - 1;
       state.mapper.pathPointsPx.pop();
       if (!state.mapper.pathPointsPx.length) {
         state.mapper.pathNextMove = false;
       }
-      setMapperStatus("removed last path point.");
+      const removedLaneProfiles = mapperReindexLaneProfilesAfterDelete(removedPathIndex);
+      if (removedLaneProfiles > 0) {
+        setMapperStatus(`removed last path point. ${removedLaneProfiles} tramo(s) 3L invalidado(s).`);
+      } else {
+        setMapperStatus("removed last path point.");
+      }
     } else if (state.mapper.checkpointsPx.length > 0) {
       state.mapper.checkpointsPx.pop();
       setMapperStatus("removed last checkpoint.");
@@ -9915,6 +10614,7 @@ function bindRouteMapperUi() {
       setMapperStatus("removed scale point.");
     }
     clearMapperSelection();
+    state.mapper.lane3DraftStartIndex = -1;
     state.mapper.dragging = null;
     state.mapper.routeOverrideA = null;
     persistMapperRouteOverride();
@@ -9924,6 +10624,7 @@ function bindRouteMapperUi() {
 
   dom.mapperClear.addEventListener("click", () => {
     state.mapper.mode = "idle";
+    state.mapper.lane3DraftStartIndex = -1;
     state.mapper.scalePointsPx = [];
     state.mapper.metersPerPixel = 0;
     state.mapper.pathPointsPx = [];
