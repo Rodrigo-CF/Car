@@ -5110,28 +5110,22 @@ function rebuildThreeRouteScene() {
       road.rotation.y = -angle;
       routeGroup.add(road);
     } else {
-      const shoulderLeft = roadLeft + ROAD_SHOULDER_HALF_EXTRA_M;
-      const shoulderRight = roadRight + ROAD_SHOULDER_HALF_EXTRA_M;
+      const roadWidth = roadLeft + roadRight;
+      const shoulderWidth = roadWidth + ROAD_SHOULDER_HALF_EXTRA_M * 2;
+      const centerShift = (roadRight - roadLeft) * 0.5;
       const rightMap = { x: Math.sin(segHeadingMap), y: -Math.cos(segHeadingMap) };
+      const centerX = mx + rightMap.x * centerShift;
+      const centerY = -mz + rightMap.y * centerShift;
+      const centerZ = -centerY;
 
-      const shoulderCorners = [
-        { x: a.x - rightMap.x * shoulderLeft, y: a.y - rightMap.y * shoulderLeft },
-        { x: b.x - rightMap.x * shoulderLeft, y: b.y - rightMap.y * shoulderLeft },
-        { x: b.x + rightMap.x * shoulderRight, y: b.y + rightMap.y * shoulderRight },
-        { x: a.x + rightMap.x * shoulderRight, y: a.y + rightMap.y * shoulderRight },
-      ];
-      const shoulder = new THREE.Mesh(buildGroundQuadGeometry(THREE, shoulderCorners), shoulderMat);
-      shoulder.position.y = 0.005;
+      const shoulder = new THREE.Mesh(new THREE.BoxGeometry(len, 0.03, shoulderWidth), shoulderMat);
+      shoulder.position.set(centerX, 0.005, centerZ);
+      shoulder.rotation.y = -angle;
       routeGroup.add(shoulder);
 
-      const roadCorners = [
-        { x: a.x - rightMap.x * roadLeft, y: a.y - rightMap.y * roadLeft },
-        { x: b.x - rightMap.x * roadLeft, y: b.y - rightMap.y * roadLeft },
-        { x: b.x + rightMap.x * roadRight, y: b.y + rightMap.y * roadRight },
-        { x: a.x + rightMap.x * roadRight, y: a.y + rightMap.y * roadRight },
-      ];
-      const road = new THREE.Mesh(buildGroundQuadGeometry(THREE, roadCorners), roadMat);
-      road.position.y = 0.02;
+      const road = new THREE.Mesh(new THREE.BoxGeometry(len, 0.04, roadWidth), roadMat);
+      road.position.set(centerX, 0.02, centerZ);
+      road.rotation.y = -angle;
       routeGroup.add(road);
     }
 
