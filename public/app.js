@@ -260,6 +260,7 @@ const dom = {
   mapperLane3StartEdge: document.querySelector("#mapper-lane3-start-edge"),
   mapperLane3EndEdge: document.querySelector("#mapper-lane3-end-edge"),
   mapperLane3Transition: document.querySelector("#mapper-lane3-transition"),
+  mapperLane3Expansion: document.querySelector("#mapper-lane3-expansion"),
   mapperCheckpointType: document.querySelector("#mapper-checkpoint-type"),
   mapperCheckpointHelp: document.querySelector("#mapper-checkpoint-help"),
   mapperTrafficFields: document.querySelector("#mapper-traffic-fields"),
@@ -427,6 +428,7 @@ function mapperDefaultMeta(type) {
       startAnchorSide: "right",
       endAnchorSide: "right",
       transitionLengthM: LANE_PROFILE_TRANSITION_DEFAULT_M,
+      expansionMode: dom.mapperLane3Expansion?.value === "trim_previous" ? "trim_previous" : "node",
     };
   }
   if (type === "start_canopy") {
@@ -1224,6 +1226,7 @@ function mapperNormalizeLaneProfile3Meta(meta, points = state.mapper.pathPointsP
     LANE_PROFILE_TRANSITION_MIN_M,
     Math.min(LANE_PROFILE_TRANSITION_MAX_M, Number(meta.transitionLengthM) || LANE_PROFILE_TRANSITION_DEFAULT_M),
   );
+  const expansionMode = meta.expansionMode === "trim_previous" ? "trim_previous" : "node";
   const startSegmentIndex = startNodeIndex;
   const endSegmentIndex = endNodeIndex - 1;
   return {
@@ -1234,6 +1237,7 @@ function mapperNormalizeLaneProfile3Meta(meta, points = state.mapper.pathPointsP
     startAnchorSide,
     endAnchorSide,
     transitionLengthM,
+    expansionMode,
     subpathStartIndex: mapperPathSubpathStartIndex(startNodeIndex, points),
   };
 }
@@ -1958,6 +1962,7 @@ function handleMapperCanvasClick(event) {
       startAnchorSide: dom.mapperLane3StartEdge?.value === "left" ? "left" : "right",
       endAnchorSide: dom.mapperLane3EndEdge?.value === "left" ? "left" : "right",
       transitionLengthM: Number(dom.mapperLane3Transition?.value),
+      expansionMode: dom.mapperLane3Expansion?.value === "trim_previous" ? "trim_previous" : "node",
     };
     const checkpoint = {
       x: imagePoint.x,
@@ -3937,6 +3942,7 @@ function laneProfile3RuntimeMeta(checkpoint, routePath) {
     endSegmentIndex,
     startAnchorSide,
     endAnchorSide,
+    expansionMode: meta.expansionMode === "trim_previous" ? "trim_previous" : "node",
     transitionLengthM: Math.max(
       LANE_PROFILE_TRANSITION_MIN_M,
       Math.min(LANE_PROFILE_TRANSITION_MAX_M, Number(meta.transitionLengthM) || LANE_PROFILE_TRANSITION_DEFAULT_M),
@@ -3959,28 +3965,48 @@ function laneProfile3StateAtFrame(frame, checkpoints, routePath) {
     if (!profile) {
       continue;
     }
-    if (frameSeg < profile.startSegmentIndex || frameSeg > profile.endSegmentIndex) {
+    const trimPrevMode = profile.expansionMode === "trim_previous";
+    const inProfileRange = frameSeg >= profile.startSegmentIndex && frameSeg <= profile.endSegmentIndex;
+    const inTrimPrevRange =
+      trimPrevMode &&
+      frameSeg === profile.startSegmentIndex - 1 &&
+      profile.startSegmentIndex > 0 &&
+      !routePath[profile.startNodeIndex]?.move;
+    if (!inProfileRange && !inTrimPrevRange) {
       continue;
     }
 
     let d = 0;
-    for (let i = profile.startSegmentIndex; i <= profile.endSegmentIndex; i += 1) {
-      const len = routeSegmentLength(routePath, i);
-      if (i < frameSeg) {
-        d += len;
-      } else if (i === frameSeg) {
-        d += len * clamp01(Number(frame.segmentT));
+    if (inProfileRange) {
+      for (let i = profile.startSegmentIndex; i <= profile.endSegmentIndex; i += 1) {
+        const len = routeSegmentLength(routePath, i);
+        if (i < frameSeg) {
+          d += len;
+        } else if (i === frameSeg) {
+          d += len * clamp01(Number(frame.segmentT));
+        }
       }
+    } else if (inTrimPrevRange) {
+      const lenPrev = routeSegmentLength(routePath, frameSeg);
+      const tPrev = clamp01(Number(frame.segmentT));
+      d = -(lenPrev * (1 - tPrev));
+    } else {
+      continue;
     }
+
     const L = profile.totalLength;
     const Lt = Math.max(
       LANE_PROFILE_TRANSITION_MIN_M,
       Math.min(LANE_PROFILE_TRANSITION_MAX_M, Number(profile.transitionLengthM) || LANE_PROFILE_TRANSITION_DEFAULT_M),
     );
-    const entry = clamp01(d / Math.max(0.0001, Lt));
+
+    const entry = trimPrevMode ? clamp01((d + Lt) / Math.max(0.0001, Lt)) : clamp01(d / Math.max(0.0001, Lt));
     const exit = clamp01((L - d) / Math.max(0.0001, Lt));
     const w = ROAD_EXTRA_LANE_WIDTH_M * Math.min(entry, exit);
     if (w <= 1e-4) {
+      if (trimPrevMode && inTrimPrevRange) {
+        continue;
+      }
       return {
         ...profile,
         d,
@@ -3991,15 +4017,16 @@ function laneProfile3StateAtFrame(frame, checkpoints, routePath) {
 
     const sStart = profile.startAnchorSide === "right" ? 1 : -1;
     const sEnd = profile.endAnchorSide === "right" ? 1 : -1;
+    const dClamp = Math.max(0, Math.min(L, d));
     let s;
     if (L <= 2 * Lt) {
-      s = lerpNumber(sStart, sEnd, d / Math.max(0.0001, L));
-    } else if (d <= Lt) {
+      s = lerpNumber(sStart, sEnd, dClamp / Math.max(0.0001, L));
+    } else if (dClamp <= Lt) {
       s = sStart;
-    } else if (d >= L - Lt) {
+    } else if (dClamp >= L - Lt) {
       s = sEnd;
     } else {
-      s = lerpNumber(sStart, sEnd, (d - Lt) / Math.max(0.0001, L - 2 * Lt));
+      s = lerpNumber(sStart, sEnd, (dClamp - Lt) / Math.max(0.0001, L - 2 * Lt));
     }
     return {
       ...profile,
@@ -4960,10 +4987,42 @@ function buildGroundQuadGeometry(THREE, corners) {
   return geometry;
 }
 
+function buildGroundTriangleGeometry(THREE, points) {
+  const geometry = new THREE.BufferGeometry();
+  const vertices = new Float32Array([
+    points[0].x, 0, -points[0].y,
+    points[1].x, 0, -points[1].y,
+    points[2].x, 0, -points[2].y,
+  ]);
+  geometry.setAttribute("position", new THREE.BufferAttribute(vertices, 3));
+  geometry.setIndex([0, 1, 2]);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
 function buildGroundLoopGeometry(THREE, corners) {
   const points = corners.map((corner) => new THREE.Vector3(corner.x, 0, -corner.y));
   points.push(new THREE.Vector3(corners[0].x, 0, -corners[0].y));
   return new THREE.BufferGeometry().setFromPoints(points);
+}
+
+function lineIntersection2D(p, dirP, q, dirQ) {
+  const cross = dirP.x * dirQ.y - dirP.y * dirQ.x;
+  if (Math.abs(cross) < 1e-6) {
+    return null;
+  }
+  const qmpx = q.x - p.x;
+  const qmpy = q.y - p.y;
+  const t = (qmpx * dirQ.y - qmpy * dirQ.x) / cross;
+  const u = (qmpx * dirP.y - qmpy * dirP.x) / cross;
+  return {
+    point: {
+      x: p.x + dirP.x * t,
+      y: p.y + dirP.y * t,
+    },
+    t,
+    u,
+  };
 }
 
 function buildGuardTowerGroup(THREE, checkpoint) {
@@ -5689,6 +5748,150 @@ function createThreeCockpit(THREE) {
   return { root, wheelGroup };
 }
 
+function renderLaneProfileEntryTrimPatches(THREE, routeGroup) {
+  const checkpoints = state.sim.route?.checkpoints || [];
+  if (!checkpoints.length) {
+    return;
+  }
+  const routePath = state.sim.routePath?.length ? state.sim.routePath : state.sim.routeDensePath;
+  if (!Array.isArray(routePath) || routePath.length < 3) {
+    return;
+  }
+
+  const edgePointForSide = (node, right, leftHalf, rightHalf, sideSign) => {
+    const centerShift = (rightHalf - leftHalf) * 0.5;
+    const center = {
+      x: node.x + right.x * centerShift,
+      y: node.y + right.y * centerShift,
+    };
+    const sideOffset = sideSign > 0 ? rightHalf : -leftHalf;
+    return {
+      x: center.x + right.x * sideOffset,
+      y: center.y + right.y * sideOffset,
+    };
+  };
+
+  const roadPatchMat = new THREE.MeshStandardMaterial({
+    color: 0x2e343b,
+    roughness: 0.95,
+    metalness: 0.03,
+    side: THREE.DoubleSide,
+  });
+  const shoulderPatchMat = new THREE.MeshStandardMaterial({
+    color: 0x4f3f33,
+    roughness: 1,
+    metalness: 0,
+    side: THREE.DoubleSide,
+  });
+
+  for (const checkpoint of checkpoints) {
+    if (checkpoint?.type !== "lane_profile_3") {
+      continue;
+    }
+    const profile = laneProfile3RuntimeMeta(checkpoint, routePath);
+    if (!profile || profile.expansionMode !== "trim_previous") {
+      continue;
+    }
+    const startSeg = profile.startSegmentIndex;
+    if (startSeg <= 0 || startSeg >= routePath.length - 1) {
+      continue;
+    }
+
+    const prevStart = routePath[startSeg - 1];
+    const node = routePath[startSeg];
+    const nextNode = routePath[startSeg + 1];
+    if (!prevStart || !node || !nextNode || node.move || nextNode.move) {
+      continue;
+    }
+
+    const prevVec = { x: node.x - prevStart.x, y: node.y - prevStart.y };
+    const nextVec = { x: nextNode.x - node.x, y: nextNode.y - node.y };
+    const prevLen = Math.hypot(prevVec.x, prevVec.y);
+    const nextLen = Math.hypot(nextVec.x, nextVec.y);
+    if (prevLen < 0.8 || nextLen < 0.8) {
+      continue;
+    }
+    const prevHeading = Math.atan2(prevVec.y, prevVec.x);
+    const nextHeading = Math.atan2(nextVec.y, nextVec.x);
+    const prevDir = { x: prevVec.x / prevLen, y: prevVec.y / prevLen };
+    const prevRight = { x: Math.sin(prevHeading), y: -Math.cos(prevHeading) };
+    const nextRight = { x: Math.sin(nextHeading), y: -Math.cos(nextHeading) };
+
+    const samplePrev = {
+      x: prevStart.x + prevVec.x * 0.985,
+      y: prevStart.y + prevVec.y * 0.985,
+    };
+    const prevHalf = routeRoadHalfWidthsAt(samplePrev.x, samplePrev.y, prevHeading, startSeg - 1);
+
+    const sStart = profile.startAnchorSide === "right" ? 1 : -1;
+    const baseHalf = ROAD_BASE_WIDTH_M * 0.5;
+    const targetLeft = baseHalf + ((1 - sStart) * ROAD_EXTRA_LANE_WIDTH_M) / 2;
+    const targetRight = baseHalf + ((1 + sStart) * ROAD_EXTRA_LANE_WIDTH_M) / 2;
+    const nextCenterShift = (targetRight - targetLeft) * 0.5;
+    const nextCenterAtNode = {
+      x: node.x + nextRight.x * nextCenterShift,
+      y: node.y + nextRight.y * nextCenterShift,
+    };
+    const maxTrim = Math.max(
+      0.8,
+      Math.min(prevLen * 0.72, Math.max(1.2, Number(profile.transitionLengthM) || LANE_PROFILE_TRANSITION_DEFAULT_M)),
+    );
+
+    for (const sideSign of [1, -1]) {
+      const prevSideHalf = sideSign > 0 ? prevHalf.right : prevHalf.left;
+      const targetSideHalf = sideSign > 0 ? targetRight : targetLeft;
+      if (targetSideHalf <= prevSideHalf + 0.08) {
+        continue;
+      }
+
+      const prevEdgeAtNode = edgePointForSide(node, prevRight, prevHalf.left, prevHalf.right, sideSign);
+      const nextEdgeAtNode = edgePointForSide(node, nextRight, targetLeft, targetRight, sideSign);
+      const hit = lineIntersection2D(prevEdgeAtNode, prevDir, nextCenterAtNode, nextRight);
+      let trimDist = Math.min(maxTrim, Math.max(0.9, targetSideHalf - prevSideHalf + 0.45));
+      if (hit && Number.isFinite(hit.t) && hit.t < -0.2) {
+        trimDist = Math.min(maxTrim, Math.max(0.6, -hit.t));
+      }
+      const trimPoint = {
+        x: prevEdgeAtNode.x - prevDir.x * trimDist,
+        y: prevEdgeAtNode.y - prevDir.y * trimDist,
+      };
+      if (Math.hypot(trimPoint.x - prevEdgeAtNode.x, trimPoint.y - prevEdgeAtNode.y) < 0.35) {
+        continue;
+      }
+
+      const shoulderPrevLeft = prevHalf.left + ROAD_SHOULDER_HALF_EXTRA_M;
+      const shoulderPrevRight = prevHalf.right + ROAD_SHOULDER_HALF_EXTRA_M;
+      const shoulderTargetLeft = targetLeft + ROAD_SHOULDER_HALF_EXTRA_M;
+      const shoulderTargetRight = targetRight + ROAD_SHOULDER_HALF_EXTRA_M;
+      const prevShoulderAtNode = edgePointForSide(node, prevRight, shoulderPrevLeft, shoulderPrevRight, sideSign);
+      const nextShoulderAtNode = edgePointForSide(node, nextRight, shoulderTargetLeft, shoulderTargetRight, sideSign);
+      const hitShoulder = lineIntersection2D(prevShoulderAtNode, prevDir, nextCenterAtNode, nextRight);
+      let trimShoulderDist = trimDist + ROAD_SHOULDER_HALF_EXTRA_M * 0.6;
+      if (hitShoulder && Number.isFinite(hitShoulder.t) && hitShoulder.t < -0.2) {
+        trimShoulderDist = Math.min(maxTrim + ROAD_SHOULDER_HALF_EXTRA_M, Math.max(0.8, -hitShoulder.t));
+      }
+      const trimShoulderPoint = {
+        x: prevShoulderAtNode.x - prevDir.x * trimShoulderDist,
+        y: prevShoulderAtNode.y - prevDir.y * trimShoulderDist,
+      };
+
+      const shoulderPatch = new THREE.Mesh(
+        buildGroundTriangleGeometry(THREE, [trimShoulderPoint, prevShoulderAtNode, nextShoulderAtNode]),
+        shoulderPatchMat,
+      );
+      shoulderPatch.position.y = 0.008;
+      routeGroup.add(shoulderPatch);
+
+      const roadPatch = new THREE.Mesh(
+        buildGroundTriangleGeometry(THREE, [trimPoint, prevEdgeAtNode, nextEdgeAtNode]),
+        roadPatchMat,
+      );
+      roadPatch.position.y = 0.024;
+      routeGroup.add(roadPatch);
+    }
+  }
+}
+
 function rebuildThreeRouteScene() {
   const three = state.sim.three;
   if (!three.ready || !state.sim.route) {
@@ -5788,6 +5991,8 @@ function rebuildThreeRouteScene() {
       routeGroup.add(divider);
     }
   }
+
+  renderLaneProfileEntryTrimPatches(THREE, routeGroup);
 
   // Fill segment joints with rounded caps so curves/roundabouts look smooth
   // instead of showing polygonal wedge gaps between straight road pieces.
