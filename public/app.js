@@ -6000,6 +6000,19 @@ function rebuildThreeRouteScene() {
     const nextDividerOffsets = i + 2 < path.length && !path[i + 2].move
       ? routeLaneDividerOffsetsForSegment(path, i + 1)
       : [];
+    const prevHeading = i > 0 && !a.move
+      ? Math.atan2(a.y - path[i - 1].y, a.x - path[i - 1].x)
+      : null;
+    const nextHeading = i + 2 < path.length && !path[i + 2].move
+      ? Math.atan2(path[i + 2].y - b.y, path[i + 2].x - b.x)
+      : null;
+    const segmentHeading = Math.atan2(b.y - a.y, b.x - a.x);
+    const startTurnAbs = prevHeading == null
+      ? 0
+      : normalizeHeadingDeltaRad(segmentHeading, prevHeading);
+    const endTurnAbs = nextHeading == null
+      ? 0
+      : normalizeHeadingDeltaRad(nextHeading, segmentHeading);
     for (const dividerOffset of currentDividerOffsets) {
       const hasPrevMatch = hasLaneDividerOffsetMatch(dividerOffset, prevDividerOffsets);
       const hasNextMatch = hasLaneDividerOffsetMatch(dividerOffset, nextDividerOffsets);
@@ -6011,7 +6024,20 @@ function rebuildThreeRouteScene() {
       const edgeTrim = Math.min(0.95, baseDividerLen * 0.45);
       const trimStart = hasPrevMatch ? 0 : edgeTrim;
       const trimEnd = hasNextMatch ? 0 : edgeTrim;
-      const dividerLen = baseDividerLen - trimStart - trimEnd;
+      let effectiveTrimStart = trimStart;
+      let effectiveTrimEnd = trimEnd;
+      // On sharp corners, a full continuity match can still create a visible "bulge"
+      // from overlapping dash boxes; gently trim each side by turn intensity.
+      const turnTrimCap = Math.min(0.62, baseDividerLen * 0.34);
+      if (hasPrevMatch && startTurnAbs > 0.24) {
+        const t = Math.min(1, (startTurnAbs - 0.24) / 1.05);
+        effectiveTrimStart = Math.max(effectiveTrimStart, turnTrimCap * t);
+      }
+      if (hasNextMatch && endTurnAbs > 0.24) {
+        const t = Math.min(1, (endTurnAbs - 0.24) / 1.05);
+        effectiveTrimEnd = Math.max(effectiveTrimEnd, turnTrimCap * t);
+      }
+      const dividerLen = baseDividerLen - effectiveTrimStart - effectiveTrimEnd;
       const hasOneSidedContinuation = hasPrevMatch !== hasNextMatch;
       // Avoid tiny one-sided divider remnants at sharp 2->3 / 3->2 corners.
       // They appear as floating mini-dashes with mixed heading.
@@ -6021,7 +6047,7 @@ function rebuildThreeRouteScene() {
       if (dividerLen < 0.22) {
         continue;
       }
-      const shiftAlong = (trimStart - trimEnd) * 0.5;
+      const shiftAlong = (effectiveTrimStart - effectiveTrimEnd) * 0.5;
       const dirX = dx / Math.max(0.001, len);
       const dirZ = dz / Math.max(0.001, len);
       const dividerX = mx + rightMap.x * dividerOffset;
