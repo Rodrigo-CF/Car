@@ -204,6 +204,8 @@ const LANE_PROFILE_TRANSITION_MIN_M = 1.5;
 const LANE_PROFILE_TRANSITION_MAX_M = 20;
 const ROAD_RENDER_SMOOTH_ITERATIONS = 1;
 const ROAD_RENDER_JOINT_SEGMENTS = 24;
+const ROAD_RENDER_DENSE_STEP_M = 0.6;
+const LINE_RENDER_DENSE_STEP_M = 0.65;
 const CAMERA_MODE_CYCLE = ["first", "third", "right", "front", "left", "top"];
 const EXTERNAL_CAMERA_MODES = new Set(["third", "right", "front", "left", "top"]);
 
@@ -6311,11 +6313,13 @@ function rebuildThreeRouteScene() {
   routeGroup.add(ground);
 
   const rawPath = state.sim.routeDensePath?.length ? state.sim.routeDensePath : state.sim.routePath;
-  const roadPath = smoothRenderPath(rawPath, {
+  const roadRenderPath = densifyPath(rawPath, ROAD_RENDER_DENSE_STEP_M);
+  const lineRenderPath = densifyPath(rawPath, LINE_RENDER_DENSE_STEP_M);
+  const roadPath = smoothRenderPath(roadRenderPath, {
     lockTrimPreviousCorners: true,
     iterations: ROAD_RENDER_SMOOTH_ITERATIONS + 1,
   });
-  const linePath = smoothRenderPath(rawPath, { lockTrimPreviousCorners: false });
+  const linePath = smoothRenderPath(lineRenderPath, { lockTrimPreviousCorners: false });
   const profileCheckpoints = state.sim.route?.checkpoints || [];
   const profileRoutePath = state.sim.routePath?.length ? state.sim.routePath : state.sim.routeDensePath;
   for (let i = 0; i < roadPath.length - 1; i += 1) {
@@ -6340,8 +6344,13 @@ function rebuildThreeRouteScene() {
     const mz = (az + bz) / 2;
     const segHeadingMap = Math.atan2(b.y - a.y, b.x - a.x);
     const rightMap = { x: Math.sin(segHeadingMap), y: -Math.cos(segHeadingMap) };
-    const halfWidths = routeRoadHalfWidthsAt(mx, -mz, segHeadingMap);
-    const profileFrame = routeFrameAt(mx, -mz, segHeadingMap, i);
+    const profileFrame = routeFrameAt(mx, -mz, segHeadingMap);
+    const halfWidths = routeRoadHalfWidthsAt(
+      mx,
+      -mz,
+      segHeadingMap,
+      Number.isFinite(profileFrame?.segmentIndex) ? profileFrame.segmentIndex : null,
+    );
     const activeLaneProfile = laneProfile3StateAtFrame(profileFrame, profileCheckpoints, profileRoutePath);
     const trimPrevEntryZoneM = activeLaneProfile?.expansionMode === "trim_previous"
       ? Math.max(1.8, Math.min(4.6, ROAD_EXTRA_LANE_WIDTH_M * 1.4))
@@ -6410,8 +6419,13 @@ function rebuildThreeRouteScene() {
     const mz = (az + bz) / 2;
     const segHeadingMap = Math.atan2(b.y - a.y, b.x - a.x);
     const rightMap = { x: Math.sin(segHeadingMap), y: -Math.cos(segHeadingMap) };
-    const halfWidths = routeRoadHalfWidthsAt(mx, -mz, segHeadingMap);
     const profileFrame = routeFrameAt(mx, -mz, segHeadingMap);
+    const halfWidths = routeRoadHalfWidthsAt(
+      mx,
+      -mz,
+      segHeadingMap,
+      Number.isFinite(profileFrame?.segmentIndex) ? profileFrame.segmentIndex : null,
+    );
     const activeLaneProfile = laneProfile3StateAtFrame(profileFrame, profileCheckpoints, profileRoutePath);
     const trimPrevEntryZoneM = activeLaneProfile?.expansionMode === "trim_previous"
       ? Math.max(1.8, Math.min(4.6, ROAD_EXTRA_LANE_WIDTH_M * 1.4))
@@ -6528,8 +6542,20 @@ function rebuildThreeRouteScene() {
     const nextHeading = Math.atan2(next.y - point.y, next.x - point.x);
     const prevMid = { x: (prev.x + point.x) * 0.5, y: (prev.y + point.y) * 0.5 };
     const nextMid = { x: (next.x + point.x) * 0.5, y: (next.y + point.y) * 0.5 };
-    const prevHalf = routeRoadHalfWidthsAt(prevMid.x, prevMid.y, prevHeading, i - 1);
-    const nextHalf = routeRoadHalfWidthsAt(nextMid.x, nextMid.y, nextHeading, i);
+    const prevFrame = routeFrameAt(prevMid.x, prevMid.y, prevHeading);
+    const nextFrame = routeFrameAt(nextMid.x, nextMid.y, nextHeading);
+    const prevHalf = routeRoadHalfWidthsAt(
+      prevMid.x,
+      prevMid.y,
+      prevHeading,
+      Number.isFinite(prevFrame?.segmentIndex) ? prevFrame.segmentIndex : null,
+    );
+    const nextHalf = routeRoadHalfWidthsAt(
+      nextMid.x,
+      nextMid.y,
+      nextHeading,
+      Number.isFinite(nextFrame?.segmentIndex) ? nextFrame.segmentIndex : null,
+    );
 
     const leftDiff = Math.abs(prevHalf.left - nextHalf.left);
     const rightDiff = Math.abs(prevHalf.right - nextHalf.right);
