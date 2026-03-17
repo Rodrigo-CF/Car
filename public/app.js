@@ -6174,6 +6174,18 @@ function rebuildThreeRouteScene() {
 
   const roadMat = new THREE.MeshStandardMaterial({ color: 0x2e343b, roughness: 0.95, metalness: 0.03 });
   const shoulderMat = new THREE.MeshStandardMaterial({ color: 0x4f3f33, roughness: 1, metalness: 0 });
+  const roadBlendMat = new THREE.MeshStandardMaterial({
+    color: 0x2e343b,
+    roughness: 0.95,
+    metalness: 0.03,
+    side: THREE.DoubleSide,
+  });
+  const shoulderBlendMat = new THREE.MeshStandardMaterial({
+    color: 0x4f3f33,
+    roughness: 1,
+    metalness: 0,
+    side: THREE.DoubleSide,
+  });
   const lineMat = new THREE.MeshStandardMaterial({ color: 0xe7eaee, roughness: 0.65, metalness: 0 });
   const grassMat = new THREE.MeshStandardMaterial({ color: 0x496949, roughness: 1, metalness: 0 });
 
@@ -6225,6 +6237,81 @@ function rebuildThreeRouteScene() {
     const trimPrevEntryFactor = trimPrevEntryZoneM > 0
       ? clamp01(1 - (trimPrevEntryDistanceM / trimPrevEntryZoneM))
       : 0;
+    const startHalfWidths = routeRoadHalfWidthsAt(a.x, a.y, segHeadingMap, i);
+    const endHalfWidths = routeRoadHalfWidthsAt(b.x, b.y, segHeadingMap, i);
+    const startProfileWidth = Number(startHalfWidths?.profileState?.w) || 0;
+    const endProfileWidth = Number(endHalfWidths?.profileState?.w) || 0;
+    const isLaneProfileExitTransition = startProfileWidth > endProfileWidth + 0.04;
+    if (isLaneProfileExitTransition) {
+      const startRoadLeft = startHalfWidths.left;
+      const startRoadRight = startHalfWidths.right;
+      const endRoadLeft = endHalfWidths.left;
+      const endRoadRight = endHalfWidths.right;
+      const startShift = (startRoadRight - startRoadLeft) * 0.5;
+      const endShift = (endRoadRight - endRoadLeft) * 0.5;
+
+      const centerA = {
+        x: a.x + rightMap.x * startShift,
+        y: a.y + rightMap.y * startShift,
+      };
+      const centerB = {
+        x: b.x + rightMap.x * endShift,
+        y: b.y + rightMap.y * endShift,
+      };
+
+      const roadLeftA = {
+        x: centerA.x - rightMap.x * startRoadLeft,
+        y: centerA.y - rightMap.y * startRoadLeft,
+      };
+      const roadLeftB = {
+        x: centerB.x - rightMap.x * endRoadLeft,
+        y: centerB.y - rightMap.y * endRoadLeft,
+      };
+      const roadRightB = {
+        x: centerB.x + rightMap.x * endRoadRight,
+        y: centerB.y + rightMap.y * endRoadRight,
+      };
+      const roadRightA = {
+        x: centerA.x + rightMap.x * startRoadRight,
+        y: centerA.y + rightMap.y * startRoadRight,
+      };
+
+      const shoulderStartLeft = startRoadLeft + ROAD_SHOULDER_HALF_EXTRA_M;
+      const shoulderStartRight = startRoadRight + ROAD_SHOULDER_HALF_EXTRA_M;
+      const shoulderEndLeft = endRoadLeft + ROAD_SHOULDER_HALF_EXTRA_M;
+      const shoulderEndRight = endRoadRight + ROAD_SHOULDER_HALF_EXTRA_M;
+      const shoulderLeftA = {
+        x: centerA.x - rightMap.x * shoulderStartLeft,
+        y: centerA.y - rightMap.y * shoulderStartLeft,
+      };
+      const shoulderLeftB = {
+        x: centerB.x - rightMap.x * shoulderEndLeft,
+        y: centerB.y - rightMap.y * shoulderEndLeft,
+      };
+      const shoulderRightB = {
+        x: centerB.x + rightMap.x * shoulderEndRight,
+        y: centerB.y + rightMap.y * shoulderEndRight,
+      };
+      const shoulderRightA = {
+        x: centerA.x + rightMap.x * shoulderStartRight,
+        y: centerA.y + rightMap.y * shoulderStartRight,
+      };
+
+      const shoulderBlend = new THREE.Mesh(
+        buildGroundQuadGeometry(THREE, [shoulderLeftA, shoulderLeftB, shoulderRightB, shoulderRightA]),
+        shoulderBlendMat,
+      );
+      shoulderBlend.position.y = 0.005;
+      routeGroup.add(shoulderBlend);
+
+      const roadBlend = new THREE.Mesh(
+        buildGroundQuadGeometry(THREE, [roadLeftA, roadLeftB, roadRightB, roadRightA]),
+        roadBlendMat,
+      );
+      roadBlend.position.y = 0.02;
+      routeGroup.add(roadBlend);
+      continue;
+    }
     const roadLeft = halfWidths.left;
     const roadRight = halfWidths.right;
     const isAsymmetric = Math.abs(roadRight - roadLeft) > 0.05;
