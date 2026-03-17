@@ -3626,6 +3626,55 @@ function chaikinSmoothSegment(segment, iterations = ROAD_RENDER_SMOOTH_ITERATION
   return result;
 }
 
+function chaikinSmoothSegmentEdgeLocked(
+  segment,
+  iterations = ROAD_RENDER_SMOOTH_ITERATIONS,
+  lockStartEdge = false,
+  lockEndEdge = false,
+) {
+  let result = segment.map((point) => ({ x: point.x, y: point.y }));
+  for (let iter = 0; iter < iterations; iter += 1) {
+    if (result.length < 3) {
+      break;
+    }
+    // With very short pieces, locking both ends can produce duplicates.
+    if (lockStartEdge && lockEndEdge && result.length <= 4) {
+      break;
+    }
+
+    const next = [];
+    if (lockStartEdge) {
+      next.push(result[0], result[1]);
+    } else {
+      next.push(result[0]);
+    }
+
+    const startPair = lockStartEdge ? 1 : 0;
+    const endPairExclusive = (result.length - 1) - (lockEndEdge ? 1 : 0);
+    for (let i = startPair; i < endPairExclusive; i += 1) {
+      const a = result[i];
+      const b = result[i + 1];
+      next.push({
+        x: a.x * 0.75 + b.x * 0.25,
+        y: a.y * 0.75 + b.y * 0.25,
+      });
+      next.push({
+        x: a.x * 0.25 + b.x * 0.75,
+        y: a.y * 0.25 + b.y * 0.75,
+      });
+    }
+
+    if (lockEndEdge) {
+      next.push(result[result.length - 2], result[result.length - 1]);
+    } else {
+      next.push(result[result.length - 1]);
+    }
+
+    result = next;
+  }
+  return result;
+}
+
 function isNearLockedRenderCorner(point, lockedCorners, toleranceSq = 0.01) {
   if (!point || !Array.isArray(lockedCorners) || !lockedCorners.length) {
     return false;
@@ -3676,19 +3725,29 @@ function chaikinSmoothSegmentWithLockedCorners(
 
   const pieces = [];
   let current = [{ x: segment[0].x, y: segment[0].y }];
+  let currentStartLocked = isNearLockedRenderCorner(segment[0], lockedCorners);
   for (let i = 1; i < segment.length - 1; i += 1) {
     const point = segment[i];
     current.push({ x: point.x, y: point.y });
     if (isNearLockedRenderCorner(point, lockedCorners)) {
       if (current.length >= 2) {
-        pieces.push(current);
+        pieces.push({
+          points: current,
+          startLocked: currentStartLocked,
+          endLocked: true,
+        });
       }
       current = [{ x: point.x, y: point.y }];
+      currentStartLocked = true;
     }
   }
   current.push({ x: segment[segment.length - 1].x, y: segment[segment.length - 1].y });
   if (current.length >= 2) {
-    pieces.push(current);
+    pieces.push({
+      points: current,
+      startLocked: currentStartLocked,
+      endLocked: isNearLockedRenderCorner(segment[segment.length - 1], lockedCorners),
+    });
   }
 
   if (!pieces.length) {
@@ -3697,7 +3756,13 @@ function chaikinSmoothSegmentWithLockedCorners(
 
   const merged = [];
   for (let i = 0; i < pieces.length; i += 1) {
-    const smoothed = chaikinSmoothSegment(pieces[i], iterations);
+    const piece = pieces[i];
+    const smoothed = chaikinSmoothSegmentEdgeLocked(
+      piece.points,
+      iterations,
+      piece.startLocked,
+      piece.endLocked,
+    );
     for (let j = 0; j < smoothed.length; j += 1) {
       if (merged.length && j === 0) {
         continue;
@@ -3708,19 +3773,22 @@ function chaikinSmoothSegmentWithLockedCorners(
   return merged;
 }
 
-function smoothRenderPath(points) {
+function smoothRenderPath(points, options = {}) {
+  const lockTrimPreviousCorners = options.lockTrimPreviousCorners !== false;
   const segments = splitContinuousPathSegments(points);
   if (!segments.length) {
     return Array.isArray(points) ? points : [];
   }
-  const lockedCorners = collectRenderLockedCorners();
+  const lockedCorners = lockTrimPreviousCorners ? collectRenderLockedCorners() : [];
   const output = [];
   for (let s = 0; s < segments.length; s += 1) {
-    const smoothed = chaikinSmoothSegmentWithLockedCorners(
-      segments[s],
-      lockedCorners,
-      ROAD_RENDER_SMOOTH_ITERATIONS,
-    );
+    const smoothed = lockedCorners.length
+      ? chaikinSmoothSegmentWithLockedCorners(
+        segments[s],
+        lockedCorners,
+        ROAD_RENDER_SMOOTH_ITERATIONS,
+      )
+      : chaikinSmoothSegment(segments[s], ROAD_RENDER_SMOOTH_ITERATIONS);
     for (let i = 0; i < smoothed.length; i += 1) {
       output.push({
         x: smoothed[i].x,
@@ -6022,12 +6090,13 @@ function rebuildThreeRouteScene() {
   routeGroup.add(ground);
 
   const rawPath = state.sim.routeDensePath?.length ? state.sim.routeDensePath : state.sim.routePath;
-  const path = smoothRenderPath(rawPath);
+  const roadPath = smoothRenderPath(rawPath, { lockTrimPreviousCorners: true });
+  const linePath = smoothRenderPath(rawPath, { lockTrimPreviousCorners: false });
   const profileCheckpoints = state.sim.route?.checkpoints || [];
   const profileRoutePath = state.sim.routePath?.length ? state.sim.routePath : state.sim.routeDensePath;
-  for (let i = 0; i < path.length - 1; i += 1) {
-    const a = path[i];
-    const b = path[Math.min(i + 1, path.length - 1)];
+  for (let i = 0; i < roadPath.length - 1; i += 1) {
+    const a = roadPath[i];
+    const b = roadPath[Math.min(i + 1, roadPath.length - 1)];
     if (!a || !b || b.move) {
       continue;
     }
@@ -6092,17 +6161,52 @@ function rebuildThreeRouteScene() {
       road.rotation.y = -angle;
       routeGroup.add(road);
     }
+  }
+
+  for (let i = 0; i < linePath.length - 1; i += 1) {
+    const a = linePath[i];
+    const b = linePath[Math.min(i + 1, linePath.length - 1)];
+    if (!a || !b || b.move) {
+      continue;
+    }
+
+    const ax = a.x;
+    const az = -a.y;
+    const bx = b.x;
+    const bz = -b.y;
+    const dx = bx - ax;
+    const dz = bz - az;
+    const len = Math.hypot(dx, dz);
+    if (len < 0.4) {
+      continue;
+    }
+
+    const angle = Math.atan2(dz, dx);
+    const mx = (ax + bx) / 2;
+    const mz = (az + bz) / 2;
+    const segHeadingMap = Math.atan2(b.y - a.y, b.x - a.x);
+    const rightMap = { x: Math.sin(segHeadingMap), y: -Math.cos(segHeadingMap) };
+    const halfWidths = routeRoadHalfWidthsAt(mx, -mz, segHeadingMap);
+    const profileFrame = routeFrameAt(mx, -mz, segHeadingMap);
+    const activeLaneProfile = laneProfile3StateAtFrame(profileFrame, profileCheckpoints, profileRoutePath);
+    const trimPrevEntryZoneM = activeLaneProfile?.expansionMode === "trim_previous"
+      ? Math.max(1.8, Math.min(4.6, ROAD_EXTRA_LANE_WIDTH_M * 1.4))
+      : 0;
+    const trimPrevEntryDistanceM = Number(activeLaneProfile?.d) || 0;
+    const trimPrevEntryFactor = trimPrevEntryZoneM > 0
+      ? clamp01(1 - (trimPrevEntryDistanceM / trimPrevEntryZoneM))
+      : 0;
 
     const currentDividerOffsets = routeLaneDividerOffsets(halfWidths);
-    const prevDividerOffsets = i > 0 && !a.move ? routeLaneDividerOffsetsForSegment(path, i - 1) : [];
-    const nextDividerOffsets = i + 2 < path.length && !path[i + 2].move
-      ? routeLaneDividerOffsetsForSegment(path, i + 1)
+    const prevDividerOffsets = i > 0 && !a.move ? routeLaneDividerOffsetsForSegment(linePath, i - 1) : [];
+    const nextDividerOffsets = i + 2 < linePath.length && !linePath[i + 2].move
+      ? routeLaneDividerOffsetsForSegment(linePath, i + 1)
       : [];
     const prevHeading = i > 0 && !a.move
-      ? Math.atan2(a.y - path[i - 1].y, a.x - path[i - 1].x)
+      ? Math.atan2(a.y - linePath[i - 1].y, a.x - linePath[i - 1].x)
       : null;
-    const nextHeading = i + 2 < path.length && !path[i + 2].move
-      ? Math.atan2(path[i + 2].y - b.y, path[i + 2].x - b.x)
+    const nextHeading = i + 2 < linePath.length && !linePath[i + 2].move
+      ? Math.atan2(linePath[i + 2].y - b.y, linePath[i + 2].x - b.x)
       : null;
     const segmentHeading = Math.atan2(b.y - a.y, b.x - a.x);
     const startTurnAbs = prevHeading == null
@@ -6181,14 +6285,14 @@ function rebuildThreeRouteScene() {
 
   // Fill segment joints with rounded caps so curves/roundabouts look smooth
   // instead of showing polygonal wedge gaps between straight road pieces.
-  for (let i = 0; i < path.length; i += 1) {
-    const point = path[i];
+  for (let i = 0; i < roadPath.length; i += 1) {
+    const point = roadPath[i];
     if (!point) {
       continue;
     }
 
-    const prev = i > 0 ? path[i - 1] : null;
-    const next = path[i + 1] || null;
+    const prev = i > 0 ? roadPath[i - 1] : null;
+    const next = roadPath[i + 1] || null;
     const hasPrevConnection = Boolean(prev && !point.move);
     const hasNextConnection = Boolean(next && !next.move);
     if (!(hasPrevConnection && hasNextConnection)) {
