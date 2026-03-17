@@ -202,7 +202,8 @@ const LANE_ADD_EFFECT_RADIUS_M = 14;
 const LANE_PROFILE_TRANSITION_DEFAULT_M = 8;
 const LANE_PROFILE_TRANSITION_MIN_M = 1.5;
 const LANE_PROFILE_TRANSITION_MAX_M = 20;
-const ROAD_RENDER_SMOOTH_ITERATIONS = 1;
+const ROAD_RENDER_SMOOTH_ITERATIONS = 2;
+const LINE_RENDER_SMOOTH_ITERATIONS = 1;
 const ROAD_RENDER_JOINT_SEGMENTS = 24;
 // Keep road render density aligned with route density to avoid entry bulges
 // at trim_previous 2L->3L joins.
@@ -6319,7 +6320,10 @@ function rebuildThreeRouteScene() {
     lockTrimPreviousCorners: true,
     iterations: ROAD_RENDER_SMOOTH_ITERATIONS,
   });
-  const linePath = smoothRenderPath(rawPath, { lockTrimPreviousCorners: false });
+  const linePath = smoothRenderPath(rawPath, {
+    lockTrimPreviousCorners: false,
+    iterations: LINE_RENDER_SMOOTH_ITERATIONS,
+  });
   const profileCheckpoints = state.sim.route?.checkpoints || [];
   const profileRoutePath = state.sim.routePath?.length ? state.sim.routePath : state.sim.routeDensePath;
   for (let i = 0; i < roadPath.length - 1; i += 1) {
