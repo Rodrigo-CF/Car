@@ -5223,7 +5223,15 @@ function buildRoundedJoinFanPoints(center, fromPoint, toPoint) {
   }
   const aFrom = Math.atan2(fromPoint.y - center.y, fromPoint.x - center.x);
   const aTo = Math.atan2(toPoint.y - center.y, toPoint.x - center.x);
-  const delta = normalizeHeadingDeltaRad(aTo, aFrom);
+  // Use signed shortest-arc interpolation so the fan follows the real corner side
+  // (avoids outward bulges on 2L->3L non-trim joins).
+  let delta = aTo - aFrom;
+  while (delta > Math.PI) {
+    delta -= Math.PI * 2;
+  }
+  while (delta < -Math.PI) {
+    delta += Math.PI * 2;
+  }
   if (!Number.isFinite(delta) || Math.abs(delta) < 0.03) {
     return null;
   }
