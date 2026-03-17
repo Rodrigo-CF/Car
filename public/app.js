@@ -4042,6 +4042,32 @@ function routeLaneDividerOffsets(halfWidths) {
   return [leftDivider, rightDivider];
 }
 
+function routeLaneDividerOffsetsForSegment(path, segmentIndex) {
+  const i = Math.max(0, Math.round(Number(segmentIndex) || 0));
+  const a = path?.[i];
+  const b = path?.[i + 1];
+  if (!a || !b || b.move) {
+    return [];
+  }
+  const midX = (a.x + b.x) * 0.5;
+  const midY = (a.y + b.y) * 0.5;
+  const heading = Math.atan2(b.y - a.y, b.x - a.x);
+  const halfWidths = routeRoadHalfWidthsAt(midX, midY, heading, i);
+  return routeLaneDividerOffsets(halfWidths);
+}
+
+function hasLaneDividerOffsetMatch(offset, candidates, tolerance = 0.42) {
+  if (!Array.isArray(candidates) || !candidates.length) {
+    return false;
+  }
+  for (const candidate of candidates) {
+    if (Math.abs(Number(candidate) - Number(offset)) <= tolerance) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function routeRoadHalfWidthsAt(x, y, preferredHeading = null, preferredSegmentIndex = null) {
   const frame = routeFrameAt(x, y, preferredHeading, preferredSegmentIndex);
   const routePath = state.sim.routePath?.length ? state.sim.routePath : state.sim.routeDensePath;
@@ -5969,11 +5995,29 @@ function rebuildThreeRouteScene() {
       routeGroup.add(road);
     }
 
-    for (const dividerOffset of routeLaneDividerOffsets(halfWidths)) {
+    const currentDividerOffsets = routeLaneDividerOffsets(halfWidths);
+    const prevDividerOffsets = i > 0 && !a.move ? routeLaneDividerOffsetsForSegment(path, i - 1) : [];
+    const nextDividerOffsets = i + 2 < path.length && !path[i + 2].move
+      ? routeLaneDividerOffsetsForSegment(path, i + 1)
+      : [];
+    for (const dividerOffset of currentDividerOffsets) {
+      const hasPrevMatch = hasLaneDividerOffsetMatch(dividerOffset, prevDividerOffsets);
+      const hasNextMatch = hasLaneDividerOffsetMatch(dividerOffset, nextDividerOffsets);
+      const baseDividerLen = len * 0.8;
+      const edgeTrim = Math.min(0.95, baseDividerLen * 0.45);
+      const trimStart = hasPrevMatch ? 0 : edgeTrim;
+      const trimEnd = hasNextMatch ? 0 : edgeTrim;
+      const dividerLen = baseDividerLen - trimStart - trimEnd;
+      if (dividerLen < 0.22) {
+        continue;
+      }
+      const shiftAlong = (trimStart - trimEnd) * 0.5;
+      const dirX = dx / Math.max(0.001, len);
+      const dirZ = dz / Math.max(0.001, len);
       const dividerX = mx + rightMap.x * dividerOffset;
       const dividerY = -mz + rightMap.y * dividerOffset;
-      const divider = new THREE.Mesh(new THREE.BoxGeometry(len * 0.8, 0.042, 0.14), lineMat);
-      divider.position.set(dividerX, 0.043, -dividerY);
+      const divider = new THREE.Mesh(new THREE.BoxGeometry(dividerLen, 0.042, 0.14), lineMat);
+      divider.position.set(dividerX + dirX * shiftAlong, 0.043, -dividerY - dirZ * shiftAlong);
       divider.rotation.y = -angle;
       routeGroup.add(divider);
     }
