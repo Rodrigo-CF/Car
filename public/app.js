@@ -5204,6 +5204,41 @@ function buildGroundLoopGeometry(THREE, corners) {
   return new THREE.BufferGeometry().setFromPoints(points);
 }
 
+function routeEdgePointForSide(node, right, leftHalf, rightHalf, sideSign) {
+  // leftHalf/rightHalf are measured from route centerline (node).
+  const sideOffset = sideSign > 0 ? rightHalf : -leftHalf;
+  return {
+    x: node.x + right.x * sideOffset,
+    y: node.y + right.y * sideOffset,
+  };
+}
+
+function buildRoundedJoinFanPoints(center, fromPoint, toPoint) {
+  const rFrom = Math.hypot(fromPoint.x - center.x, fromPoint.y - center.y);
+  const rTo = Math.hypot(toPoint.x - center.x, toPoint.y - center.y);
+  if (rFrom < 0.12 || rTo < 0.12) {
+    return null;
+  }
+  const aFrom = Math.atan2(fromPoint.y - center.y, fromPoint.x - center.x);
+  const aTo = Math.atan2(toPoint.y - center.y, toPoint.x - center.x);
+  const delta = normalizeHeadingDeltaRad(aTo, aFrom);
+  if (!Number.isFinite(delta) || Math.abs(delta) < 0.03) {
+    return null;
+  }
+  const steps = Math.max(4, Math.min(16, Math.ceil(Math.abs(delta) / (Math.PI / 16))));
+  const fan = [{ x: center.x, y: center.y }];
+  for (let i = 0; i <= steps; i += 1) {
+    const t = i / Math.max(1, steps);
+    const angle = aFrom + delta * t;
+    const radius = lerpNumber(rFrom, rTo, t);
+    fan.push({
+      x: center.x + Math.cos(angle) * radius,
+      y: center.y + Math.sin(angle) * radius,
+    });
+  }
+  return fan;
+}
+
 function lineIntersection2D(p, dirP, q, dirQ) {
   const cross = dirP.x * dirQ.y - dirP.y * dirQ.x;
   if (Math.abs(cross) < 1e-6) {
@@ -5956,43 +5991,6 @@ function renderLaneProfileEntryTrimPatches(THREE, routeGroup) {
     return;
   }
 
-  const edgePointForSide = (node, right, leftHalf, rightHalf, sideSign) => {
-    // leftHalf/rightHalf are distances from the route centerline (node),
-    // not from a shifted local center. Using centerShift here over-pulls one side
-    // at asymmetric (2L->3L) joins and causes visible bulges.
-    const center = { x: node.x, y: node.y };
-    const sideOffset = sideSign > 0 ? rightHalf : -leftHalf;
-    return {
-      x: center.x + right.x * sideOffset,
-      y: center.y + right.y * sideOffset,
-    };
-  };
-  const buildRoundedJoinFanPoints = (center, fromPoint, toPoint) => {
-    const rFrom = Math.hypot(fromPoint.x - center.x, fromPoint.y - center.y);
-    const rTo = Math.hypot(toPoint.x - center.x, toPoint.y - center.y);
-    if (rFrom < 0.12 || rTo < 0.12) {
-      return null;
-    }
-    const aFrom = Math.atan2(fromPoint.y - center.y, fromPoint.x - center.x);
-    const aTo = Math.atan2(toPoint.y - center.y, toPoint.x - center.x);
-    const delta = normalizeHeadingDeltaRad(aTo, aFrom);
-    if (!Number.isFinite(delta) || Math.abs(delta) < 0.03) {
-      return null;
-    }
-    const steps = Math.max(4, Math.min(16, Math.ceil(Math.abs(delta) / (Math.PI / 16))));
-    const fan = [{ x: center.x, y: center.y }];
-    for (let i = 0; i <= steps; i += 1) {
-      const t = i / Math.max(1, steps);
-      const angle = aFrom + delta * t;
-      const radius = lerpNumber(rFrom, rTo, t);
-      fan.push({
-        x: center.x + Math.cos(angle) * radius,
-        y: center.y + Math.sin(angle) * radius,
-      });
-    }
-    return fan;
-  };
-
   const roadPatchMat = new THREE.MeshStandardMaterial({
     color: 0x2e343b,
     roughness: 0.95,
@@ -6066,8 +6064,8 @@ function renderLaneProfileEntryTrimPatches(THREE, routeGroup) {
       const targetSideHalf = sideSign > 0 ? targetRight : targetLeft;
       if (targetSideHalf <= prevSideHalf + 0.08) {
         // Non-trim side: add a local rounded fan so the 2L->3L node does not look jagged.
-        const prevEdgeAtNode = edgePointForSide(node, prevRight, prevHalf.left, prevHalf.right, sideSign);
-        const nextEdgeAtNode = edgePointForSide(node, nextRight, targetLeft, targetRight, sideSign);
+        const prevEdgeAtNode = routeEdgePointForSide(node, prevRight, prevHalf.left, prevHalf.right, sideSign);
+        const nextEdgeAtNode = routeEdgePointForSide(node, nextRight, targetLeft, targetRight, sideSign);
         const roadFan = buildRoundedJoinFanPoints(node, prevEdgeAtNode, nextEdgeAtNode);
         if (roadFan) {
           const roadFanGeometry = buildGroundFanGeometry(THREE, roadFan);
@@ -6082,14 +6080,14 @@ function renderLaneProfileEntryTrimPatches(THREE, routeGroup) {
         const shoulderPrevRight = prevHalf.right + ROAD_SHOULDER_HALF_EXTRA_M;
         const shoulderTargetLeft = targetLeft + ROAD_SHOULDER_HALF_EXTRA_M;
         const shoulderTargetRight = targetRight + ROAD_SHOULDER_HALF_EXTRA_M;
-        const prevShoulderAtNode = edgePointForSide(
+        const prevShoulderAtNode = routeEdgePointForSide(
           node,
           prevRight,
           shoulderPrevLeft,
           shoulderPrevRight,
           sideSign,
         );
-        const nextShoulderAtNode = edgePointForSide(
+        const nextShoulderAtNode = routeEdgePointForSide(
           node,
           nextRight,
           shoulderTargetLeft,
@@ -6108,8 +6106,8 @@ function renderLaneProfileEntryTrimPatches(THREE, routeGroup) {
         continue;
       }
 
-      const prevEdgeAtNode = edgePointForSide(node, prevRight, prevHalf.left, prevHalf.right, sideSign);
-      const nextEdgeAtNode = edgePointForSide(node, nextRight, targetLeft, targetRight, sideSign);
+      const prevEdgeAtNode = routeEdgePointForSide(node, prevRight, prevHalf.left, prevHalf.right, sideSign);
+      const nextEdgeAtNode = routeEdgePointForSide(node, nextRight, targetLeft, targetRight, sideSign);
       const hit = lineIntersection2D(prevEdgeAtNode, prevDir, nextCenterAtNode, nextRight);
       let trimDist = Math.min(maxTrim, Math.max(0.9, targetSideHalf - prevSideHalf + 0.45));
       if (hit && Number.isFinite(hit.t) && hit.t < -0.2) {
@@ -6127,8 +6125,20 @@ function renderLaneProfileEntryTrimPatches(THREE, routeGroup) {
       const shoulderPrevRight = prevHalf.right + ROAD_SHOULDER_HALF_EXTRA_M;
       const shoulderTargetLeft = targetLeft + ROAD_SHOULDER_HALF_EXTRA_M;
       const shoulderTargetRight = targetRight + ROAD_SHOULDER_HALF_EXTRA_M;
-      const prevShoulderAtNode = edgePointForSide(node, prevRight, shoulderPrevLeft, shoulderPrevRight, sideSign);
-      const nextShoulderAtNode = edgePointForSide(node, nextRight, shoulderTargetLeft, shoulderTargetRight, sideSign);
+      const prevShoulderAtNode = routeEdgePointForSide(
+        node,
+        prevRight,
+        shoulderPrevLeft,
+        shoulderPrevRight,
+        sideSign,
+      );
+      const nextShoulderAtNode = routeEdgePointForSide(
+        node,
+        nextRight,
+        shoulderTargetLeft,
+        shoulderTargetRight,
+        sideSign,
+      );
       const hitShoulder = lineIntersection2D(prevShoulderAtNode, prevDir, nextCenterAtNode, nextRight);
       let trimShoulderDist = trimDist + ROAD_SHOULDER_HALF_EXTRA_M * 0.6;
       if (hitShoulder && Number.isFinite(hitShoulder.t) && hitShoulder.t < -0.2) {
@@ -6156,6 +6166,120 @@ function renderLaneProfileEntryTrimPatches(THREE, routeGroup) {
   }
 }
 
+function renderLaneProfileExitJoinPatches(THREE, routeGroup) {
+  const checkpoints = state.sim.route?.checkpoints || [];
+  if (!checkpoints.length) {
+    return;
+  }
+  const routePath = state.sim.routePath?.length ? state.sim.routePath : state.sim.routeDensePath;
+  if (!Array.isArray(routePath) || routePath.length < 4) {
+    return;
+  }
+
+  const roadPatchMat = new THREE.MeshStandardMaterial({
+    color: 0x2e343b,
+    roughness: 0.95,
+    metalness: 0.03,
+    side: THREE.DoubleSide,
+  });
+  const shoulderPatchMat = new THREE.MeshStandardMaterial({
+    color: 0x4f3f33,
+    roughness: 1,
+    metalness: 0,
+    side: THREE.DoubleSide,
+  });
+
+  for (const checkpoint of checkpoints) {
+    if (checkpoint?.type !== "lane_profile_3") {
+      continue;
+    }
+    const profile = laneProfile3RuntimeMeta(checkpoint, routePath);
+    if (!profile) {
+      continue;
+    }
+
+    const endSeg = profile.endSegmentIndex;
+    if (endSeg < 0 || endSeg + 2 >= routePath.length) {
+      continue;
+    }
+
+    const prevStart = routePath[endSeg];
+    const node = routePath[endSeg + 1];
+    const nextNode = routePath[endSeg + 2];
+    if (!prevStart || !node || !nextNode || node.move || nextNode.move) {
+      continue;
+    }
+
+    const prevVec = { x: node.x - prevStart.x, y: node.y - prevStart.y };
+    const nextVec = { x: nextNode.x - node.x, y: nextNode.y - node.y };
+    const prevLen = Math.hypot(prevVec.x, prevVec.y);
+    const nextLen = Math.hypot(nextVec.x, nextVec.y);
+    if (prevLen < 0.8 || nextLen < 0.8) {
+      continue;
+    }
+    const prevHeading = Math.atan2(prevVec.y, prevVec.x);
+    const nextHeading = Math.atan2(nextVec.y, nextVec.x);
+    const prevRight = { x: Math.sin(prevHeading), y: -Math.cos(prevHeading) };
+    const nextRight = { x: Math.sin(nextHeading), y: -Math.cos(nextHeading) };
+
+    const samplePrev = {
+      x: prevStart.x + prevVec.x * 0.985,
+      y: prevStart.y + prevVec.y * 0.985,
+    };
+    const sampleNext = {
+      x: node.x + nextVec.x * 0.015,
+      y: node.y + nextVec.y * 0.015,
+    };
+    const prevHalf = routeRoadHalfWidthsAt(samplePrev.x, samplePrev.y, prevHeading, endSeg);
+    const nextHalf = routeRoadHalfWidthsAt(sampleNext.x, sampleNext.y, nextHeading, endSeg + 1);
+
+    for (const sideSign of [1, -1]) {
+      const prevSideHalf = sideSign > 0 ? prevHalf.right : prevHalf.left;
+      const nextSideHalf = sideSign > 0 ? nextHalf.right : nextHalf.left;
+      // Only smooth the side that is shrinking at profile exit (3L->2L).
+      if (prevSideHalf <= nextSideHalf + 0.08) {
+        continue;
+      }
+
+      const prevEdgeAtNode = routeEdgePointForSide(node, prevRight, prevHalf.left, prevHalf.right, sideSign);
+      const nextEdgeAtNode = routeEdgePointForSide(node, nextRight, nextHalf.left, nextHalf.right, sideSign);
+      const roadFan = buildRoundedJoinFanPoints(node, prevEdgeAtNode, nextEdgeAtNode);
+      if (roadFan) {
+        const roadFanGeometry = buildGroundFanGeometry(THREE, roadFan);
+        if (roadFanGeometry) {
+          const roadFanMesh = new THREE.Mesh(roadFanGeometry, roadPatchMat);
+          roadFanMesh.position.y = 0.024;
+          routeGroup.add(roadFanMesh);
+        }
+      }
+
+      const prevShoulderAtNode = routeEdgePointForSide(
+        node,
+        prevRight,
+        prevHalf.left + ROAD_SHOULDER_HALF_EXTRA_M,
+        prevHalf.right + ROAD_SHOULDER_HALF_EXTRA_M,
+        sideSign,
+      );
+      const nextShoulderAtNode = routeEdgePointForSide(
+        node,
+        nextRight,
+        nextHalf.left + ROAD_SHOULDER_HALF_EXTRA_M,
+        nextHalf.right + ROAD_SHOULDER_HALF_EXTRA_M,
+        sideSign,
+      );
+      const shoulderFan = buildRoundedJoinFanPoints(node, prevShoulderAtNode, nextShoulderAtNode);
+      if (shoulderFan) {
+        const shoulderFanGeometry = buildGroundFanGeometry(THREE, shoulderFan);
+        if (shoulderFanGeometry) {
+          const shoulderFanMesh = new THREE.Mesh(shoulderFanGeometry, shoulderPatchMat);
+          shoulderFanMesh.position.y = 0.008;
+          routeGroup.add(shoulderFanMesh);
+        }
+      }
+    }
+  }
+}
+
 function rebuildThreeRouteScene() {
   const three = state.sim.three;
   if (!three.ready || !state.sim.route) {
@@ -6174,18 +6298,6 @@ function rebuildThreeRouteScene() {
 
   const roadMat = new THREE.MeshStandardMaterial({ color: 0x2e343b, roughness: 0.95, metalness: 0.03 });
   const shoulderMat = new THREE.MeshStandardMaterial({ color: 0x4f3f33, roughness: 1, metalness: 0 });
-  const roadBlendMat = new THREE.MeshStandardMaterial({
-    color: 0x2e343b,
-    roughness: 0.95,
-    metalness: 0.03,
-    side: THREE.DoubleSide,
-  });
-  const shoulderBlendMat = new THREE.MeshStandardMaterial({
-    color: 0x4f3f33,
-    roughness: 1,
-    metalness: 0,
-    side: THREE.DoubleSide,
-  });
   const lineMat = new THREE.MeshStandardMaterial({ color: 0xe7eaee, roughness: 0.65, metalness: 0 });
   const grassMat = new THREE.MeshStandardMaterial({ color: 0x496949, roughness: 1, metalness: 0 });
 
@@ -6237,81 +6349,6 @@ function rebuildThreeRouteScene() {
     const trimPrevEntryFactor = trimPrevEntryZoneM > 0
       ? clamp01(1 - (trimPrevEntryDistanceM / trimPrevEntryZoneM))
       : 0;
-    const startHalfWidths = routeRoadHalfWidthsAt(a.x, a.y, segHeadingMap, i);
-    const endHalfWidths = routeRoadHalfWidthsAt(b.x, b.y, segHeadingMap, i);
-    const startProfileWidth = Number(startHalfWidths?.profileState?.w) || 0;
-    const endProfileWidth = Number(endHalfWidths?.profileState?.w) || 0;
-    const isLaneProfileExitTransition = startProfileWidth > endProfileWidth + 0.04;
-    if (isLaneProfileExitTransition) {
-      const startRoadLeft = startHalfWidths.left;
-      const startRoadRight = startHalfWidths.right;
-      const endRoadLeft = endHalfWidths.left;
-      const endRoadRight = endHalfWidths.right;
-      const startShift = (startRoadRight - startRoadLeft) * 0.5;
-      const endShift = (endRoadRight - endRoadLeft) * 0.5;
-
-      const centerA = {
-        x: a.x + rightMap.x * startShift,
-        y: a.y + rightMap.y * startShift,
-      };
-      const centerB = {
-        x: b.x + rightMap.x * endShift,
-        y: b.y + rightMap.y * endShift,
-      };
-
-      const roadLeftA = {
-        x: centerA.x - rightMap.x * startRoadLeft,
-        y: centerA.y - rightMap.y * startRoadLeft,
-      };
-      const roadLeftB = {
-        x: centerB.x - rightMap.x * endRoadLeft,
-        y: centerB.y - rightMap.y * endRoadLeft,
-      };
-      const roadRightB = {
-        x: centerB.x + rightMap.x * endRoadRight,
-        y: centerB.y + rightMap.y * endRoadRight,
-      };
-      const roadRightA = {
-        x: centerA.x + rightMap.x * startRoadRight,
-        y: centerA.y + rightMap.y * startRoadRight,
-      };
-
-      const shoulderStartLeft = startRoadLeft + ROAD_SHOULDER_HALF_EXTRA_M;
-      const shoulderStartRight = startRoadRight + ROAD_SHOULDER_HALF_EXTRA_M;
-      const shoulderEndLeft = endRoadLeft + ROAD_SHOULDER_HALF_EXTRA_M;
-      const shoulderEndRight = endRoadRight + ROAD_SHOULDER_HALF_EXTRA_M;
-      const shoulderLeftA = {
-        x: centerA.x - rightMap.x * shoulderStartLeft,
-        y: centerA.y - rightMap.y * shoulderStartLeft,
-      };
-      const shoulderLeftB = {
-        x: centerB.x - rightMap.x * shoulderEndLeft,
-        y: centerB.y - rightMap.y * shoulderEndLeft,
-      };
-      const shoulderRightB = {
-        x: centerB.x + rightMap.x * shoulderEndRight,
-        y: centerB.y + rightMap.y * shoulderEndRight,
-      };
-      const shoulderRightA = {
-        x: centerA.x + rightMap.x * shoulderStartRight,
-        y: centerA.y + rightMap.y * shoulderStartRight,
-      };
-
-      const shoulderBlend = new THREE.Mesh(
-        buildGroundQuadGeometry(THREE, [shoulderLeftA, shoulderLeftB, shoulderRightB, shoulderRightA]),
-        shoulderBlendMat,
-      );
-      shoulderBlend.position.y = 0.005;
-      routeGroup.add(shoulderBlend);
-
-      const roadBlend = new THREE.Mesh(
-        buildGroundQuadGeometry(THREE, [roadLeftA, roadLeftB, roadRightB, roadRightA]),
-        roadBlendMat,
-      );
-      roadBlend.position.y = 0.02;
-      routeGroup.add(roadBlend);
-      continue;
-    }
     const roadLeft = halfWidths.left;
     const roadRight = halfWidths.right;
     const isAsymmetric = Math.abs(roadRight - roadLeft) > 0.05;
@@ -6468,6 +6505,7 @@ function rebuildThreeRouteScene() {
   }
 
   renderLaneProfileEntryTrimPatches(THREE, routeGroup);
+  renderLaneProfileExitJoinPatches(THREE, routeGroup);
 
   // Fill segment joints with rounded caps so curves/roundabouts look smooth
   // instead of showing polygonal wedge gaps between straight road pieces.
