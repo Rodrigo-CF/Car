@@ -6053,8 +6053,9 @@ function rebuildThreeRouteScene() {
     const trimPrevEntryZoneM = activeLaneProfile?.expansionMode === "trim_previous"
       ? Math.max(1.8, Math.min(4.6, ROAD_EXTRA_LANE_WIDTH_M * 1.4))
       : 0;
+    const trimPrevEntryDistanceM = Number(activeLaneProfile?.d) || 0;
     const trimPrevEntryFactor = trimPrevEntryZoneM > 0
-      ? clamp01(1 - ((Number(activeLaneProfile?.d) || 0) / trimPrevEntryZoneM))
+      ? clamp01(1 - (trimPrevEntryDistanceM / trimPrevEntryZoneM))
       : 0;
     const roadLeft = halfWidths.left;
     const roadRight = halfWidths.right;
@@ -6140,16 +6141,19 @@ function rebuildThreeRouteScene() {
         const entryTrimCap = Math.min(0.78, baseDividerLen * 0.56);
         effectiveTrimStart = Math.max(effectiveTrimStart, entryTrimCap * trimPrevEntryFactor);
       }
-      // In trim_previous, the aligned divider (offset near 0) can still show a
-      // "bulge" from the curved start of the 3L tramo. Trim that start harder.
+      // For trim_previous entries, let the previous 2-lane divider "own" the node
+      // on the aligned side (offset near 0), then fade the 3-lane divider in later.
       const isTrimPrevAlignedDivider =
-        trimPrevEntryFactor > 0 &&
         activeLaneProfile?.expansionMode === "trim_previous" &&
         hasPrevMatch &&
         Math.abs(dividerOffset) <= 0.45;
       if (isTrimPrevAlignedDivider) {
-        const alignedEntryTrimCap = Math.min(1.25, baseDividerLen * 0.92);
-        effectiveTrimStart = Math.max(effectiveTrimStart, alignedEntryTrimCap * trimPrevEntryFactor);
+        const suppressDist = Math.max(1.1, ROAD_EXTRA_LANE_WIDTH_M * 0.55);
+        if (trimPrevEntryDistanceM < suppressDist) {
+          continue;
+        }
+        const alignedFadeTrimCap = Math.min(0.92, baseDividerLen * 0.66);
+        effectiveTrimStart = Math.max(effectiveTrimStart, alignedFadeTrimCap * trimPrevEntryFactor);
       }
       const dividerLen = baseDividerLen - effectiveTrimStart - effectiveTrimEnd;
       const hasOneSidedContinuation = hasPrevMatch !== hasNextMatch;
