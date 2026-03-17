@@ -3626,14 +3626,101 @@ function chaikinSmoothSegment(segment, iterations = ROAD_RENDER_SMOOTH_ITERATION
   return result;
 }
 
+function isNearLockedRenderCorner(point, lockedCorners, toleranceSq = 0.01) {
+  if (!point || !Array.isArray(lockedCorners) || !lockedCorners.length) {
+    return false;
+  }
+  for (const corner of lockedCorners) {
+    const dx = Number(point.x) - Number(corner.x);
+    const dy = Number(point.y) - Number(corner.y);
+    if (dx * dx + dy * dy <= toleranceSq) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function collectRenderLockedCorners() {
+  const checkpoints = state.sim.route?.checkpoints || [];
+  const routePath = state.sim.routePath;
+  if (!Array.isArray(checkpoints) || !checkpoints.length || !Array.isArray(routePath) || routePath.length < 2) {
+    return [];
+  }
+
+  const corners = [];
+  for (const checkpoint of checkpoints) {
+    if (checkpoint?.type !== "lane_profile_3") {
+      continue;
+    }
+    const profile = laneProfile3RuntimeMeta(checkpoint, routePath);
+    if (!profile || profile.expansionMode !== "trim_previous") {
+      continue;
+    }
+    const node = routePath[profile.startNodeIndex];
+    if (!node || !Number.isFinite(node.x) || !Number.isFinite(node.y)) {
+      continue;
+    }
+    corners.push({ x: node.x, y: node.y });
+  }
+  return corners;
+}
+
+function chaikinSmoothSegmentWithLockedCorners(
+  segment,
+  lockedCorners,
+  iterations = ROAD_RENDER_SMOOTH_ITERATIONS,
+) {
+  if (!Array.isArray(segment) || segment.length < 3 || !Array.isArray(lockedCorners) || !lockedCorners.length) {
+    return chaikinSmoothSegment(segment, iterations);
+  }
+
+  const pieces = [];
+  let current = [{ x: segment[0].x, y: segment[0].y }];
+  for (let i = 1; i < segment.length - 1; i += 1) {
+    const point = segment[i];
+    current.push({ x: point.x, y: point.y });
+    if (isNearLockedRenderCorner(point, lockedCorners)) {
+      if (current.length >= 2) {
+        pieces.push(current);
+      }
+      current = [{ x: point.x, y: point.y }];
+    }
+  }
+  current.push({ x: segment[segment.length - 1].x, y: segment[segment.length - 1].y });
+  if (current.length >= 2) {
+    pieces.push(current);
+  }
+
+  if (!pieces.length) {
+    return chaikinSmoothSegment(segment, iterations);
+  }
+
+  const merged = [];
+  for (let i = 0; i < pieces.length; i += 1) {
+    const smoothed = chaikinSmoothSegment(pieces[i], iterations);
+    for (let j = 0; j < smoothed.length; j += 1) {
+      if (merged.length && j === 0) {
+        continue;
+      }
+      merged.push(smoothed[j]);
+    }
+  }
+  return merged;
+}
+
 function smoothRenderPath(points) {
   const segments = splitContinuousPathSegments(points);
   if (!segments.length) {
     return Array.isArray(points) ? points : [];
   }
+  const lockedCorners = collectRenderLockedCorners();
   const output = [];
   for (let s = 0; s < segments.length; s += 1) {
-    const smoothed = chaikinSmoothSegment(segments[s], ROAD_RENDER_SMOOTH_ITERATIONS);
+    const smoothed = chaikinSmoothSegmentWithLockedCorners(
+      segments[s],
+      lockedCorners,
+      ROAD_RENDER_SMOOTH_ITERATIONS,
+    );
     for (let i = 0; i < smoothed.length; i += 1) {
       output.push({
         x: smoothed[i].x,
