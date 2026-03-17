@@ -3759,12 +3759,10 @@ function chaikinSmoothSegmentWithLockedCorners(
   const merged = [];
   for (let i = 0; i < pieces.length; i += 1) {
     const piece = pieces[i];
-    // Near trim_previous locked nodes, keep road centerline less rounded so the
-    // incoming 2-lane side remains dominant on the non-trim edge.
-    const pieceIterations = Math.max(
-      0,
-      iterations - ((piece.startLocked || piece.endLocked) ? 1 : 0),
-    );
+    // For trim_previous entry corners, disable local smoothing so the incoming
+    // 2-lane edge remains dominant and the new 3-lane segment does not bulge
+    // outward on the non-trim side.
+    const pieceIterations = piece.startLocked || piece.endLocked ? 0 : iterations;
     const smoothed = chaikinSmoothSegmentEdgeLocked(
       piece.points,
       pieceIterations,
