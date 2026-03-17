@@ -204,7 +204,6 @@ const LANE_PROFILE_TRANSITION_MIN_M = 1.5;
 const LANE_PROFILE_TRANSITION_MAX_M = 20;
 const ROAD_RENDER_SMOOTH_ITERATIONS = 1;
 const ROAD_RENDER_JOINT_SEGMENTS = 24;
-const ROAD_RENDER_DENSE_STEP_M = 0.6;
 const CAMERA_MODE_CYCLE = ["first", "third", "right", "front", "left", "top"];
 const EXTERNAL_CAMERA_MODES = new Set(["third", "right", "front", "left", "top"]);
 
@@ -6312,9 +6311,7 @@ function rebuildThreeRouteScene() {
   routeGroup.add(ground);
 
   const rawPath = state.sim.routeDensePath?.length ? state.sim.routeDensePath : state.sim.routePath;
-  // Road-only extra densification: smooth 3->2 taper without affecting dashed lines logic.
-  const roadRenderBasePath = densifyPath(rawPath, ROAD_RENDER_DENSE_STEP_M);
-  const roadPath = smoothRenderPath(roadRenderBasePath, {
+  const roadPath = smoothRenderPath(rawPath, {
     lockTrimPreviousCorners: true,
     iterations: ROAD_RENDER_SMOOTH_ITERATIONS + 1,
   });
@@ -6344,8 +6341,7 @@ function rebuildThreeRouteScene() {
     const segHeadingMap = Math.atan2(b.y - a.y, b.x - a.x);
     const rightMap = { x: Math.sin(segHeadingMap), y: -Math.cos(segHeadingMap) };
     const halfWidths = routeRoadHalfWidthsAt(mx, -mz, segHeadingMap);
-    // `roadPath` is render-densified; avoid segment-index hints tied to non-render path indices.
-    const profileFrame = routeFrameAt(mx, -mz, segHeadingMap);
+    const profileFrame = routeFrameAt(mx, -mz, segHeadingMap, i);
     const activeLaneProfile = laneProfile3StateAtFrame(profileFrame, profileCheckpoints, profileRoutePath);
     const trimPrevEntryZoneM = activeLaneProfile?.expansionMode === "trim_previous"
       ? Math.max(1.8, Math.min(4.6, ROAD_EXTRA_LANE_WIDTH_M * 1.4))
@@ -6532,8 +6528,8 @@ function rebuildThreeRouteScene() {
     const nextHeading = Math.atan2(next.y - point.y, next.x - point.x);
     const prevMid = { x: (prev.x + point.x) * 0.5, y: (prev.y + point.y) * 0.5 };
     const nextMid = { x: (next.x + point.x) * 0.5, y: (next.y + point.y) * 0.5 };
-    const prevHalf = routeRoadHalfWidthsAt(prevMid.x, prevMid.y, prevHeading);
-    const nextHalf = routeRoadHalfWidthsAt(nextMid.x, nextMid.y, nextHeading);
+    const prevHalf = routeRoadHalfWidthsAt(prevMid.x, prevMid.y, prevHeading, i - 1);
+    const nextHalf = routeRoadHalfWidthsAt(nextMid.x, nextMid.y, nextHeading, i);
 
     const leftDiff = Math.abs(prevHalf.left - nextHalf.left);
     const rightDiff = Math.abs(prevHalf.right - nextHalf.right);
