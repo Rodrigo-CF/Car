@@ -3632,6 +3632,7 @@ function chaikinSmoothSegmentEdgeLocked(
   lockStartEdge = false,
   lockEndEdge = false,
 ) {
+  const EDGE_LOCK_BLEND = 0.78;
   let result = segment.map((point) => ({ x: point.x, y: point.y }));
   for (let iter = 0; iter < iterations; iter += 1) {
     if (result.length < 3) {
@@ -3656,16 +3657,16 @@ function chaikinSmoothSegmentEdgeLocked(
     if (lockStartEdge && next.length > 2 && result.length > 2) {
       const startAnchor = result[1];
       next[1] = {
-        x: lerpNumber(next[1].x, startAnchor.x, 0.45),
-        y: lerpNumber(next[1].y, startAnchor.y, 0.45),
+        x: lerpNumber(next[1].x, startAnchor.x, EDGE_LOCK_BLEND),
+        y: lerpNumber(next[1].y, startAnchor.y, EDGE_LOCK_BLEND),
       };
     }
     if (lockEndEdge && next.length > 2 && result.length > 2) {
       const idx = next.length - 2;
       const endAnchor = result[result.length - 2];
       next[idx] = {
-        x: lerpNumber(next[idx].x, endAnchor.x, 0.45),
-        y: lerpNumber(next[idx].y, endAnchor.y, 0.45),
+        x: lerpNumber(next[idx].x, endAnchor.x, EDGE_LOCK_BLEND),
+        y: lerpNumber(next[idx].y, endAnchor.y, EDGE_LOCK_BLEND),
       };
     }
 
@@ -3756,9 +3757,15 @@ function chaikinSmoothSegmentWithLockedCorners(
   const merged = [];
   for (let i = 0; i < pieces.length; i += 1) {
     const piece = pieces[i];
+    // Near trim_previous locked nodes, keep road centerline less rounded so the
+    // incoming 2-lane side remains dominant on the non-trim edge.
+    const pieceIterations = Math.max(
+      0,
+      iterations - ((piece.startLocked || piece.endLocked) ? 1 : 0),
+    );
     const smoothed = chaikinSmoothSegmentEdgeLocked(
       piece.points,
-      iterations,
+      pieceIterations,
       piece.startLocked,
       piece.endLocked,
     );
