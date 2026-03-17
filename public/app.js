@@ -3580,6 +3580,69 @@ function densifyPath(points, step = 2.2) {
   return dense;
 }
 
+function densifyPathNearLaneProfileExit(points, checkpoints, routePath, step = 0.14) {
+  if (!Array.isArray(points) || !points.length) {
+    return [];
+  }
+  if (points.length < 2) {
+    return points.map((p) => ({ x: p.x, y: p.y, move: Boolean(p.move) }));
+  }
+
+  const dense = [];
+  dense.push({ x: points[0].x, y: points[0].y, move: Boolean(points[0].move) });
+
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const current = points[i];
+    const next = points[i + 1];
+    if (!current || !next) {
+      continue;
+    }
+    if (next.move) {
+      dense.push({ x: next.x, y: next.y, move: true });
+      continue;
+    }
+
+    const dx = next.x - current.x;
+    const dy = next.y - current.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist < 1e-5) {
+      dense.push({ x: next.x, y: next.y, move: false });
+      continue;
+    }
+
+    const mx = (current.x + next.x) * 0.5;
+    const my = (current.y + next.y) * 0.5;
+    const heading = Math.atan2(dy, dx);
+    const frame = routeFrameAt(mx, my, heading);
+    const profile = laneProfile3StateAtFrame(frame, checkpoints, routePath);
+    const exitDistanceM = Number(profile?.totalLength) - Number(profile?.d);
+    const exitWindowM = Math.max(
+      2.2,
+      Math.min(8.5, Number(profile?.transitionLengthM || 0) * 1.15),
+    );
+    const nearExit = Boolean(
+      profile &&
+      Number.isFinite(exitDistanceM) &&
+      exitDistanceM >= 0 &&
+      exitDistanceM <= exitWindowM,
+    );
+    const slices = nearExit
+      ? Math.max(1, Math.ceil(dist / Math.max(0.08, Number(step) || 0.14)))
+      : 1;
+
+    for (let j = 1; j <= slices; j += 1) {
+      const t = j / slices;
+      dense.push({
+        x: current.x + dx * t,
+        y: current.y + dy * t,
+        move: false,
+      });
+    }
+  }
+
+  return dense;
+}
+
 function splitContinuousPathSegments(points) {
   if (!Array.isArray(points) || !points.length) {
     return [];
@@ -6334,6 +6397,12 @@ function rebuildThreeRouteScene() {
   });
   const profileCheckpoints = state.sim.route?.checkpoints || [];
   const profileRoutePath = state.sim.routePath?.length ? state.sim.routePath : state.sim.routeDensePath;
+  const lineRenderPath = densifyPathNearLaneProfileExit(
+    linePath,
+    profileCheckpoints,
+    profileRoutePath,
+    0.12,
+  );
   for (let i = 0; i < roadPath.length - 1; i += 1) {
     const a = roadPath[i];
     const b = roadPath[Math.min(i + 1, roadPath.length - 1)];
@@ -6371,7 +6440,7 @@ function rebuildThreeRouteScene() {
       exitDistanceM >= 0 &&
       exitDistanceM <= exitWindowM,
     );
-    const subCount = refineExitTail ? Math.min(6, Math.max(2, Math.ceil(len / 0.22))) : 1;
+    const subCount = refineExitTail ? Math.min(12, Math.max(3, Math.ceil(len / 0.12))) : 1;
 
     for (let sub = 0; sub < subCount; sub += 1) {
       const t0 = sub / subCount;
@@ -6428,9 +6497,9 @@ function rebuildThreeRouteScene() {
     }
   }
 
-  for (let i = 0; i < linePath.length - 1; i += 1) {
-    const a = linePath[i];
-    const b = linePath[Math.min(i + 1, linePath.length - 1)];
+  for (let i = 0; i < lineRenderPath.length - 1; i += 1) {
+    const a = lineRenderPath[i];
+    const b = lineRenderPath[Math.min(i + 1, lineRenderPath.length - 1)];
     if (!a || !b || b.move) {
       continue;
     }
@@ -6463,15 +6532,15 @@ function rebuildThreeRouteScene() {
       : 0;
 
     const currentDividerOffsets = routeLaneDividerOffsets(halfWidths);
-    const prevDividerOffsets = i > 0 && !a.move ? routeLaneDividerOffsetsForSegment(linePath, i - 1) : [];
-    const nextDividerOffsets = i + 2 < linePath.length && !linePath[i + 2].move
-      ? routeLaneDividerOffsetsForSegment(linePath, i + 1)
+    const prevDividerOffsets = i > 0 && !a.move ? routeLaneDividerOffsetsForSegment(lineRenderPath, i - 1) : [];
+    const nextDividerOffsets = i + 2 < lineRenderPath.length && !lineRenderPath[i + 2].move
+      ? routeLaneDividerOffsetsForSegment(lineRenderPath, i + 1)
       : [];
     const prevHeading = i > 0 && !a.move
-      ? Math.atan2(a.y - linePath[i - 1].y, a.x - linePath[i - 1].x)
+      ? Math.atan2(a.y - lineRenderPath[i - 1].y, a.x - lineRenderPath[i - 1].x)
       : null;
-    const nextHeading = i + 2 < linePath.length && !linePath[i + 2].move
-      ? Math.atan2(linePath[i + 2].y - b.y, linePath[i + 2].x - b.x)
+    const nextHeading = i + 2 < lineRenderPath.length && !lineRenderPath[i + 2].move
+      ? Math.atan2(lineRenderPath[i + 2].y - b.y, lineRenderPath[i + 2].x - b.x)
       : null;
     const segmentHeading = Math.atan2(b.y - a.y, b.x - a.x);
     const startTurnAbs = prevHeading == null
