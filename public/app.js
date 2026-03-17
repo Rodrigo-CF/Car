@@ -204,7 +204,9 @@ const LANE_PROFILE_TRANSITION_MIN_M = 1.5;
 const LANE_PROFILE_TRANSITION_MAX_M = 20;
 const ROAD_RENDER_SMOOTH_ITERATIONS = 1;
 const ROAD_RENDER_JOINT_SEGMENTS = 24;
-const ROAD_RENDER_DENSE_STEP_M = 0.6;
+// Keep road render density aligned with route density to avoid entry bulges
+// at trim_previous 2L->3L joins.
+const ROAD_RENDER_DENSE_STEP_M = 0.9;
 const CAMERA_MODE_CYCLE = ["first", "third", "right", "front", "left", "top"];
 const EXTERNAL_CAMERA_MODES = new Set(["third", "right", "front", "left", "top"]);
 
