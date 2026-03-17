@@ -205,7 +205,6 @@ const LANE_PROFILE_TRANSITION_MAX_M = 20;
 const ROAD_RENDER_SMOOTH_ITERATIONS = 1;
 const ROAD_RENDER_JOINT_SEGMENTS = 24;
 const ROAD_RENDER_DENSE_STEP_M = 0.6;
-const LINE_RENDER_DENSE_STEP_M = 0.65;
 const CAMERA_MODE_CYCLE = ["first", "third", "right", "front", "left", "top"];
 const EXTERNAL_CAMERA_MODES = new Set(["third", "right", "front", "left", "top"]);
 
@@ -3635,7 +3634,7 @@ function chaikinSmoothSegmentEdgeLocked(
   lockStartEdge = false,
   lockEndEdge = false,
 ) {
-  const EDGE_LOCK_BLEND = 0.78;
+  const EDGE_LOCK_BLEND = 0.9;
   let result = segment.map((point) => ({ x: point.x, y: point.y }));
   for (let iter = 0; iter < iterations; iter += 1) {
     if (result.length < 3) {
@@ -6314,12 +6313,11 @@ function rebuildThreeRouteScene() {
 
   const rawPath = state.sim.routeDensePath?.length ? state.sim.routeDensePath : state.sim.routePath;
   const roadRenderPath = densifyPath(rawPath, ROAD_RENDER_DENSE_STEP_M);
-  const lineRenderPath = densifyPath(rawPath, LINE_RENDER_DENSE_STEP_M);
   const roadPath = smoothRenderPath(roadRenderPath, {
     lockTrimPreviousCorners: true,
-    iterations: ROAD_RENDER_SMOOTH_ITERATIONS + 1,
+    iterations: ROAD_RENDER_SMOOTH_ITERATIONS,
   });
-  const linePath = smoothRenderPath(lineRenderPath, { lockTrimPreviousCorners: false });
+  const linePath = smoothRenderPath(rawPath, { lockTrimPreviousCorners: false });
   const profileCheckpoints = state.sim.route?.checkpoints || [];
   const profileRoutePath = state.sim.routePath?.length ? state.sim.routePath : state.sim.routeDensePath;
   for (let i = 0; i < roadPath.length - 1; i += 1) {
@@ -6345,12 +6343,7 @@ function rebuildThreeRouteScene() {
     const segHeadingMap = Math.atan2(b.y - a.y, b.x - a.x);
     const rightMap = { x: Math.sin(segHeadingMap), y: -Math.cos(segHeadingMap) };
     const profileFrame = routeFrameAt(mx, -mz, segHeadingMap);
-    const halfWidths = routeRoadHalfWidthsAt(
-      mx,
-      -mz,
-      segHeadingMap,
-      Number.isFinite(profileFrame?.segmentIndex) ? profileFrame.segmentIndex : null,
-    );
+    const halfWidths = routeRoadHalfWidthsAt(mx, -mz, segHeadingMap);
     const activeLaneProfile = laneProfile3StateAtFrame(profileFrame, profileCheckpoints, profileRoutePath);
     const trimPrevEntryZoneM = activeLaneProfile?.expansionMode === "trim_previous"
       ? Math.max(1.8, Math.min(4.6, ROAD_EXTRA_LANE_WIDTH_M * 1.4))
@@ -6420,12 +6413,7 @@ function rebuildThreeRouteScene() {
     const segHeadingMap = Math.atan2(b.y - a.y, b.x - a.x);
     const rightMap = { x: Math.sin(segHeadingMap), y: -Math.cos(segHeadingMap) };
     const profileFrame = routeFrameAt(mx, -mz, segHeadingMap);
-    const halfWidths = routeRoadHalfWidthsAt(
-      mx,
-      -mz,
-      segHeadingMap,
-      Number.isFinite(profileFrame?.segmentIndex) ? profileFrame.segmentIndex : null,
-    );
+    const halfWidths = routeRoadHalfWidthsAt(mx, -mz, segHeadingMap);
     const activeLaneProfile = laneProfile3StateAtFrame(profileFrame, profileCheckpoints, profileRoutePath);
     const trimPrevEntryZoneM = activeLaneProfile?.expansionMode === "trim_previous"
       ? Math.max(1.8, Math.min(4.6, ROAD_EXTRA_LANE_WIDTH_M * 1.4))
