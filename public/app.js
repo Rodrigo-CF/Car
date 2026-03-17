@@ -203,7 +203,6 @@ const LANE_PROFILE_TRANSITION_MIN_M = 1.5;
 const LANE_PROFILE_TRANSITION_MAX_M = 20;
 const ROAD_RENDER_SMOOTH_ITERATIONS = 1;
 const ROAD_RENDER_JOINT_SEGMENTS = 24;
-const ROAD_RENDER_DENSIFY_STEP_M = 0.8;
 const CAMERA_MODE_CYCLE = ["first", "third", "right", "front", "left", "top"];
 const EXTERNAL_CAMERA_MODES = new Set(["third", "right", "front", "left", "top"]);
 
@@ -6187,10 +6186,7 @@ function rebuildThreeRouteScene() {
   routeGroup.add(ground);
 
   const rawPath = state.sim.routeDensePath?.length ? state.sim.routeDensePath : state.sim.routePath;
-  // Use a denser render-only road path so 3L->2L transitions do not show stair-step borders.
-  // Keep lane lines on the regular path to avoid changing their visual rhythm.
-  const roadRenderBasePath = densifyPath(rawPath, ROAD_RENDER_DENSIFY_STEP_M);
-  const roadPath = smoothRenderPath(roadRenderBasePath, {
+  const roadPath = smoothRenderPath(rawPath, {
     lockTrimPreviousCorners: true,
     iterations: ROAD_RENDER_SMOOTH_ITERATIONS + 1,
   });
