@@ -3637,21 +3637,8 @@ function chaikinSmoothSegmentEdgeLocked(
     if (result.length < 3) {
       break;
     }
-    // With very short pieces, locking both ends can produce duplicates.
-    if (lockStartEdge && lockEndEdge && result.length <= 4) {
-      break;
-    }
-
-    const next = [];
-    if (lockStartEdge) {
-      next.push(result[0], result[1]);
-    } else {
-      next.push(result[0]);
-    }
-
-    const startPair = lockStartEdge ? 1 : 0;
-    const endPairExclusive = (result.length - 1) - (lockEndEdge ? 1 : 0);
-    for (let i = startPair; i < endPairExclusive; i += 1) {
+    const next = [result[0]];
+    for (let i = 0; i < result.length - 1; i += 1) {
       const a = result[i];
       const b = result[i + 1];
       next.push({
@@ -3663,11 +3650,23 @@ function chaikinSmoothSegmentEdgeLocked(
         y: a.y * 0.25 + b.y * 0.75,
       });
     }
+    next.push(result[result.length - 1]);
 
-    if (lockEndEdge) {
-      next.push(result[result.length - 2], result[result.length - 1]);
-    } else {
-      next.push(result[result.length - 1]);
+    // Soft-lock the edge tangents: keep corner behavior without hard kinks.
+    if (lockStartEdge && next.length > 2 && result.length > 2) {
+      const startAnchor = result[1];
+      next[1] = {
+        x: lerpNumber(next[1].x, startAnchor.x, 0.62),
+        y: lerpNumber(next[1].y, startAnchor.y, 0.62),
+      };
+    }
+    if (lockEndEdge && next.length > 2 && result.length > 2) {
+      const idx = next.length - 2;
+      const endAnchor = result[result.length - 2];
+      next[idx] = {
+        x: lerpNumber(next[idx].x, endAnchor.x, 0.62),
+        y: lerpNumber(next[idx].y, endAnchor.y, 0.62),
+      };
     }
 
     result = next;
@@ -6514,9 +6513,9 @@ function rebuildThreeRouteScene() {
     }
   } else {
     // Lightweight tree scatter for extra depth when no explicit trees exist.
-    for (let i = 0; i < path.length; i += 26) {
-      const p = path[i];
-      const next = path[Math.min(i + 1, path.length - 1)];
+    for (let i = 0; i < roadPath.length; i += 26) {
+      const p = roadPath[i];
+      const next = roadPath[Math.min(i + 1, roadPath.length - 1)];
       if (!p || !next || next.move) {
         continue;
       }
