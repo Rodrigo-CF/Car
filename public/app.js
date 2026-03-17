@@ -6351,55 +6351,80 @@ function rebuildThreeRouteScene() {
       continue;
     }
 
-    const angle = Math.atan2(dz, dx);
-    const mx = (ax + bx) / 2;
-    const mz = (az + bz) / 2;
-    const segHeadingMap = Math.atan2(b.y - a.y, b.x - a.x);
-    const rightMap = { x: Math.sin(segHeadingMap), y: -Math.cos(segHeadingMap) };
-    const profileFrame = routeFrameAt(mx, -mz, segHeadingMap);
-    const halfWidths = routeRoadHalfWidthsAt(mx, -mz, segHeadingMap);
-    const activeLaneProfile = laneProfile3StateAtFrame(profileFrame, profileCheckpoints, profileRoutePath);
-    const trimPrevEntryZoneM = activeLaneProfile?.expansionMode === "trim_previous"
-      ? Math.max(1.8, Math.min(4.6, ROAD_EXTRA_LANE_WIDTH_M * 1.4))
-      : 0;
-    const trimPrevEntryDistanceM = Number(activeLaneProfile?.d) || 0;
-    const trimPrevEntryFactor = trimPrevEntryZoneM > 0
-      ? clamp01(1 - (trimPrevEntryDistanceM / trimPrevEntryZoneM))
-      : 0;
-    const roadLeft = halfWidths.left;
-    const roadRight = halfWidths.right;
-    const isAsymmetric = Math.abs(roadRight - roadLeft) > 0.05;
+    const baseAngle = Math.atan2(dz, dx);
+    const baseMx = (ax + bx) / 2;
+    const baseMz = (az + bz) / 2;
+    const baseSegHeadingMap = Math.atan2(b.y - a.y, b.x - a.x);
+    const baseProfileFrame = routeFrameAt(baseMx, -baseMz, baseSegHeadingMap);
+    const baseActiveLaneProfile = laneProfile3StateAtFrame(baseProfileFrame, profileCheckpoints, profileRoutePath);
 
-    if (!isAsymmetric) {
+    // Refine only near the profile exit (3L -> 2L tail) to remove staircase artifacts,
+    // while keeping 2L -> 3L trim_previous entry behavior unchanged.
+    const exitDistanceM = Number(baseActiveLaneProfile?.totalLength) - Number(baseActiveLaneProfile?.d);
+    const exitWindowM = Math.max(
+      2.2,
+      Math.min(8.5, Number(baseActiveLaneProfile?.transitionLengthM || 0) * 1.15),
+    );
+    const refineExitTail = Boolean(
+      baseActiveLaneProfile &&
+      Number.isFinite(exitDistanceM) &&
+      exitDistanceM >= 0 &&
+      exitDistanceM <= exitWindowM,
+    );
+    const subCount = refineExitTail ? Math.min(6, Math.max(2, Math.ceil(len / 0.22))) : 1;
+
+    for (let sub = 0; sub < subCount; sub += 1) {
+      const t0 = sub / subCount;
+      const t1 = (sub + 1) / subCount;
+      const sax = ax + (bx - ax) * t0;
+      const saz = az + (bz - az) * t0;
+      const sbx = ax + (bx - ax) * t1;
+      const sbz = az + (bz - az) * t1;
+      const sdx = sbx - sax;
+      const sdz = sbz - saz;
+      const slen = Math.hypot(sdx, sdz);
+      if (slen < 0.08) {
+        continue;
+      }
+
+      const angle = Math.atan2(sdz, sdx);
+      const mx = (sax + sbx) / 2;
+      const mz = (saz + sbz) / 2;
+      const segHeadingMap = Math.atan2(-sbz - (-saz), sbx - sax);
+      const rightMap = { x: Math.sin(segHeadingMap), y: -Math.cos(segHeadingMap) };
+      const halfWidths = routeRoadHalfWidthsAt(mx, -mz, segHeadingMap);
+      const roadLeft = halfWidths.left;
+      const roadRight = halfWidths.right;
       const roadWidth = roadLeft + roadRight;
       const shoulderWidth = roadWidth + ROAD_SHOULDER_HALF_EXTRA_M * 2;
+      const isAsymmetric = Math.abs(roadRight - roadLeft) > 0.05;
 
-      const shoulder = new THREE.Mesh(new THREE.BoxGeometry(len, 0.03, shoulderWidth), shoulderMat);
-      shoulder.position.set(mx, 0.005, mz);
-      shoulder.rotation.y = -angle;
-      routeGroup.add(shoulder);
+      if (!isAsymmetric) {
+        const shoulder = new THREE.Mesh(new THREE.BoxGeometry(slen, 0.03, shoulderWidth), shoulderMat);
+        shoulder.position.set(mx, 0.005, mz);
+        shoulder.rotation.y = -angle;
+        routeGroup.add(shoulder);
 
-      const road = new THREE.Mesh(new THREE.BoxGeometry(len, 0.04, roadWidth), roadMat);
-      road.position.set(mx, 0.02, mz);
-      road.rotation.y = -angle;
-      routeGroup.add(road);
-    } else {
-      const roadWidth = roadLeft + roadRight;
-      const shoulderWidth = roadWidth + ROAD_SHOULDER_HALF_EXTRA_M * 2;
-      const centerShift = (roadRight - roadLeft) * 0.5;
-      const centerX = mx + rightMap.x * centerShift;
-      const centerY = -mz + rightMap.y * centerShift;
-      const centerZ = -centerY;
+        const road = new THREE.Mesh(new THREE.BoxGeometry(slen, 0.04, roadWidth), roadMat);
+        road.position.set(mx, 0.02, mz);
+        road.rotation.y = -angle;
+        routeGroup.add(road);
+      } else {
+        const centerShift = (roadRight - roadLeft) * 0.5;
+        const centerX = mx + rightMap.x * centerShift;
+        const centerY = -mz + rightMap.y * centerShift;
+        const centerZ = -centerY;
 
-      const shoulder = new THREE.Mesh(new THREE.BoxGeometry(len, 0.03, shoulderWidth), shoulderMat);
-      shoulder.position.set(centerX, 0.005, centerZ);
-      shoulder.rotation.y = -angle;
-      routeGroup.add(shoulder);
+        const shoulder = new THREE.Mesh(new THREE.BoxGeometry(slen, 0.03, shoulderWidth), shoulderMat);
+        shoulder.position.set(centerX, 0.005, centerZ);
+        shoulder.rotation.y = -angle;
+        routeGroup.add(shoulder);
 
-      const road = new THREE.Mesh(new THREE.BoxGeometry(len, 0.04, roadWidth), roadMat);
-      road.position.set(centerX, 0.02, centerZ);
-      road.rotation.y = -angle;
-      routeGroup.add(road);
+        const road = new THREE.Mesh(new THREE.BoxGeometry(slen, 0.04, roadWidth), roadMat);
+        road.position.set(centerX, 0.02, centerZ);
+        road.rotation.y = -angle;
+        routeGroup.add(road);
+      }
     }
   }
 
