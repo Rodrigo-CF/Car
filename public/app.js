@@ -3759,10 +3759,12 @@ function chaikinSmoothSegmentWithLockedCorners(
   const merged = [];
   for (let i = 0; i < pieces.length; i += 1) {
     const piece = pieces[i];
-    // For trim_previous entry corners, disable local smoothing so the incoming
-    // 2-lane edge remains dominant and the new 3-lane segment does not bulge
-    // outward on the non-trim side.
-    const pieceIterations = piece.startLocked || piece.endLocked ? 0 : iterations;
+    // Near trim_previous locked nodes, keep road centerline less rounded so the
+    // incoming 2-lane side remains dominant on the non-trim edge.
+    const pieceIterations = Math.max(
+      0,
+      iterations - ((piece.startLocked || piece.endLocked) ? 1 : 0),
+    );
     const smoothed = chaikinSmoothSegmentEdgeLocked(
       piece.points,
       pieceIterations,
@@ -6071,9 +6073,46 @@ function renderLaneProfileEntryTrimPatches(THREE, routeGroup) {
       const prevSideHalf = sideSign > 0 ? prevHalf.right : prevHalf.left;
       const targetSideHalf = sideSign > 0 ? targetRight : targetLeft;
       if (targetSideHalf <= prevSideHalf + 0.08) {
-        // Non-trim side in trim_previous mode:
-        // do not add rounded fan patches here, because they can introduce an
-        // outward bulge where 2L joins 3L. Base segment geometry already joins.
+        // Non-trim side: add a local rounded fan so the 2L->3L node does not look jagged.
+        const prevEdgeAtNode = routeEdgePointForSide(node, prevRight, prevHalf.left, prevHalf.right, sideSign);
+        const nextEdgeAtNode = routeEdgePointForSide(node, nextRight, targetLeft, targetRight, sideSign);
+        const roadFan = buildRoundedJoinFanPoints(node, prevEdgeAtNode, nextEdgeAtNode);
+        if (roadFan) {
+          const roadFanGeometry = buildGroundFanGeometry(THREE, roadFan);
+          if (roadFanGeometry) {
+            const roadFanMesh = new THREE.Mesh(roadFanGeometry, roadPatchMat);
+            roadFanMesh.position.y = 0.024;
+            routeGroup.add(roadFanMesh);
+          }
+        }
+
+        const shoulderPrevLeft = prevHalf.left + ROAD_SHOULDER_HALF_EXTRA_M;
+        const shoulderPrevRight = prevHalf.right + ROAD_SHOULDER_HALF_EXTRA_M;
+        const shoulderTargetLeft = targetLeft + ROAD_SHOULDER_HALF_EXTRA_M;
+        const shoulderTargetRight = targetRight + ROAD_SHOULDER_HALF_EXTRA_M;
+        const prevShoulderAtNode = routeEdgePointForSide(
+          node,
+          prevRight,
+          shoulderPrevLeft,
+          shoulderPrevRight,
+          sideSign,
+        );
+        const nextShoulderAtNode = routeEdgePointForSide(
+          node,
+          nextRight,
+          shoulderTargetLeft,
+          shoulderTargetRight,
+          sideSign,
+        );
+        const shoulderFan = buildRoundedJoinFanPoints(node, prevShoulderAtNode, nextShoulderAtNode);
+        if (shoulderFan) {
+          const shoulderFanGeometry = buildGroundFanGeometry(THREE, shoulderFan);
+          if (shoulderFanGeometry) {
+            const shoulderFanMesh = new THREE.Mesh(shoulderFanGeometry, shoulderPatchMat);
+            shoulderFanMesh.position.y = 0.008;
+            routeGroup.add(shoulderFanMesh);
+          }
+        }
         continue;
       }
 
