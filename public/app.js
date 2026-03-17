@@ -5169,6 +5169,28 @@ function buildGroundTriangleGeometry(THREE, points) {
   return geometry;
 }
 
+function buildGroundFanGeometry(THREE, points) {
+  if (!Array.isArray(points) || points.length < 3) {
+    return null;
+  }
+  const geometry = new THREE.BufferGeometry();
+  const vertices = new Float32Array(points.length * 3);
+  for (let i = 0; i < points.length; i += 1) {
+    const p = points[i];
+    vertices[i * 3 + 0] = p.x;
+    vertices[i * 3 + 1] = 0;
+    vertices[i * 3 + 2] = -p.y;
+  }
+  const indices = [];
+  for (let i = 1; i < points.length - 1; i += 1) {
+    indices.push(0, i, i + 1);
+  }
+  geometry.setAttribute("position", new THREE.BufferAttribute(vertices, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
 function buildGroundLoopGeometry(THREE, corners) {
   const points = corners.map((corner) => new THREE.Vector3(corner.x, 0, -corner.y));
   points.push(new THREE.Vector3(corners[0].x, 0, -corners[0].y));
@@ -5939,6 +5961,31 @@ function renderLaneProfileEntryTrimPatches(THREE, routeGroup) {
       y: center.y + right.y * sideOffset,
     };
   };
+  const buildRoundedJoinFanPoints = (center, fromPoint, toPoint) => {
+    const rFrom = Math.hypot(fromPoint.x - center.x, fromPoint.y - center.y);
+    const rTo = Math.hypot(toPoint.x - center.x, toPoint.y - center.y);
+    if (rFrom < 0.12 || rTo < 0.12) {
+      return null;
+    }
+    const aFrom = Math.atan2(fromPoint.y - center.y, fromPoint.x - center.x);
+    const aTo = Math.atan2(toPoint.y - center.y, toPoint.x - center.x);
+    const delta = normalizeHeadingDeltaRad(aTo, aFrom);
+    if (!Number.isFinite(delta) || Math.abs(delta) < 0.03) {
+      return null;
+    }
+    const steps = Math.max(4, Math.min(16, Math.ceil(Math.abs(delta) / (Math.PI / 16))));
+    const fan = [{ x: center.x, y: center.y }];
+    for (let i = 0; i <= steps; i += 1) {
+      const t = i / Math.max(1, steps);
+      const angle = aFrom + delta * t;
+      const radius = lerpNumber(rFrom, rTo, t);
+      fan.push({
+        x: center.x + Math.cos(angle) * radius,
+        y: center.y + Math.sin(angle) * radius,
+      });
+    }
+    return fan;
+  };
 
   const roadPatchMat = new THREE.MeshStandardMaterial({
     color: 0x2e343b,
@@ -6012,6 +6059,46 @@ function renderLaneProfileEntryTrimPatches(THREE, routeGroup) {
       const prevSideHalf = sideSign > 0 ? prevHalf.right : prevHalf.left;
       const targetSideHalf = sideSign > 0 ? targetRight : targetLeft;
       if (targetSideHalf <= prevSideHalf + 0.08) {
+        // Non-trim side: add a local rounded fan so the 2L->3L node does not look jagged.
+        const prevEdgeAtNode = edgePointForSide(node, prevRight, prevHalf.left, prevHalf.right, sideSign);
+        const nextEdgeAtNode = edgePointForSide(node, nextRight, targetLeft, targetRight, sideSign);
+        const roadFan = buildRoundedJoinFanPoints(node, prevEdgeAtNode, nextEdgeAtNode);
+        if (roadFan) {
+          const roadFanGeometry = buildGroundFanGeometry(THREE, roadFan);
+          if (roadFanGeometry) {
+            const roadFanMesh = new THREE.Mesh(roadFanGeometry, roadPatchMat);
+            roadFanMesh.position.y = 0.024;
+            routeGroup.add(roadFanMesh);
+          }
+        }
+
+        const shoulderPrevLeft = prevHalf.left + ROAD_SHOULDER_HALF_EXTRA_M;
+        const shoulderPrevRight = prevHalf.right + ROAD_SHOULDER_HALF_EXTRA_M;
+        const shoulderTargetLeft = targetLeft + ROAD_SHOULDER_HALF_EXTRA_M;
+        const shoulderTargetRight = targetRight + ROAD_SHOULDER_HALF_EXTRA_M;
+        const prevShoulderAtNode = edgePointForSide(
+          node,
+          prevRight,
+          shoulderPrevLeft,
+          shoulderPrevRight,
+          sideSign,
+        );
+        const nextShoulderAtNode = edgePointForSide(
+          node,
+          nextRight,
+          shoulderTargetLeft,
+          shoulderTargetRight,
+          sideSign,
+        );
+        const shoulderFan = buildRoundedJoinFanPoints(node, prevShoulderAtNode, nextShoulderAtNode);
+        if (shoulderFan) {
+          const shoulderFanGeometry = buildGroundFanGeometry(THREE, shoulderFan);
+          if (shoulderFanGeometry) {
+            const shoulderFanMesh = new THREE.Mesh(shoulderFanGeometry, shoulderPatchMat);
+            shoulderFanMesh.position.y = 0.008;
+            routeGroup.add(shoulderFanMesh);
+          }
+        }
         continue;
       }
 
