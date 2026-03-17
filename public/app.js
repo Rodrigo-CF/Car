@@ -6318,15 +6318,14 @@ function renderLaneProfileExitJoinPatches(THREE, routeGroup) {
 
       const prevEdgeAtNode = routeEdgePointForSide(node, prevRight, prevHalf.left, prevHalf.right, sideSign);
       const nextEdgeAtNode = routeEdgePointForSide(node, nextRight, nextHalf.left, nextHalf.right, sideSign);
-      const roadFan = buildRoundedJoinFanPoints(node, prevEdgeAtNode, nextEdgeAtNode);
-      if (roadFan) {
-        const roadFanGeometry = buildGroundFanGeometry(THREE, roadFan);
-        if (roadFanGeometry) {
-          const roadFanMesh = new THREE.Mesh(roadFanGeometry, roadPatchMat);
-          roadFanMesh.position.y = 0.024;
-          routeGroup.add(roadFanMesh);
-        }
-      }
+      // Keep 3L->2L exit as a straight diagonal connector (no rounded fan),
+      // so the transition looks like an elongated "Z".
+      const roadStraightPatch = new THREE.Mesh(
+        buildGroundTriangleGeometry(THREE, [node, prevEdgeAtNode, nextEdgeAtNode]),
+        roadPatchMat,
+      );
+      roadStraightPatch.position.y = 0.024;
+      routeGroup.add(roadStraightPatch);
 
       const prevShoulderAtNode = routeEdgePointForSide(
         node,
@@ -6342,15 +6341,12 @@ function renderLaneProfileExitJoinPatches(THREE, routeGroup) {
         nextHalf.right + ROAD_SHOULDER_HALF_EXTRA_M,
         sideSign,
       );
-      const shoulderFan = buildRoundedJoinFanPoints(node, prevShoulderAtNode, nextShoulderAtNode);
-      if (shoulderFan) {
-        const shoulderFanGeometry = buildGroundFanGeometry(THREE, shoulderFan);
-        if (shoulderFanGeometry) {
-          const shoulderFanMesh = new THREE.Mesh(shoulderFanGeometry, shoulderPatchMat);
-          shoulderFanMesh.position.y = 0.008;
-          routeGroup.add(shoulderFanMesh);
-        }
-      }
+      const shoulderStraightPatch = new THREE.Mesh(
+        buildGroundTriangleGeometry(THREE, [node, prevShoulderAtNode, nextShoulderAtNode]),
+        shoulderPatchMat,
+      );
+      shoulderStraightPatch.position.y = 0.008;
+      routeGroup.add(shoulderStraightPatch);
     }
   }
 }
