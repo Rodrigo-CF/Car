@@ -3634,7 +3634,7 @@ function chaikinSmoothSegmentEdgeLocked(
   lockStartEdge = false,
   lockEndEdge = false,
 ) {
-  const EDGE_LOCK_BLEND = 0.97;
+  const EDGE_LOCK_BLEND = 0.9;
   let result = segment.map((point) => ({ x: point.x, y: point.y }));
   for (let iter = 0; iter < iterations; iter += 1) {
     if (result.length < 3) {
@@ -3771,34 +3771,6 @@ function chaikinSmoothSegmentWithLockedCorners(
       piece.startLocked,
       piece.endLocked,
     );
-
-    // Preserve local tangent near trim_previous locked corners so the new 3L
-    // segment does not dominate the incoming 2L non-trim side.
-    if (piece.startLocked && piece.points.length > 1 && smoothed.length > 1) {
-      smoothed[1] = {
-        x: lerpNumber(smoothed[1].x, piece.points[1].x, 0.95),
-        y: lerpNumber(smoothed[1].y, piece.points[1].y, 0.95),
-      };
-      if (piece.points.length > 2 && smoothed.length > 2) {
-        smoothed[2] = {
-          x: lerpNumber(smoothed[2].x, piece.points[2].x, 0.7),
-          y: lerpNumber(smoothed[2].y, piece.points[2].y, 0.7),
-        };
-      }
-    }
-    if (piece.endLocked && piece.points.length > 1 && smoothed.length > 1) {
-      const last = smoothed.length - 1;
-      smoothed[last - 1] = {
-        x: lerpNumber(smoothed[last - 1].x, piece.points[piece.points.length - 2].x, 0.95),
-        y: lerpNumber(smoothed[last - 1].y, piece.points[piece.points.length - 2].y, 0.95),
-      };
-      if (piece.points.length > 2 && smoothed.length > 2) {
-        smoothed[last - 2] = {
-          x: lerpNumber(smoothed[last - 2].x, piece.points[piece.points.length - 3].x, 0.7),
-          y: lerpNumber(smoothed[last - 2].y, piece.points[piece.points.length - 3].y, 0.7),
-        };
-      }
-    }
     for (let j = 0; j < smoothed.length; j += 1) {
       if (merged.length && j === 0) {
         continue;
@@ -5251,15 +5223,7 @@ function buildRoundedJoinFanPoints(center, fromPoint, toPoint) {
   }
   const aFrom = Math.atan2(fromPoint.y - center.y, fromPoint.x - center.x);
   const aTo = Math.atan2(toPoint.y - center.y, toPoint.x - center.x);
-  // Use signed shortest-arc interpolation so the fan follows the real corner side
-  // (avoids outward bulges on 2L->3L non-trim joins).
-  let delta = aTo - aFrom;
-  while (delta > Math.PI) {
-    delta -= Math.PI * 2;
-  }
-  while (delta < -Math.PI) {
-    delta += Math.PI * 2;
-  }
+  const delta = normalizeHeadingDeltaRad(aTo, aFrom);
   if (!Number.isFinite(delta) || Math.abs(delta) < 0.03) {
     return null;
   }
