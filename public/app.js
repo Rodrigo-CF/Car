@@ -3656,16 +3656,16 @@ function chaikinSmoothSegmentEdgeLocked(
     if (lockStartEdge && next.length > 2 && result.length > 2) {
       const startAnchor = result[1];
       next[1] = {
-        x: lerpNumber(next[1].x, startAnchor.x, 0.62),
-        y: lerpNumber(next[1].y, startAnchor.y, 0.62),
+        x: lerpNumber(next[1].x, startAnchor.x, 0.45),
+        y: lerpNumber(next[1].y, startAnchor.y, 0.45),
       };
     }
     if (lockEndEdge && next.length > 2 && result.length > 2) {
       const idx = next.length - 2;
       const endAnchor = result[result.length - 2];
       next[idx] = {
-        x: lerpNumber(next[idx].x, endAnchor.x, 0.62),
-        y: lerpNumber(next[idx].y, endAnchor.y, 0.62),
+        x: lerpNumber(next[idx].x, endAnchor.x, 0.45),
+        y: lerpNumber(next[idx].y, endAnchor.y, 0.45),
       };
     }
 
@@ -3774,6 +3774,10 @@ function chaikinSmoothSegmentWithLockedCorners(
 
 function smoothRenderPath(points, options = {}) {
   const lockTrimPreviousCorners = options.lockTrimPreviousCorners !== false;
+  const iterations = Math.max(
+    0,
+    Math.min(4, Math.round(Number(options.iterations ?? ROAD_RENDER_SMOOTH_ITERATIONS))),
+  );
   const segments = splitContinuousPathSegments(points);
   if (!segments.length) {
     return Array.isArray(points) ? points : [];
@@ -3785,9 +3789,9 @@ function smoothRenderPath(points, options = {}) {
       ? chaikinSmoothSegmentWithLockedCorners(
         segments[s],
         lockedCorners,
-        ROAD_RENDER_SMOOTH_ITERATIONS,
+        iterations,
       )
-      : chaikinSmoothSegment(segments[s], ROAD_RENDER_SMOOTH_ITERATIONS);
+      : chaikinSmoothSegment(segments[s], iterations);
     for (let i = 0; i < smoothed.length; i += 1) {
       output.push({
         x: smoothed[i].x,
@@ -6089,7 +6093,10 @@ function rebuildThreeRouteScene() {
   routeGroup.add(ground);
 
   const rawPath = state.sim.routeDensePath?.length ? state.sim.routeDensePath : state.sim.routePath;
-  const roadPath = smoothRenderPath(rawPath, { lockTrimPreviousCorners: true });
+  const roadPath = smoothRenderPath(rawPath, {
+    lockTrimPreviousCorners: true,
+    iterations: ROAD_RENDER_SMOOTH_ITERATIONS + 1,
+  });
   const linePath = smoothRenderPath(rawPath, { lockTrimPreviousCorners: false });
   const profileCheckpoints = state.sim.route?.checkpoints || [];
   const profileRoutePath = state.sim.routePath?.length ? state.sim.routePath : state.sim.routeDensePath;
