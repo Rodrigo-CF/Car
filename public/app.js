@@ -3966,32 +3966,18 @@ function laneProfile3StateAtFrame(frame, checkpoints, routePath) {
       continue;
     }
     const trimPrevMode = profile.expansionMode === "trim_previous";
-    const inProfileRange = frameSeg >= profile.startSegmentIndex && frameSeg <= profile.endSegmentIndex;
-    const inTrimPrevRange =
-      trimPrevMode &&
-      frameSeg === profile.startSegmentIndex - 1 &&
-      profile.startSegmentIndex > 0 &&
-      !routePath[profile.startNodeIndex]?.move;
-    if (!inProfileRange && !inTrimPrevRange) {
+    if (frameSeg < profile.startSegmentIndex || frameSeg > profile.endSegmentIndex) {
       continue;
     }
 
     let d = 0;
-    if (inProfileRange) {
-      for (let i = profile.startSegmentIndex; i <= profile.endSegmentIndex; i += 1) {
-        const len = routeSegmentLength(routePath, i);
-        if (i < frameSeg) {
-          d += len;
-        } else if (i === frameSeg) {
-          d += len * clamp01(Number(frame.segmentT));
-        }
+    for (let i = profile.startSegmentIndex; i <= profile.endSegmentIndex; i += 1) {
+      const len = routeSegmentLength(routePath, i);
+      if (i < frameSeg) {
+        d += len;
+      } else if (i === frameSeg) {
+        d += len * clamp01(Number(frame.segmentT));
       }
-    } else if (inTrimPrevRange) {
-      const lenPrev = routeSegmentLength(routePath, frameSeg);
-      const tPrev = clamp01(Number(frame.segmentT));
-      d = -(lenPrev * (1 - tPrev));
-    } else {
-      continue;
     }
 
     const L = profile.totalLength;
@@ -4000,13 +3986,12 @@ function laneProfile3StateAtFrame(frame, checkpoints, routePath) {
       Math.min(LANE_PROFILE_TRANSITION_MAX_M, Number(profile.transitionLengthM) || LANE_PROFILE_TRANSITION_DEFAULT_M),
     );
 
-    const entry = trimPrevMode ? clamp01((d + Lt) / Math.max(0.0001, Lt)) : clamp01(d / Math.max(0.0001, Lt));
+    // trim_previous = instant expansion at the start node (entry transition fixed to 0m),
+    // while keeping configured transition for the exit end of the 3L tramo.
+    const entry = trimPrevMode ? 1 : clamp01(d / Math.max(0.0001, Lt));
     const exit = clamp01((L - d) / Math.max(0.0001, Lt));
     const w = ROAD_EXTRA_LANE_WIDTH_M * Math.min(entry, exit);
     if (w <= 1e-4) {
-      if (trimPrevMode && inTrimPrevRange) {
-        continue;
-      }
       return {
         ...profile,
         d,
@@ -5832,9 +5817,11 @@ function renderLaneProfileEntryTrimPatches(THREE, routeGroup) {
       x: node.x + nextRight.x * nextCenterShift,
       y: node.y + nextRight.y * nextCenterShift,
     };
+    // Keep trim depth automatic and stable for trim_previous mode (independent from Transition(m)).
+    const autoTrimDepthM = ROAD_EXTRA_LANE_WIDTH_M + 0.9;
     const maxTrim = Math.max(
       0.8,
-      Math.min(prevLen * 0.72, Math.max(1.2, Number(profile.transitionLengthM) || LANE_PROFILE_TRANSITION_DEFAULT_M)),
+      Math.min(prevLen * 0.72, autoTrimDepthM),
     );
 
     for (const sideSign of [1, -1]) {
