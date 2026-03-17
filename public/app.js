@@ -6003,11 +6003,21 @@ function rebuildThreeRouteScene() {
     for (const dividerOffset of currentDividerOffsets) {
       const hasPrevMatch = hasLaneDividerOffsetMatch(dividerOffset, prevDividerOffsets);
       const hasNextMatch = hasLaneDividerOffsetMatch(dividerOffset, nextDividerOffsets);
+      // Drop isolated divider fragments that appear at 2->3 / 3->2 transition corners.
+      if (!hasPrevMatch && !hasNextMatch) {
+        continue;
+      }
       const baseDividerLen = len * 0.8;
       const edgeTrim = Math.min(0.95, baseDividerLen * 0.45);
       const trimStart = hasPrevMatch ? 0 : edgeTrim;
       const trimEnd = hasNextMatch ? 0 : edgeTrim;
       const dividerLen = baseDividerLen - trimStart - trimEnd;
+      const hasOneSidedContinuation = hasPrevMatch !== hasNextMatch;
+      // Avoid tiny one-sided divider remnants at sharp 2->3 / 3->2 corners.
+      // They appear as floating mini-dashes with mixed heading.
+      if (hasOneSidedContinuation && dividerLen < 0.95) {
+        continue;
+      }
       if (dividerLen < 0.22) {
         continue;
       }
