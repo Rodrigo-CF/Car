@@ -6056,6 +6056,23 @@ function rebuildThreeRouteScene() {
     const trimPrevEntryFactor = trimPrevEntryZoneM > 0
       ? clamp01(1 - ((Number(activeLaneProfile?.d) || 0) / trimPrevEntryZoneM))
       : 0;
+    let trimPrevNextEntryFactor = 0;
+    if (i + 2 < path.length && !path[i + 2].move) {
+      const nx = path[i + 2].x - b.x;
+      const ny = path[i + 2].y - b.y;
+      const nLen = Math.hypot(nx, ny);
+      if (nLen > 0.001) {
+        const sampleDist = Math.min(0.42, nLen * 0.35);
+        const sampleX = b.x + (nx / nLen) * sampleDist;
+        const sampleY = b.y + (ny / nLen) * sampleDist;
+        const nextFrame = routeFrameAt(sampleX, sampleY, Math.atan2(ny, nx), i + 1);
+        const nextProfile = laneProfile3StateAtFrame(nextFrame, profileCheckpoints, profileRoutePath);
+        if (nextProfile?.expansionMode === "trim_previous") {
+          const nextEntryZoneM = Math.max(1.8, Math.min(4.6, ROAD_EXTRA_LANE_WIDTH_M * 1.4));
+          trimPrevNextEntryFactor = clamp01(1 - ((Number(nextProfile.d) || 0) / nextEntryZoneM));
+        }
+      }
+    }
     const roadLeft = halfWidths.left;
     const roadRight = halfWidths.right;
     const isAsymmetric = Math.abs(roadRight - roadLeft) > 0.05;
@@ -6139,6 +6156,12 @@ function rebuildThreeRouteScene() {
       if (trimPrevEntryFactor > 0 && hasPrevMatch) {
         const entryTrimCap = Math.min(0.78, baseDividerLen * 0.56);
         effectiveTrimStart = Math.max(effectiveTrimStart, entryTrimCap * trimPrevEntryFactor);
+      }
+      // Also trim the tail of the previous segment when the *next* segment starts
+      // a trim_previous 3L entry; this removes the aligned-side corner bulge.
+      if (trimPrevNextEntryFactor > 0 && hasNextMatch) {
+        const preEntryTrimCap = Math.min(0.78, baseDividerLen * 0.56);
+        effectiveTrimEnd = Math.max(effectiveTrimEnd, preEntryTrimCap * trimPrevNextEntryFactor);
       }
       const dividerLen = baseDividerLen - effectiveTrimStart - effectiveTrimEnd;
       const hasOneSidedContinuation = hasPrevMatch !== hasNextMatch;
