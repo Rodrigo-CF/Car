@@ -3626,6 +3626,55 @@ function chaikinSmoothSegment(segment, iterations = ROAD_RENDER_SMOOTH_ITERATION
   return result;
 }
 
+function chaikinSmoothSegmentEdgeLocked(
+  segment,
+  iterations = ROAD_RENDER_SMOOTH_ITERATIONS,
+  lockStartEdge = false,
+  lockEndEdge = false,
+) {
+  let result = segment.map((point) => ({ x: point.x, y: point.y }));
+  for (let iter = 0; iter < iterations; iter += 1) {
+    if (result.length < 3) {
+      break;
+    }
+    // With very short pieces, locking both ends can produce duplicates.
+    if (lockStartEdge && lockEndEdge && result.length <= 4) {
+      break;
+    }
+
+    const next = [];
+    if (lockStartEdge) {
+      next.push(result[0], result[1]);
+    } else {
+      next.push(result[0]);
+    }
+
+    const startPair = lockStartEdge ? 1 : 0;
+    const endPairExclusive = (result.length - 1) - (lockEndEdge ? 1 : 0);
+    for (let i = startPair; i < endPairExclusive; i += 1) {
+      const a = result[i];
+      const b = result[i + 1];
+      next.push({
+        x: a.x * 0.75 + b.x * 0.25,
+        y: a.y * 0.75 + b.y * 0.25,
+      });
+      next.push({
+        x: a.x * 0.25 + b.x * 0.75,
+        y: a.y * 0.25 + b.y * 0.75,
+      });
+    }
+
+    if (lockEndEdge) {
+      next.push(result[result.length - 2], result[result.length - 1]);
+    } else {
+      next.push(result[result.length - 1]);
+    }
+
+    result = next;
+  }
+  return result;
+}
+
 function isNearLockedRenderCorner(point, lockedCorners, toleranceSq = 0.01) {
   if (!point || !Array.isArray(lockedCorners) || !lockedCorners.length) {
     return false;
@@ -3676,19 +3725,29 @@ function chaikinSmoothSegmentWithLockedCorners(
 
   const pieces = [];
   let current = [{ x: segment[0].x, y: segment[0].y }];
+  let currentStartLocked = isNearLockedRenderCorner(segment[0], lockedCorners);
   for (let i = 1; i < segment.length - 1; i += 1) {
     const point = segment[i];
     current.push({ x: point.x, y: point.y });
     if (isNearLockedRenderCorner(point, lockedCorners)) {
       if (current.length >= 2) {
-        pieces.push(current);
+        pieces.push({
+          points: current,
+          startLocked: currentStartLocked,
+          endLocked: true,
+        });
       }
       current = [{ x: point.x, y: point.y }];
+      currentStartLocked = true;
     }
   }
   current.push({ x: segment[segment.length - 1].x, y: segment[segment.length - 1].y });
   if (current.length >= 2) {
-    pieces.push(current);
+    pieces.push({
+      points: current,
+      startLocked: currentStartLocked,
+      endLocked: isNearLockedRenderCorner(segment[segment.length - 1], lockedCorners),
+    });
   }
 
   if (!pieces.length) {
@@ -3697,7 +3756,13 @@ function chaikinSmoothSegmentWithLockedCorners(
 
   const merged = [];
   for (let i = 0; i < pieces.length; i += 1) {
-    const smoothed = chaikinSmoothSegment(pieces[i], iterations);
+    const piece = pieces[i];
+    const smoothed = chaikinSmoothSegmentEdgeLocked(
+      piece.points,
+      iterations,
+      piece.startLocked,
+      piece.endLocked,
+    );
     for (let j = 0; j < smoothed.length; j += 1) {
       if (merged.length && j === 0) {
         continue;
