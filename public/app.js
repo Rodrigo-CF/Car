@@ -6300,6 +6300,18 @@ function rebuildThreeRouteScene() {
   const shoulderMat = new THREE.MeshStandardMaterial({ color: 0x4f3f33, roughness: 1, metalness: 0 });
   const lineMat = new THREE.MeshStandardMaterial({ color: 0xe7eaee, roughness: 0.65, metalness: 0 });
   const grassMat = new THREE.MeshStandardMaterial({ color: 0x496949, roughness: 1, metalness: 0 });
+  const transitionRoadMat = new THREE.MeshStandardMaterial({
+    color: 0x2e343b,
+    roughness: 0.95,
+    metalness: 0.03,
+    side: THREE.DoubleSide,
+  });
+  const transitionShoulderMat = new THREE.MeshStandardMaterial({
+    color: 0x4f3f33,
+    roughness: 1,
+    metalness: 0,
+    side: THREE.DoubleSide,
+  });
 
   const bounds = state.sim.routeBounds ?? computeRouteBounds(state.sim.routeDensePath);
   const groundW = Math.max(180, bounds.maxX - bounds.minX + 120);
@@ -6317,6 +6329,59 @@ function rebuildThreeRouteScene() {
   const linePath = smoothRenderPath(rawPath, { lockTrimPreviousCorners: false });
   const profileCheckpoints = state.sim.route?.checkpoints || [];
   const profileRoutePath = state.sim.routePath?.length ? state.sim.routePath : state.sim.routeDensePath;
+  const renderRoadTransitionSlice = (p0, p1, heading, startHalf, endHalf) => {
+    if (!p0 || !p1 || !startHalf || !endHalf) {
+      return;
+    }
+    const segLen = Math.hypot(Number(p1.x) - Number(p0.x), Number(p1.y) - Number(p0.y));
+    if (segLen < 0.12) {
+      return;
+    }
+    const right = { x: Math.sin(heading), y: -Math.cos(heading) };
+
+    const startLeft = Number(startHalf.left) || (ROAD_BASE_WIDTH_M * 0.5);
+    const startRight = Number(startHalf.right) || (ROAD_BASE_WIDTH_M * 0.5);
+    const endLeft = Number(endHalf.left) || (ROAD_BASE_WIDTH_M * 0.5);
+    const endRight = Number(endHalf.right) || (ROAD_BASE_WIDTH_M * 0.5);
+
+    const startCenterShift = (startRight - startLeft) * 0.5;
+    const endCenterShift = (endRight - endLeft) * 0.5;
+    const c0 = { x: p0.x + right.x * startCenterShift, y: p0.y + right.y * startCenterShift };
+    const c1 = { x: p1.x + right.x * endCenterShift, y: p1.y + right.y * endCenterShift };
+
+    const roadCorners = [
+      { x: c0.x - right.x * startLeft, y: c0.y - right.y * startLeft },
+      { x: c1.x - right.x * endLeft, y: c1.y - right.y * endLeft },
+      { x: c1.x + right.x * endRight, y: c1.y + right.y * endRight },
+      { x: c0.x + right.x * startRight, y: c0.y + right.y * startRight },
+    ];
+    const shoulderCorners = [
+      {
+        x: c0.x - right.x * (startLeft + ROAD_SHOULDER_HALF_EXTRA_M),
+        y: c0.y - right.y * (startLeft + ROAD_SHOULDER_HALF_EXTRA_M),
+      },
+      {
+        x: c1.x - right.x * (endLeft + ROAD_SHOULDER_HALF_EXTRA_M),
+        y: c1.y - right.y * (endLeft + ROAD_SHOULDER_HALF_EXTRA_M),
+      },
+      {
+        x: c1.x + right.x * (endRight + ROAD_SHOULDER_HALF_EXTRA_M),
+        y: c1.y + right.y * (endRight + ROAD_SHOULDER_HALF_EXTRA_M),
+      },
+      {
+        x: c0.x + right.x * (startRight + ROAD_SHOULDER_HALF_EXTRA_M),
+        y: c0.y + right.y * (startRight + ROAD_SHOULDER_HALF_EXTRA_M),
+      },
+    ];
+
+    const shoulder = new THREE.Mesh(buildGroundQuadGeometry(THREE, shoulderCorners), transitionShoulderMat);
+    shoulder.position.y = 0.005;
+    routeGroup.add(shoulder);
+
+    const road = new THREE.Mesh(buildGroundQuadGeometry(THREE, roadCorners), transitionRoadMat);
+    road.position.y = 0.02;
+    routeGroup.add(road);
+  };
   for (let i = 0; i < roadPath.length - 1; i += 1) {
     const a = roadPath[i];
     const b = roadPath[Math.min(i + 1, roadPath.length - 1)];
@@ -6349,6 +6414,31 @@ function rebuildThreeRouteScene() {
     const trimPrevEntryFactor = trimPrevEntryZoneM > 0
       ? clamp01(1 - (trimPrevEntryDistanceM / trimPrevEntryZoneM))
       : 0;
+    const startHalfWidths = routeRoadHalfWidthsAt(a.x, a.y, segHeadingMap);
+    const endHalfWidths = routeRoadHalfWidthsAt(b.x, b.y, segHeadingMap);
+    const startProfileWidth = Number(startHalfWidths?.profileState?.w) || 0;
+    const endProfileWidth = Number(endHalfWidths?.profileState?.w) || 0;
+    const isLaneProfileExitTransition = startProfileWidth > endProfileWidth + 0.02;
+    if (isLaneProfileExitTransition) {
+      const sliceStepM = 0.34;
+      const slices = Math.max(2, Math.min(24, Math.ceil(len / sliceStepM)));
+      for (let s = 0; s < slices; s += 1) {
+        const t0 = s / slices;
+        const t1 = (s + 1) / slices;
+        const p0 = {
+          x: lerpNumber(a.x, b.x, t0),
+          y: lerpNumber(a.y, b.y, t0),
+        };
+        const p1 = {
+          x: lerpNumber(a.x, b.x, t1),
+          y: lerpNumber(a.y, b.y, t1),
+        };
+        const h0 = routeRoadHalfWidthsAt(p0.x, p0.y, segHeadingMap);
+        const h1 = routeRoadHalfWidthsAt(p1.x, p1.y, segHeadingMap);
+        renderRoadTransitionSlice(p0, p1, segHeadingMap, h0, h1);
+      }
+      continue;
+    }
     const roadLeft = halfWidths.left;
     const roadRight = halfWidths.right;
     const isAsymmetric = Math.abs(roadRight - roadLeft) > 0.05;
