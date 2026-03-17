@@ -5950,11 +5950,10 @@ function renderLaneProfileEntryTrimPatches(THREE, routeGroup) {
   }
 
   const edgePointForSide = (node, right, leftHalf, rightHalf, sideSign) => {
-    const centerShift = (rightHalf - leftHalf) * 0.5;
-    const center = {
-      x: node.x + right.x * centerShift,
-      y: node.y + right.y * centerShift,
-    };
+    // leftHalf/rightHalf are distances from the route centerline (node),
+    // not from a shifted local center. Using centerShift here over-pulls one side
+    // at asymmetric (2L->3L) joins and causes visible bulges.
+    const center = { x: node.x, y: node.y };
     const sideOffset = sideSign > 0 ? rightHalf : -leftHalf;
     return {
       x: center.x + right.x * sideOffset,
