@@ -6023,6 +6023,8 @@ function rebuildThreeRouteScene() {
 
   const rawPath = state.sim.routeDensePath?.length ? state.sim.routeDensePath : state.sim.routePath;
   const path = smoothRenderPath(rawPath);
+  const profileCheckpoints = state.sim.route?.checkpoints || [];
+  const profileRoutePath = state.sim.routePath?.length ? state.sim.routePath : state.sim.routeDensePath;
   for (let i = 0; i < path.length - 1; i += 1) {
     const a = path[i];
     const b = path[Math.min(i + 1, path.length - 1)];
@@ -6046,6 +6048,14 @@ function rebuildThreeRouteScene() {
     const segHeadingMap = Math.atan2(b.y - a.y, b.x - a.x);
     const rightMap = { x: Math.sin(segHeadingMap), y: -Math.cos(segHeadingMap) };
     const halfWidths = routeRoadHalfWidthsAt(mx, -mz, segHeadingMap);
+    const profileFrame = routeFrameAt(mx, -mz, segHeadingMap, i);
+    const activeLaneProfile = laneProfile3StateAtFrame(profileFrame, profileCheckpoints, profileRoutePath);
+    const trimPrevEntryZoneM = activeLaneProfile?.expansionMode === "trim_previous"
+      ? Math.max(1.8, Math.min(4.6, ROAD_EXTRA_LANE_WIDTH_M * 1.4))
+      : 0;
+    const trimPrevEntryFactor = trimPrevEntryZoneM > 0
+      ? clamp01(1 - ((Number(activeLaneProfile?.d) || 0) / trimPrevEntryZoneM))
+      : 0;
     const roadLeft = halfWidths.left;
     const roadRight = halfWidths.right;
     const isAsymmetric = Math.abs(roadRight - roadLeft) > 0.05;
@@ -6123,6 +6133,12 @@ function rebuildThreeRouteScene() {
       if (hasNextMatch && endTurnAbs > 0.24) {
         const t = Math.min(1, (endTurnAbs - 0.24) / 1.05);
         effectiveTrimEnd = Math.max(effectiveTrimEnd, turnTrimCap * t);
+      }
+      // In trim_previous entry, the divider that continues from 2L into 3L can
+      // appear as a corner bulge on the aligned side. Add a short, local start trim.
+      if (trimPrevEntryFactor > 0 && hasPrevMatch) {
+        const entryTrimCap = Math.min(0.78, baseDividerLen * 0.56);
+        effectiveTrimStart = Math.max(effectiveTrimStart, entryTrimCap * trimPrevEntryFactor);
       }
       const dividerLen = baseDividerLen - effectiveTrimStart - effectiveTrimEnd;
       const hasOneSidedContinuation = hasPrevMatch !== hasNextMatch;
