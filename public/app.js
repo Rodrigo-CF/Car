@@ -6669,7 +6669,7 @@ function rebuildThreeRouteScene() {
     let dx = bx - ax;
     let dz = bz - az;
     let len = Math.hypot(dx, dz);
-    if (len < 0.4) {
+    if (len < 0.08) {
       continue;
     }
 
@@ -6691,6 +6691,9 @@ function rebuildThreeRouteScene() {
       Math.round(profileFrame.segmentIndex) === Math.round(activeLaneProfile.endSegmentIndex) &&
       clamp01(Number(profileFrame.segmentT)) >= Math.max(0, (exitWindow?.startT ?? 1) - 0.01),
     );
+    if (!refineExitTail && len < 0.4) {
+      continue;
+    }
     const exitProjectionAxis = refineExitTail
       ? laneProfileExitProjectionAxis(activeLaneProfile, profileRoutePath)
       : null;
@@ -6745,7 +6748,7 @@ function rebuildThreeRouteScene() {
       const hasPrevMatch = hasLaneDividerOffsetMatch(dividerOffset, prevDividerOffsets);
       const hasNextMatch = hasLaneDividerOffsetMatch(dividerOffset, nextDividerOffsets);
       // Drop isolated divider fragments that appear at 2->3 / 3->2 transition corners.
-      if (!hasPrevMatch && !hasNextMatch) {
+      if (!hasPrevMatch && !hasNextMatch && !refineExitTail) {
         continue;
       }
       const baseDividerLen = len * 0.8;
@@ -6789,7 +6792,7 @@ function rebuildThreeRouteScene() {
       const hasOneSidedContinuation = hasPrevMatch !== hasNextMatch;
       // Avoid tiny one-sided divider remnants at sharp 2->3 / 3->2 corners.
       // They appear as floating mini-dashes with mixed heading.
-      if (hasOneSidedContinuation && dividerLen < 0.95) {
+      if (hasOneSidedContinuation && dividerLen < 0.95 && !refineExitTail) {
         continue;
       }
       if (dividerLen < 0.22) {
