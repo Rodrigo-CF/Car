@@ -5383,6 +5383,44 @@ function lineIntersection2D(p, dirP, q, dirQ) {
   };
 }
 
+function laneProfileExitProjectionAxis(profile, routePath) {
+  if (!profile || !Array.isArray(routePath) || routePath.length < 2) {
+    return null;
+  }
+  const segIndex = Math.max(0, Math.round(Number(profile.endSegmentIndex) || 0));
+  const a = routePath[segIndex];
+  const b = routePath[segIndex + 1];
+  if (!a || !b || b.move) {
+    return null;
+  }
+  const dx = Number(b.x) - Number(a.x);
+  const dy = Number(b.y) - Number(a.y);
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq < 1e-8) {
+    return null;
+  }
+  return {
+    a: { x: Number(a.x), y: Number(a.y) },
+    b: { x: Number(b.x), y: Number(b.y) },
+    dx,
+    dy,
+    lenSq,
+  };
+}
+
+function projectPointToSegmentAxis(point, axis) {
+  if (!point || !axis) {
+    return point;
+  }
+  const px = Number(point.x) - axis.a.x;
+  const py = Number(point.y) - axis.a.y;
+  const t = clamp01((px * axis.dx + py * axis.dy) / Math.max(1e-8, axis.lenSq));
+  return {
+    x: axis.a.x + axis.dx * t,
+    y: axis.a.y + axis.dy * t,
+  };
+}
+
 function buildGuardTowerGroup(THREE, checkpoint) {
   const size = Math.max(0.75, Math.min(1.8, Number(checkpoint.meta?.size) || 1));
   const placement = guardTowerPlacement(checkpoint);
@@ -6486,15 +6524,26 @@ function rebuildThreeRouteScene() {
       exitDistanceM >= 0 &&
       exitDistanceM <= exitWindowM,
     );
+    const exitProjectionAxis = refineExitTail
+      ? laneProfileExitProjectionAxis(baseActiveLaneProfile, profileRoutePath)
+      : null;
     const subCount = refineExitTail ? Math.min(12, Math.max(3, Math.ceil(len / 0.12))) : 1;
 
     for (let sub = 0; sub < subCount; sub += 1) {
       const t0 = sub / subCount;
       const t1 = (sub + 1) / subCount;
-      const sax = ax + (bx - ax) * t0;
-      const saz = az + (bz - az) * t0;
-      const sbx = ax + (bx - ax) * t1;
-      const sbz = az + (bz - az) * t1;
+      let sax = ax + (bx - ax) * t0;
+      let saz = az + (bz - az) * t0;
+      let sbx = ax + (bx - ax) * t1;
+      let sbz = az + (bz - az) * t1;
+      if (refineExitTail && exitProjectionAxis) {
+        const p0 = projectPointToSegmentAxis({ x: sax, y: -saz }, exitProjectionAxis);
+        const p1 = projectPointToSegmentAxis({ x: sbx, y: -sbz }, exitProjectionAxis);
+        sax = p0.x;
+        saz = -p0.y;
+        sbx = p1.x;
+        sbz = -p1.y;
+      }
       const sdx = sbx - sax;
       const sdz = sbz - saz;
       const slen = Math.hypot(sdx, sdz);
@@ -6565,25 +6614,60 @@ function rebuildThreeRouteScene() {
       continue;
     }
 
-    const ax = a.x;
-    const az = -a.y;
-    const bx = b.x;
-    const bz = -b.y;
-    const dx = bx - ax;
-    const dz = bz - az;
-    const len = Math.hypot(dx, dz);
+    let ax = a.x;
+    let az = -a.y;
+    let bx = b.x;
+    let bz = -b.y;
+    let dx = bx - ax;
+    let dz = bz - az;
+    let len = Math.hypot(dx, dz);
     if (len < 0.4) {
       continue;
     }
 
-    const angle = Math.atan2(dz, dx);
-    const mx = (ax + bx) / 2;
-    const mz = (az + bz) / 2;
-    const segHeadingMap = Math.atan2(b.y - a.y, b.x - a.x);
-    const rightMap = { x: Math.sin(segHeadingMap), y: -Math.cos(segHeadingMap) };
-    const profileFrame = routeFrameAt(mx, -mz, segHeadingMap);
-    const halfWidths = routeRoadHalfWidthsAt(mx, -mz, segHeadingMap);
+    let angle = Math.atan2(dz, dx);
+    let mx = (ax + bx) / 2;
+    let mz = (az + bz) / 2;
+    let segHeadingMap = Math.atan2(b.y - a.y, b.x - a.x);
+    let rightMap = { x: Math.sin(segHeadingMap), y: -Math.cos(segHeadingMap) };
+    let profileFrame = routeFrameAt(mx, -mz, segHeadingMap);
+    let halfWidths = routeRoadHalfWidthsAt(mx, -mz, segHeadingMap);
     const activeLaneProfile = laneProfile3StateAtFrame(profileFrame, profileCheckpoints, profileRoutePath);
+    const exitDistanceM = Number(activeLaneProfile?.totalLength) - Number(activeLaneProfile?.d);
+    const exitWindowM = Math.max(
+      2.2,
+      Math.min(8.5, Number(activeLaneProfile?.transitionLengthM || 0) * 1.15),
+    );
+    const refineExitTail = Boolean(
+      activeLaneProfile &&
+      Number.isFinite(exitDistanceM) &&
+      exitDistanceM >= 0 &&
+      exitDistanceM <= exitWindowM,
+    );
+    const exitProjectionAxis = refineExitTail
+      ? laneProfileExitProjectionAxis(activeLaneProfile, profileRoutePath)
+      : null;
+    if (refineExitTail && exitProjectionAxis) {
+      const p0 = projectPointToSegmentAxis({ x: ax, y: -az }, exitProjectionAxis);
+      const p1 = projectPointToSegmentAxis({ x: bx, y: -bz }, exitProjectionAxis);
+      ax = p0.x;
+      az = -p0.y;
+      bx = p1.x;
+      bz = -p1.y;
+      dx = bx - ax;
+      dz = bz - az;
+      len = Math.hypot(dx, dz);
+      if (len < 0.22) {
+        continue;
+      }
+      angle = Math.atan2(dz, dx);
+      mx = (ax + bx) / 2;
+      mz = (az + bz) / 2;
+      segHeadingMap = Math.atan2(-bz - (-az), bx - ax);
+      rightMap = { x: Math.sin(segHeadingMap), y: -Math.cos(segHeadingMap) };
+      profileFrame = routeFrameAt(mx, -mz, segHeadingMap);
+      halfWidths = routeRoadHalfWidthsAt(mx, -mz, segHeadingMap);
+    }
     const trimPrevEntryZoneM = activeLaneProfile?.expansionMode === "trim_previous"
       ? Math.max(1.8, Math.min(4.6, ROAD_EXTRA_LANE_WIDTH_M * 1.4))
       : 0;
