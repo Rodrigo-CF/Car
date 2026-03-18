@@ -6451,12 +6451,27 @@ function rebuildThreeRouteScene() {
         continue;
       }
 
-      const angle = Math.atan2(sdz, sdx);
       const mx = (sax + sbx) / 2;
       const mz = (saz + sbz) / 2;
       const segHeadingMap = Math.atan2(-sbz - (-saz), sbx - sax);
-      const rightMap = { x: Math.sin(segHeadingMap), y: -Math.cos(segHeadingMap) };
       const halfWidths = routeRoadHalfWidthsAt(mx, -mz, segHeadingMap);
+      // In the 3L->2L tail, anchor geometry to route-frame heading/center
+      // (raw route) so the transition becomes a straight diagonal instead of
+      // inheriting smoothing curvature from render-only path points.
+      const renderHeading = refineExitTail && halfWidths?.frame
+        ? halfWidths.frame.heading
+        : segHeadingMap;
+      const renderCenterX = refineExitTail && halfWidths?.frame
+        ? halfWidths.frame.center.x
+        : mx;
+      const renderCenterY = refineExitTail && halfWidths?.frame
+        ? halfWidths.frame.center.y
+        : -mz;
+      const rightMap = refineExitTail && halfWidths?.frame
+        ? halfWidths.frame.right
+        : { x: Math.sin(segHeadingMap), y: -Math.cos(segHeadingMap) };
+      const angle = -renderHeading;
+      const renderCenterZ = -renderCenterY;
       const roadLeft = halfWidths.left;
       const roadRight = halfWidths.right;
       const roadWidth = roadLeft + roadRight;
@@ -6465,18 +6480,18 @@ function rebuildThreeRouteScene() {
 
       if (!isAsymmetric) {
         const shoulder = new THREE.Mesh(new THREE.BoxGeometry(slen, 0.03, shoulderWidth), shoulderMat);
-        shoulder.position.set(mx, 0.005, mz);
+        shoulder.position.set(renderCenterX, 0.005, renderCenterZ);
         shoulder.rotation.y = -angle;
         routeGroup.add(shoulder);
 
         const road = new THREE.Mesh(new THREE.BoxGeometry(slen, 0.04, roadWidth), roadMat);
-        road.position.set(mx, 0.02, mz);
+        road.position.set(renderCenterX, 0.02, renderCenterZ);
         road.rotation.y = -angle;
         routeGroup.add(road);
       } else {
         const centerShift = (roadRight - roadLeft) * 0.5;
-        const centerX = mx + rightMap.x * centerShift;
-        const centerY = -mz + rightMap.y * centerShift;
+        const centerX = renderCenterX + rightMap.x * centerShift;
+        const centerY = renderCenterY + rightMap.y * centerShift;
         const centerZ = -centerY;
 
         const shoulder = new THREE.Mesh(new THREE.BoxGeometry(slen, 0.03, shoulderWidth), shoulderMat);
