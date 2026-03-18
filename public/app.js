@@ -3794,6 +3794,27 @@ function collectRenderLockedCorners() {
   return corners;
 }
 
+function collectLaneProfileExitNodes(checkpoints = state.sim.route?.checkpoints || [], routePath = state.sim.routePath) {
+  if (!Array.isArray(checkpoints) || !checkpoints.length || !Array.isArray(routePath) || routePath.length < 2) {
+    return [];
+  }
+  const nodes = [];
+  for (const checkpoint of checkpoints) {
+    if (checkpoint?.type !== "lane_profile_3") {
+      continue;
+    }
+    const profile = laneProfile3RuntimeMeta(checkpoint, routePath);
+    if (!profile) {
+      continue;
+    }
+    const endNode = routePath[profile.endNodeIndex];
+    if (endNode && Number.isFinite(endNode.x) && Number.isFinite(endNode.y)) {
+      nodes.push({ x: endNode.x, y: endNode.y });
+    }
+  }
+  return nodes;
+}
+
 function chaikinSmoothSegmentWithLockedCorners(
   segment,
   lockedCorners,
@@ -6425,6 +6446,7 @@ function rebuildThreeRouteScene() {
     profileRoutePath,
     0.12,
   );
+  const laneProfileExitNodes = collectLaneProfileExitNodes(profileCheckpoints, profileRoutePath);
   for (let i = 0; i < roadPath.length - 1; i += 1) {
     const a = roadPath[i];
     const b = roadPath[Math.min(i + 1, roadPath.length - 1)];
@@ -6668,6 +6690,14 @@ function rebuildThreeRouteScene() {
     const hasPrevConnection = Boolean(prev && !point.move);
     const hasNextConnection = Boolean(next && !next.move);
     if (!(hasPrevConnection && hasNextConnection)) {
+      continue;
+    }
+    // Keep 3L->2L tail strictly straight: skip rounded caps near exit nodes.
+    if (
+      isNearLockedRenderCorner(point, laneProfileExitNodes, 0.42 * 0.42) ||
+      isNearLockedRenderCorner(prev, laneProfileExitNodes, 0.36 * 0.36) ||
+      isNearLockedRenderCorner(next, laneProfileExitNodes, 0.36 * 0.36)
+    ) {
       continue;
     }
 
