@@ -6599,21 +6599,12 @@ function rebuildThreeRouteScene() {
       const mz = (saz + sbz) / 2;
       const segHeadingMap = Math.atan2(-sbz - (-saz), sbx - sax);
       const halfWidths = routeRoadHalfWidthsAt(mx, -mz, segHeadingMap);
-      // In the 3L->2L tail, anchor geometry to route-frame heading/center
-      // (raw route) so the transition becomes a straight diagonal instead of
-      // inheriting smoothing curvature from render-only path points.
-      const renderHeading = subRefineExitTail && halfWidths?.frame
-        ? halfWidths.frame.heading
-        : segHeadingMap;
-      const renderCenterX = subRefineExitTail && halfWidths?.frame
-        ? halfWidths.frame.center.x
-        : mx;
-      const renderCenterY = subRefineExitTail && halfWidths?.frame
-        ? halfWidths.frame.center.y
-        : -mz;
-      const rightMap = subRefineExitTail && halfWidths?.frame
-        ? halfWidths.frame.right
-        : { x: Math.sin(segHeadingMap), y: -Math.cos(segHeadingMap) };
+      // In the 3L->2L tail, keep geometry on the projected axis directly.
+      // Re-anchoring to route-frame center can reintroduce node-end curvature.
+      const renderHeading = segHeadingMap;
+      const renderCenterX = mx;
+      const renderCenterY = -mz;
+      const rightMap = { x: Math.sin(segHeadingMap), y: -Math.cos(segHeadingMap) };
       const angle = -renderHeading;
       const renderCenterZ = -renderCenterY;
       const roadLeft = halfWidths.left;
