@@ -204,7 +204,7 @@ const LANE_PROFILE_TRANSITION_MIN_M = 1.5;
 const LANE_PROFILE_TRANSITION_MAX_M = 20;
 // Do not let 3L->2L straight ramp start too late, otherwise node-end
 // smoothing curvature becomes visible before the diagonal transition.
-const LANE_PROFILE_EXIT_START_T_MAX = 0.45;
+const LANE_PROFILE_EXIT_START_T_MAX = 0.72;
 // Keep 3L -> 2L collapse constrained to the final segment so the
 // transition is a single straight diagonal (not multi-part/curved).
 const LANE_PROFILE_EXIT_TAIL_SEGMENTS = 1;
@@ -4240,8 +4240,8 @@ function laneProfileExitStraightWindow(profile, routePath) {
   // We use a bounded estimate based on render density/smoothing so the straight
   // diagonal begins right before that curved zone.
   const smoothLeadEstimate = Math.max(
-    2.2,
-    Math.min(6.2, ROAD_RENDER_DENSE_STEP_M * (2.4 + ROAD_RENDER_SMOOTH_ITERATIONS * 1.85)),
+    1.6,
+    Math.min(4.2, ROAD_RENDER_DENSE_STEP_M * (1.8 + ROAD_RENDER_SMOOTH_ITERATIONS * 1.35)),
   );
   const straightLen = Math.max(
     1.1,
