@@ -6693,7 +6693,8 @@ function rebuildThreeRouteScene() {
       Math.round(profileFrame.segmentIndex) === Math.round(activeLaneProfile.endSegmentIndex) &&
       clamp01(Number(profileFrame.segmentT)) >= Math.max(0, (exitWindow?.startT ?? 1) - 0.01),
     );
-    if (!refineExitTail && len < 0.4) {
+    const profileTransitionContext = Boolean(activeLaneProfile);
+    if (!refineExitTail && profileTransitionContext && len < 0.4) {
       continue;
     }
     const exitProjectionAxis = refineExitTail
@@ -6807,7 +6808,7 @@ function rebuildThreeRouteScene() {
         hasNextMatch = true;
       }
       // Drop isolated divider fragments that appear at 2->3 / 3->2 transition corners.
-      if (!hasPrevMatch && !hasNextMatch && !refineExitTail) {
+      if (!hasPrevMatch && !hasNextMatch && !refineExitTail && profileTransitionContext) {
         continue;
       }
       // Keep native dashed appearance in exit-tail too.
@@ -6821,11 +6822,11 @@ function rebuildThreeRouteScene() {
       // On sharp corners, a full continuity match can still create a visible "bulge"
       // from overlapping dash boxes; gently trim each side by turn intensity.
       const turnTrimCap = Math.min(0.62, baseDividerLen * 0.34);
-      if (!refineExitTail && hasPrevMatch && startTurnAbs > 0.24) {
+      if (!refineExitTail && profileTransitionContext && hasPrevMatch && startTurnAbs > 0.24) {
         const t = Math.min(1, (startTurnAbs - 0.24) / 1.05);
         effectiveTrimStart = Math.max(effectiveTrimStart, turnTrimCap * t);
       }
-      if (!refineExitTail && hasNextMatch && endTurnAbs > 0.24) {
+      if (!refineExitTail && profileTransitionContext && hasNextMatch && endTurnAbs > 0.24) {
         const t = Math.min(1, (endTurnAbs - 0.24) / 1.05);
         effectiveTrimEnd = Math.max(effectiveTrimEnd, turnTrimCap * t);
       }
@@ -6853,10 +6854,11 @@ function rebuildThreeRouteScene() {
       const hasOneSidedContinuation = hasPrevMatch !== hasNextMatch;
       // Avoid tiny one-sided divider remnants at sharp 2->3 / 3->2 corners.
       // They appear as floating mini-dashes with mixed heading.
-      if (hasOneSidedContinuation && dividerLen < 0.95 && !refineExitTail) {
+      if (hasOneSidedContinuation && dividerLen < 0.95 && !refineExitTail && profileTransitionContext) {
         continue;
       }
-      if (dividerLen < (refineExitTail ? 0.08 : 0.22)) {
+      const minDividerLen = refineExitTail ? 0.08 : (profileTransitionContext ? 0.22 : 0.08);
+      if (dividerLen < minDividerLen) {
         continue;
       }
       const shiftAlong = (effectiveTrimStart - effectiveTrimEnd) * 0.5;
