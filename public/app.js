@@ -6720,6 +6720,11 @@ function rebuildThreeRouteScene() {
       profileFrame = routeFrameAt(mx, -mz, segHeadingMap);
       halfWidths = routeRoadHalfWidthsAt(mx, -mz, segHeadingMap);
     }
+    // User preference: do not draw divider lines in the 3L->2L tail.
+    // This prevents custom-looking micro/continuous lines in the transition area.
+    if (refineExitTail) {
+      continue;
+    }
     const trimPrevEntryZoneM = activeLaneProfile?.expansionMode === "trim_previous"
       ? Math.max(1.8, Math.min(4.6, ROAD_EXTRA_LANE_WIDTH_M * 1.4))
       : 0;
