@@ -6803,7 +6803,8 @@ function rebuildThreeRouteScene() {
       if (isCollapseDivider && Number.isFinite(collapseAnchorOffset)) {
         renderOffset = collapseAnchorOffset;
         hasPrevMatch = true;
-        hasNextMatch = false;
+        // Keep native dash cadence in the straight tail (same look as upstream dashes).
+        hasNextMatch = true;
       }
       // Drop isolated divider fragments that appear at 2->3 / 3->2 transition corners.
       if (!hasPrevMatch && !hasNextMatch && !refineExitTail) {
