@@ -4367,6 +4367,17 @@ function routeLaneDividerOffsets(halfWidths) {
   if (totalExtra < collapseThreshold) {
     return [0];
   }
+  if (isProfileExitSeg) {
+    // Keep the 2-lane centerline alive through the full 3L->2L transition,
+    // while collapsing only the extra divider toward center.
+    const dominantSide = Math.sign(right - left) || Math.sign(Number(profile?.s) || 0) || 1;
+    const collapse = Math.max(0, Math.min(1, totalExtra / Math.max(0.0001, ROAD_EXTRA_LANE_WIDTH_M)));
+    const movingDivider = dominantSide * (ROAD_BASE_WIDTH_M * 0.5) * collapse;
+    if (Math.abs(movingDivider) < 0.04) {
+      return [0];
+    }
+    return [0, movingDivider];
+  }
   const blend = Math.max(0, Math.min(1, totalExtra / Math.max(0.0001, ROAD_EXTRA_LANE_WIDTH_M)));
   const sideBias = Math.max(-1, Math.min(1, (right - left) / Math.max(0.0001, totalExtra)));
   const t = (sideBias + 1) * 0.5;
