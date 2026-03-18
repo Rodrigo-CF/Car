@@ -3618,16 +3618,11 @@ function densifyPathNearLaneProfileExit(points, checkpoints, routePath, step = 0
     const heading = Math.atan2(dy, dx);
     const frame = routeFrameAt(mx, my, heading);
     const profile = laneProfile3StateAtFrame(frame, checkpoints, routePath);
-    const exitDistanceM = Number(profile?.totalLength) - Number(profile?.d);
-    const exitWindowM = Math.max(
-      2.2,
-      Math.min(8.5, Number(profile?.transitionLengthM || 0) * 1.15),
-    );
     const nearExit = Boolean(
       profile &&
-      Number.isFinite(exitDistanceM) &&
-      exitDistanceM >= 0 &&
-      exitDistanceM <= exitWindowM,
+      Number.isFinite(frame?.segmentIndex) &&
+      Number.isFinite(profile?.endSegmentIndex) &&
+      Math.round(frame.segmentIndex) === Math.round(profile.endSegmentIndex),
     );
     const slices = nearExit
       ? Math.max(1, Math.ceil(dist / Math.max(0.08, Number(step) || 0.14)))
@@ -4277,7 +4272,9 @@ function laneProfile3StateAtFrame(frame, checkpoints, routePath) {
       for (let seg = tailStartSeg; seg <= profile.endSegmentIndex; seg += 1) {
         tailWindowLen += Math.max(0, routeSegmentLength(routePath, seg));
       }
-      const tailLen = Math.max(0.0001, Math.min(Lt, tailWindowLen));
+      // For straight 3L->2L behavior, consume the whole final segment as exit ramp.
+      // This prevents a "curved first half + straight second half" split.
+      const tailLen = Math.max(0.0001, tailWindowLen);
       exit = clamp01(remainingTailDistance / tailLen);
     }
     const w = ROAD_EXTRA_LANE_WIDTH_M * Math.min(entry, exit);
@@ -6513,16 +6510,11 @@ function rebuildThreeRouteScene() {
 
     // Refine only near the profile exit (3L -> 2L tail) to remove staircase artifacts,
     // while keeping 2L -> 3L trim_previous entry behavior unchanged.
-    const exitDistanceM = Number(baseActiveLaneProfile?.totalLength) - Number(baseActiveLaneProfile?.d);
-    const exitWindowM = Math.max(
-      2.2,
-      Math.min(8.5, Number(baseActiveLaneProfile?.transitionLengthM || 0) * 1.15),
-    );
     const refineExitTail = Boolean(
       baseActiveLaneProfile &&
-      Number.isFinite(exitDistanceM) &&
-      exitDistanceM >= 0 &&
-      exitDistanceM <= exitWindowM,
+      Number.isFinite(baseProfileFrame?.segmentIndex) &&
+      Number.isFinite(baseActiveLaneProfile?.endSegmentIndex) &&
+      Math.round(baseProfileFrame.segmentIndex) === Math.round(baseActiveLaneProfile.endSegmentIndex),
     );
     const exitProjectionAxis = refineExitTail
       ? laneProfileExitProjectionAxis(baseActiveLaneProfile, profileRoutePath)
@@ -6633,16 +6625,11 @@ function rebuildThreeRouteScene() {
     let profileFrame = routeFrameAt(mx, -mz, segHeadingMap);
     let halfWidths = routeRoadHalfWidthsAt(mx, -mz, segHeadingMap);
     const activeLaneProfile = laneProfile3StateAtFrame(profileFrame, profileCheckpoints, profileRoutePath);
-    const exitDistanceM = Number(activeLaneProfile?.totalLength) - Number(activeLaneProfile?.d);
-    const exitWindowM = Math.max(
-      2.2,
-      Math.min(8.5, Number(activeLaneProfile?.transitionLengthM || 0) * 1.15),
-    );
     const refineExitTail = Boolean(
       activeLaneProfile &&
-      Number.isFinite(exitDistanceM) &&
-      exitDistanceM >= 0 &&
-      exitDistanceM <= exitWindowM,
+      Number.isFinite(profileFrame?.segmentIndex) &&
+      Number.isFinite(activeLaneProfile?.endSegmentIndex) &&
+      Math.round(profileFrame.segmentIndex) === Math.round(activeLaneProfile.endSegmentIndex),
     );
     const exitProjectionAxis = refineExitTail
       ? laneProfileExitProjectionAxis(activeLaneProfile, profileRoutePath)
