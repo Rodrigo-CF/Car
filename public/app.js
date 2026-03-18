@@ -6753,10 +6753,12 @@ function rebuildThreeRouteScene() {
       if (!hasPrevMatch && !hasNextMatch && !refineExitTail) {
         continue;
       }
-      const baseDividerLen = refineExitTail ? Math.max(0.34, len * 0.96) : len * 0.8;
+      // Keep native dashed appearance in exit-tail too.
+      // A large min length here turns dashes into continuous lines.
+      const baseDividerLen = len * 0.82;
       const edgeTrim = Math.min(0.95, baseDividerLen * 0.45);
-      const trimStart = refineExitTail ? 0 : (hasPrevMatch ? 0 : edgeTrim);
-      const trimEnd = refineExitTail ? 0 : (hasNextMatch ? 0 : edgeTrim);
+      const trimStart = hasPrevMatch ? 0 : edgeTrim;
+      const trimEnd = hasNextMatch ? 0 : edgeTrim;
       let effectiveTrimStart = trimStart;
       let effectiveTrimEnd = trimEnd;
       // On sharp corners, a full continuity match can still create a visible "bulge"
