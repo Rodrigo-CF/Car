@@ -4355,7 +4355,16 @@ function routeLaneDividerOffsets(halfWidths) {
   const left = Number(halfWidths?.left) || ROAD_BASE_WIDTH_M * 0.5;
   const right = Number(halfWidths?.right) || ROAD_BASE_WIDTH_M * 0.5;
   const totalExtra = Math.max(0, left + right - ROAD_BASE_WIDTH_M);
-  if (totalExtra < 0.12) {
+  const profile = halfWidths?.profileState || null;
+  const frameSeg = Number(halfWidths?.frame?.segmentIndex);
+  const isProfileExitSeg = Boolean(
+    profile &&
+    Number.isFinite(frameSeg) &&
+    Number.isFinite(profile?.endSegmentIndex) &&
+    Math.round(frameSeg) === Math.round(profile.endSegmentIndex),
+  );
+  const collapseThreshold = isProfileExitSeg ? 0.008 : 0.12;
+  if (totalExtra < collapseThreshold) {
     return [0];
   }
   const blend = Math.max(0, Math.min(1, totalExtra / Math.max(0.0001, ROAD_EXTRA_LANE_WIDTH_M)));
