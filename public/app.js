@@ -6728,16 +6728,32 @@ function rebuildThreeRouteScene() {
       ? clamp01(1 - (trimPrevEntryDistanceM / trimPrevEntryZoneM))
       : 0;
 
-    let currentDividerOffsets = routeLaneDividerOffsets(halfWidths);
+    const currentDividerOffsets = routeLaneDividerOffsets(halfWidths);
     const prevDividerOffsets = i > 0 && !a.move ? routeLaneDividerOffsetsForSegment(lineRenderPath, i - 1) : [];
     const nextDividerOffsets = i + 2 < lineRenderPath.length && !lineRenderPath[i + 2].move
       ? routeLaneDividerOffsetsForSegment(lineRenderPath, i + 1)
       : [];
-    let forcedExitKeepOffset = null;
-    if (refineExitTail && exitProjectionAxis && nextDividerOffsets.length) {
-      // Keep the 3->2 transition dashes "native":
-      // - one divider stays straight and continues as 2-lane centerline
-      // - the collapsing divider stays straight and simply ends at merge
+    let collapseCurrentOffset = NaN;
+    let collapseAnchorOffset = NaN;
+    let collapseNextTarget = NaN;
+    if (refineExitTail && exitProjectionAxis && nextDividerOffsets.length && currentDividerOffsets.length > 1) {
+      // Isolate only the collapsing divider in 3->2 tail:
+      // keep it straight and let it end at the merge.
+      collapseNextTarget =
+        nextDividerOffsets.reduce((sum, value) => sum + Number(value || 0), 0) /
+        Math.max(1, nextDividerOffsets.length);
+      collapseCurrentOffset = currentDividerOffsets.reduce((best, candidate) => {
+        if (!Number.isFinite(candidate)) {
+          return best;
+        }
+        if (!Number.isFinite(best)) {
+          return candidate;
+        }
+        return Math.abs(candidate - collapseNextTarget) > Math.abs(best - collapseNextTarget)
+          ? candidate
+          : best;
+      }, NaN);
+
       const axisHeading = Math.atan2(exitProjectionAxis.dy, exitProjectionAxis.dx);
       const anchorT = Math.max(0, Math.min(1, (exitWindow?.startT ?? 1) - 0.03));
       const anchorX = exitProjectionAxis.a.x + exitProjectionAxis.dx * anchorT;
@@ -6749,26 +6765,18 @@ function rebuildThreeRouteScene() {
         Math.round(Number(activeLaneProfile?.endSegmentIndex) || 0),
       );
       const anchorOffsets = routeLaneDividerOffsets(anchorHalfWidths);
-      const nextTargetOffset =
-        nextDividerOffsets.reduce((sum, value) => sum + Number(value || 0), 0) / nextDividerOffsets.length;
-      forcedExitKeepOffset = nextTargetOffset;
-      let straightEndOffset = null;
       if (anchorOffsets.length > 1) {
-        straightEndOffset = anchorOffsets.reduce((best, candidate) => {
+        collapseAnchorOffset = anchorOffsets.reduce((best, candidate) => {
           if (!Number.isFinite(candidate)) {
             return best;
           }
           if (!Number.isFinite(best)) {
             return candidate;
           }
-          return Math.abs(candidate - nextTargetOffset) > Math.abs(best - nextTargetOffset)
+          return Math.abs(candidate - collapseNextTarget) > Math.abs(best - collapseNextTarget)
             ? candidate
             : best;
         }, NaN);
-      }
-      currentDividerOffsets = [nextTargetOffset];
-      if (Number.isFinite(straightEndOffset) && Math.abs(straightEndOffset - nextTargetOffset) > 0.06) {
-        currentDividerOffsets.unshift(straightEndOffset);
       }
     }
     const prevHeading = i > 0 && !a.move
@@ -6785,11 +6793,17 @@ function rebuildThreeRouteScene() {
       ? 0
       : normalizeHeadingDeltaRad(nextHeading, segmentHeading);
     for (const dividerOffset of currentDividerOffsets) {
+      let renderOffset = dividerOffset;
       let hasPrevMatch = hasLaneDividerOffsetMatch(dividerOffset, prevDividerOffsets);
       let hasNextMatch = hasLaneDividerOffsetMatch(dividerOffset, nextDividerOffsets);
-      if (refineExitTail && Number.isFinite(forcedExitKeepOffset)) {
+      const isCollapseDivider =
+        refineExitTail &&
+        Number.isFinite(collapseCurrentOffset) &&
+        Math.abs(dividerOffset - collapseCurrentOffset) <= 0.12;
+      if (isCollapseDivider && Number.isFinite(collapseAnchorOffset)) {
+        renderOffset = collapseAnchorOffset;
         hasPrevMatch = true;
-        hasNextMatch = Math.abs(dividerOffset - forcedExitKeepOffset) <= 0.08;
+        hasNextMatch = false;
       }
       // Drop isolated divider fragments that appear at 2->3 / 3->2 transition corners.
       if (!hasPrevMatch && !hasNextMatch && !refineExitTail) {
@@ -6847,8 +6861,8 @@ function rebuildThreeRouteScene() {
       const shiftAlong = (effectiveTrimStart - effectiveTrimEnd) * 0.5;
       const dirX = dx / Math.max(0.001, len);
       const dirZ = dz / Math.max(0.001, len);
-      const dividerX = mx + rightMap.x * dividerOffset;
-      const dividerY = -mz + rightMap.y * dividerOffset;
+      const dividerX = mx + rightMap.x * renderOffset;
+      const dividerY = -mz + rightMap.y * renderOffset;
       const divider = new THREE.Mesh(new THREE.BoxGeometry(dividerLen, 0.042, 0.14), lineMat);
       divider.position.set(dividerX + dirX * shiftAlong, 0.043, -dividerY - dirZ * shiftAlong);
       divider.rotation.y = -angle;
