@@ -4241,9 +4241,7 @@ function laneProfileExitStraightWindow(profile, routePath) {
     Math.min(segLen, transitionLen),
   );
   const startTRaw = clamp01((segLen - straightLen) / Math.max(0.0001, segLen));
-  // Let Transition(m) directly control how late the 3->2 collapse starts.
-  // A tiny epsilon avoids zero-length tail numerical noise.
-  const startT = Math.min(startTRaw, 0.995);
+  const startT = Math.min(startTRaw, LANE_PROFILE_EXIT_START_T_MAX);
   return {
     startT,
     segLen,
@@ -6577,7 +6575,19 @@ function rebuildThreeRouteScene() {
       let saz = az + (bz - az) * t0;
       let sbx = ax + (bx - ax) * t1;
       let sbz = az + (bz - az) * t1;
-      const subRefineExitTail = Boolean(segmentTouchesExitTail && exitProjectionAxis);
+      let subRefineExitTail = false;
+      if (segmentTouchesExitTail) {
+        const probeMx = (sax + sbx) * 0.5;
+        const probeMy = -((saz + sbz) * 0.5);
+        const probeHeading = Math.atan2(-sbz - (-saz), sbx - sax);
+        const probeFrame = routeFrameAt(probeMx, probeMy, probeHeading);
+        subRefineExitTail = Boolean(
+          probeFrame &&
+          Number.isFinite(probeFrame.segmentT) &&
+          Number.isFinite(baseExitWindow?.startT) &&
+          clamp01(Number(probeFrame.segmentT)) >= Math.max(0, baseExitWindow.startT - 0.01),
+        );
+      }
       if (subRefineExitTail && exitProjectionAxis) {
         const p0 = projectPointToSegmentAxis({ x: sax, y: -saz }, exitProjectionAxis, false);
         const p1 = projectPointToSegmentAxis({ x: sbx, y: -sbz }, exitProjectionAxis, false);
