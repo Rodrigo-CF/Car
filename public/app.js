@@ -202,6 +202,7 @@ const LANE_ADD_EFFECT_RADIUS_M = 14;
 const LANE_PROFILE_TRANSITION_DEFAULT_M = 8;
 const LANE_PROFILE_TRANSITION_MIN_M = 1.5;
 const LANE_PROFILE_TRANSITION_MAX_M = 20;
+const LANE_PROFILE_EXIT_TAIL_SEGMENTS = 2;
 const ROAD_RENDER_SMOOTH_ITERATIONS = 2;
 const LINE_RENDER_SMOOTH_ITERATIONS = 1;
 const ROAD_RENDER_JOINT_SEGMENTS = 24;
@@ -3770,14 +3771,25 @@ function collectRenderLockedCorners() {
       continue;
     }
     const profile = laneProfile3RuntimeMeta(checkpoint, routePath);
-    if (!profile || profile.expansionMode !== "trim_previous") {
+    if (!profile) {
       continue;
     }
-    const node = routePath[profile.startNodeIndex];
-    if (!node || !Number.isFinite(node.x) || !Number.isFinite(node.y)) {
-      continue;
+    if (profile.expansionMode === "trim_previous") {
+      const startNode = routePath[profile.startNodeIndex];
+      if (startNode && Number.isFinite(startNode.x) && Number.isFinite(startNode.y)) {
+        corners.push({ x: startNode.x, y: startNode.y });
+      }
     }
-    corners.push({ x: node.x, y: node.y });
+    // Also lock the tail around 3L->2L exit to avoid residual default curve.
+    const endNode = routePath[profile.endNodeIndex];
+    if (endNode && Number.isFinite(endNode.x) && Number.isFinite(endNode.y)) {
+      corners.push({ x: endNode.x, y: endNode.y });
+    }
+    const preEndIndex = Math.max(profile.startNodeIndex, profile.endNodeIndex - 1);
+    const preEndNode = routePath[preEndIndex];
+    if (preEndNode && Number.isFinite(preEndNode.x) && Number.isFinite(preEndNode.y)) {
+      corners.push({ x: preEndNode.x, y: preEndNode.y });
+    }
   }
   return corners;
 }
@@ -4226,12 +4238,24 @@ function laneProfile3StateAtFrame(frame, checkpoints, routePath) {
     // on that final segment to get a straight diagonal 3L->2L transition.
     // Entry behavior (2L->3L) is untouched.
     let exit = 1;
-    if (frameSeg >= profile.endSegmentIndex) {
-      const endSegLen = Math.max(0.0001, routeSegmentLength(routePath, profile.endSegmentIndex));
-      const segT = clamp01(Number(frame.segmentT));
-      const remainingOnEndSeg = endSegLen * (1 - segT);
-      const tailLen = Math.max(0.0001, Math.min(Lt, endSegLen));
-      exit = clamp01(remainingOnEndSeg / tailLen);
+    const tailSegCount = Math.max(1, Math.round(Number(LANE_PROFILE_EXIT_TAIL_SEGMENTS) || 2));
+    const tailStartSeg = Math.max(profile.startSegmentIndex, profile.endSegmentIndex - (tailSegCount - 1));
+    if (frameSeg >= tailStartSeg) {
+      let remainingTailDistance = 0;
+      for (let seg = frameSeg; seg <= profile.endSegmentIndex; seg += 1) {
+        const segLen = Math.max(0, routeSegmentLength(routePath, seg));
+        if (seg === frameSeg) {
+          remainingTailDistance += segLen * (1 - clamp01(Number(frame.segmentT)));
+        } else {
+          remainingTailDistance += segLen;
+        }
+      }
+      let tailWindowLen = 0;
+      for (let seg = tailStartSeg; seg <= profile.endSegmentIndex; seg += 1) {
+        tailWindowLen += Math.max(0, routeSegmentLength(routePath, seg));
+      }
+      const tailLen = Math.max(0.0001, Math.min(Lt, tailWindowLen));
+      exit = clamp01(remainingTailDistance / tailLen);
     }
     const w = ROAD_EXTRA_LANE_WIDTH_M * Math.min(entry, exit);
     if (w <= 1e-4) {
