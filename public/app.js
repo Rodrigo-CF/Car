@@ -200,7 +200,7 @@ const ROAD_SHOULDER_HALF_EXTRA_M = 2.2;
 const ROUTE_DENSE_STEP_M = 0.9;
 const LANE_ADD_EFFECT_RADIUS_M = 14;
 const LANE_PROFILE_TRANSITION_DEFAULT_M = 8;
-const LANE_PROFILE_TRANSITION_MIN_M = 0.5;
+const LANE_PROFILE_TRANSITION_MIN_M = 1.5;
 const LANE_PROFILE_TRANSITION_MAX_M = 20;
 // Do not let 3L->2L straight ramp start too late, otherwise node-end
 // smoothing curvature becomes visible before the diagonal transition.
@@ -4236,23 +4236,12 @@ function laneProfileExitStraightWindow(profile, routePath) {
     LANE_PROFILE_TRANSITION_MIN_M,
     Math.min(LANE_PROFILE_TRANSITION_MAX_M, Number(profile.transitionLengthM) || LANE_PROFILE_TRANSITION_DEFAULT_M),
   );
-  // Approximate where the default node-end curvature starts on the last 3L segment.
-  // We use a bounded estimate based on render density/smoothing so the straight
-  // diagonal begins right before that curved zone.
-  const smoothLeadEstimate = Math.max(
-    1.6,
-    Math.min(4.2, ROAD_RENDER_DENSE_STEP_M * (1.8 + ROAD_RENDER_SMOOTH_ITERATIONS * 1.35)),
-  );
   const straightLen = Math.max(
-    0.35,
-    Math.min(segLen, Math.min(transitionLen, smoothLeadEstimate)),
+    1.1,
+    Math.min(segLen, transitionLen),
   );
   const startTRaw = clamp01((segLen - straightLen) / Math.max(0.0001, segLen));
-  // For short configured transitions, allow later start so angle becomes clearly more acute.
-  // For longer transitions keep the previous cap to avoid visible end-node curvature.
-  const acuteTransitionCutoffM = Math.max(2.2, ROAD_EXTRA_LANE_WIDTH_M * 0.55);
-  const startTCap = transitionLen <= acuteTransitionCutoffM ? 0.97 : LANE_PROFILE_EXIT_START_T_MAX;
-  const startT = Math.min(startTRaw, startTCap);
+  const startT = Math.min(startTRaw, LANE_PROFILE_EXIT_START_T_MAX);
   return {
     startT,
     segLen,
