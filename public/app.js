@@ -6496,6 +6496,115 @@ function renderLaneProfileExitJoinPatches(THREE, routeGroup) {
   }
 }
 
+function renderLaneProfileExitDividerBridges(THREE, routeGroup, lineMat) {
+  const checkpoints = state.sim.route?.checkpoints || [];
+  if (!checkpoints.length) {
+    return;
+  }
+  const routePath = state.sim.routePath?.length ? state.sim.routePath : state.sim.routeDensePath;
+  if (!Array.isArray(routePath) || routePath.length < 3) {
+    return;
+  }
+
+  const addDashedAlong = (start, end, offsetStart = 0, offsetEnd = 0) => {
+    const dx = Number(end.x) - Number(start.x);
+    const dy = Number(end.y) - Number(start.y);
+    const len = Math.hypot(dx, dy);
+    if (len < 0.18) {
+      return;
+    }
+    const dirX = dx / len;
+    const dirY = dy / len;
+    const heading = Math.atan2(dirY, dirX);
+    const right = { x: Math.sin(heading), y: -Math.cos(heading) };
+    const dashLen = 0.66;
+    const gapLen = 0.42;
+    const inset = Math.min(0.14, len * 0.22);
+    let cursor = inset;
+    const maxCursor = Math.max(inset, len - inset);
+    while (cursor < maxCursor - 0.02) {
+      const segLen = Math.min(dashLen, maxCursor - cursor);
+      if (segLen < 0.08) {
+        break;
+      }
+      const mid = cursor + segLen * 0.5;
+      const t = clamp01(mid / Math.max(0.0001, len));
+      const offset = lerpNumber(offsetStart, offsetEnd, t);
+      const px = start.x + dirX * mid + right.x * offset;
+      const py = start.y + dirY * mid + right.y * offset;
+      const dash = new THREE.Mesh(new THREE.BoxGeometry(segLen, 0.042, 0.14), lineMat);
+      dash.position.set(px, 0.044, -py);
+      dash.rotation.y = heading;
+      routeGroup.add(dash);
+      cursor += dashLen + gapLen;
+    }
+  };
+
+  for (const checkpoint of checkpoints) {
+    if (checkpoint?.type !== "lane_profile_3") {
+      continue;
+    }
+    const profile = laneProfile3RuntimeMeta(checkpoint, routePath);
+    if (!profile) {
+      continue;
+    }
+    const endSeg = profile.endSegmentIndex;
+    const a = routePath[endSeg];
+    const node = routePath[endSeg + 1];
+    if (!a || !node || node.move) {
+      continue;
+    }
+
+    const exitWindow = laneProfileExitStraightWindow(profile, routePath);
+    if (!exitWindow) {
+      continue;
+    }
+    const startT = clamp01(exitWindow.startT);
+    if (startT >= 0.999) {
+      continue;
+    }
+    const start = {
+      x: a.x + (node.x - a.x) * startT,
+      y: a.y + (node.y - a.y) * startT,
+    };
+    const heading = Math.atan2(node.y - a.y, node.x - a.x);
+
+    const sampleHalf = routeRoadHalfWidthsAt(start.x, start.y, heading, endSeg);
+    const offsets = routeLaneDividerOffsets(sampleHalf);
+    let movingOffset = 0;
+    for (const value of offsets) {
+      if (Math.abs(value) > Math.abs(movingOffset) && Math.abs(value) > 0.06) {
+        movingOffset = Number(value) || 0;
+      }
+    }
+    if (Math.abs(movingOffset) < 0.06) {
+      const side = profile.endAnchorSide === "left" ? -1 : 1;
+      movingOffset = side * (ROAD_BASE_WIDTH_M * 0.5);
+    }
+
+    // 1) Keep centerline continuous through the full exit tail.
+    addDashedAlong(start, node, 0, 0);
+    // 2) Collapsing divider converges diagonally into centerline at node.
+    addDashedAlong(start, node, movingOffset, 0);
+
+    // Small continuation after node on next segment for centerline continuity.
+    const next = routePath[endSeg + 2];
+    if (next && !next.move) {
+      const nx = next.x - node.x;
+      const ny = next.y - node.y;
+      const nLen = Math.hypot(nx, ny);
+      if (nLen > 0.12) {
+        const bridgeLen = Math.min(2.4, nLen);
+        const bridgeEnd = {
+          x: node.x + (nx / nLen) * bridgeLen,
+          y: node.y + (ny / nLen) * bridgeLen,
+        };
+        addDashedAlong(node, bridgeEnd, 0, 0);
+      }
+    }
+  }
+}
+
 function rebuildThreeRouteScene() {
   const three = state.sim.three;
   if (!three.ready || !state.sim.route) {
@@ -6823,6 +6932,7 @@ function rebuildThreeRouteScene() {
 
   renderLaneProfileEntryTrimPatches(THREE, routeGroup);
   renderLaneProfileExitJoinPatches(THREE, routeGroup);
+  renderLaneProfileExitDividerBridges(THREE, routeGroup, lineMat);
 
   // Fill segment joints with rounded caps so curves/roundabouts look smooth
   // instead of showing polygonal wedge gaps between straight road pieces.
