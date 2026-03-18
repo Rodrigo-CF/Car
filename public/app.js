@@ -4355,28 +4355,11 @@ function routeLaneDividerOffsets(halfWidths) {
   const left = Number(halfWidths?.left) || ROAD_BASE_WIDTH_M * 0.5;
   const right = Number(halfWidths?.right) || ROAD_BASE_WIDTH_M * 0.5;
   const totalExtra = Math.max(0, left + right - ROAD_BASE_WIDTH_M);
-  const profile = halfWidths?.profileState || null;
-  const frameSeg = Number(halfWidths?.frame?.segmentIndex);
-  const isProfileExitSeg = Boolean(
-    profile &&
-    Number.isFinite(frameSeg) &&
-    Number.isFinite(profile?.endSegmentIndex) &&
-    Math.round(frameSeg) === Math.round(profile.endSegmentIndex),
-  );
-  const collapseThreshold = isProfileExitSeg ? 0.008 : 0.12;
+  // Keep native divider behavior; only make collapse threshold less aggressive
+  // so transition dashes survive longer near 3L->2L exit.
+  const collapseThreshold = 0.008;
   if (totalExtra < collapseThreshold) {
     return [0];
-  }
-  if (isProfileExitSeg) {
-    // Keep the 2-lane centerline alive through the full 3L->2L transition,
-    // while collapsing only the extra divider toward center.
-    const dominantSide = Math.sign(right - left) || Math.sign(Number(profile?.s) || 0) || 1;
-    const collapse = Math.max(0, Math.min(1, totalExtra / Math.max(0.0001, ROAD_EXTRA_LANE_WIDTH_M)));
-    const movingDivider = dominantSide * (ROAD_BASE_WIDTH_M * 0.5) * collapse;
-    if (Math.abs(movingDivider) < 0.04) {
-      return [0];
-    }
-    return [0, movingDivider];
   }
   const blend = Math.max(0, Math.min(1, totalExtra / Math.max(0.0001, ROAD_EXTRA_LANE_WIDTH_M)));
   const sideBias = Math.max(-1, Math.min(1, (right - left) / Math.max(0.0001, totalExtra)));
@@ -6703,7 +6686,15 @@ function rebuildThreeRouteScene() {
       Math.round(profileFrame.segmentIndex) === Math.round(activeLaneProfile.endSegmentIndex) &&
       clamp01(Number(profileFrame.segmentT)) >= Math.max(0, (exitWindow?.startT ?? 1) - 0.01),
     );
-    if (!refineExitTail && len < 0.4) {
+    const nearExitBoundary = Boolean(
+      activeLaneProfile &&
+      Number.isFinite(profileFrame?.segmentIndex) &&
+      Number.isFinite(activeLaneProfile?.endSegmentIndex) &&
+      Math.abs(
+        Math.round(profileFrame.segmentIndex) - Math.round(activeLaneProfile.endSegmentIndex),
+      ) <= 1,
+    );
+    if (!refineExitTail && !nearExitBoundary && len < 0.4) {
       continue;
     }
     const exitProjectionAxis = refineExitTail
@@ -6760,7 +6751,7 @@ function rebuildThreeRouteScene() {
       const hasPrevMatch = hasLaneDividerOffsetMatch(dividerOffset, prevDividerOffsets);
       const hasNextMatch = hasLaneDividerOffsetMatch(dividerOffset, nextDividerOffsets);
       // Drop isolated divider fragments that appear at 2->3 / 3->2 transition corners.
-      if (!hasPrevMatch && !hasNextMatch && !refineExitTail) {
+      if (!hasPrevMatch && !hasNextMatch && !refineExitTail && !nearExitBoundary) {
         continue;
       }
       const baseDividerLen = refineExitTail ? Math.max(0.34, len * 0.96) : len * 0.8;
@@ -6804,7 +6795,7 @@ function rebuildThreeRouteScene() {
       const hasOneSidedContinuation = hasPrevMatch !== hasNextMatch;
       // Avoid tiny one-sided divider remnants at sharp 2->3 / 3->2 corners.
       // They appear as floating mini-dashes with mixed heading.
-      if (hasOneSidedContinuation && dividerLen < 0.95 && !refineExitTail) {
+      if (hasOneSidedContinuation && dividerLen < 0.95 && !refineExitTail && !nearExitBoundary) {
         continue;
       }
       if (dividerLen < (refineExitTail ? 0.08 : 0.22)) {
