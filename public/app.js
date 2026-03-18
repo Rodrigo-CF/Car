@@ -202,7 +202,6 @@ const LANE_ADD_EFFECT_RADIUS_M = 14;
 const LANE_PROFILE_TRANSITION_DEFAULT_M = 8;
 const LANE_PROFILE_TRANSITION_MIN_M = 1.5;
 const LANE_PROFILE_TRANSITION_MAX_M = 20;
-const LANE_PROFILE_EXIT_HOLD_RATIO = 0.45;
 const ROAD_RENDER_SMOOTH_ITERATIONS = 2;
 const LINE_RENDER_SMOOTH_ITERATIONS = 1;
 const ROAD_RENDER_JOINT_SEGMENTS = 24;
@@ -4223,13 +4222,17 @@ function laneProfile3StateAtFrame(frame, checkpoints, routePath) {
     // trim_previous = instant expansion at the start node (entry transition fixed to 0m),
     // while keeping configured transition for the exit end of the 3L tramo.
     const entry = trimPrevMode ? 1 : clamp01(d / Math.max(0.0001, Lt));
-    const exitRaw = clamp01((L - d) / Math.max(0.0001, Lt));
-    // 3L -> 2L as an elongated "Z":
-    // 1) keep full 3-lane width for most of the tail, then
-    // 2) collapse with a straight linear ramp near the end node.
-    // This affects only exit behavior; 2L -> 3L entry remains unchanged.
-    const hold = Math.max(0.12, Math.min(0.85, LANE_PROFILE_EXIT_HOLD_RATIO));
-    const exit = exitRaw > hold ? 1 : clamp01(exitRaw / hold);
+    // Keep full 3-lane width until the last segment, then collapse linearly
+    // on that final segment to get a straight diagonal 3L->2L transition.
+    // Entry behavior (2L->3L) is untouched.
+    let exit = 1;
+    if (frameSeg >= profile.endSegmentIndex) {
+      const endSegLen = Math.max(0.0001, routeSegmentLength(routePath, profile.endSegmentIndex));
+      const segT = clamp01(Number(frame.segmentT));
+      const remainingOnEndSeg = endSegLen * (1 - segT);
+      const tailLen = Math.max(0.0001, Math.min(Lt, endSegLen));
+      exit = clamp01(remainingOnEndSeg / tailLen);
+    }
     const w = ROAD_EXTRA_LANE_WIDTH_M * Math.min(entry, exit);
     if (w <= 1e-4) {
       return {
