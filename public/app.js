@@ -6718,7 +6718,7 @@ function rebuildThreeRouteScene() {
       dx = bx - ax;
       dz = bz - az;
       len = Math.hypot(dx, dz);
-      if (len < 0.22) {
+      if (len < 0.05) {
         continue;
       }
       angle = Math.atan2(dz, dx);
@@ -6762,20 +6762,20 @@ function rebuildThreeRouteScene() {
       if (!hasPrevMatch && !hasNextMatch && !refineExitTail) {
         continue;
       }
-      const baseDividerLen = len * 0.8;
+      const baseDividerLen = refineExitTail ? Math.max(0.34, len * 0.96) : len * 0.8;
       const edgeTrim = Math.min(0.95, baseDividerLen * 0.45);
-      const trimStart = hasPrevMatch ? 0 : edgeTrim;
-      const trimEnd = hasNextMatch ? 0 : edgeTrim;
+      const trimStart = refineExitTail ? 0 : (hasPrevMatch ? 0 : edgeTrim);
+      const trimEnd = refineExitTail ? 0 : (hasNextMatch ? 0 : edgeTrim);
       let effectiveTrimStart = trimStart;
       let effectiveTrimEnd = trimEnd;
       // On sharp corners, a full continuity match can still create a visible "bulge"
       // from overlapping dash boxes; gently trim each side by turn intensity.
       const turnTrimCap = Math.min(0.62, baseDividerLen * 0.34);
-      if (hasPrevMatch && startTurnAbs > 0.24) {
+      if (!refineExitTail && hasPrevMatch && startTurnAbs > 0.24) {
         const t = Math.min(1, (startTurnAbs - 0.24) / 1.05);
         effectiveTrimStart = Math.max(effectiveTrimStart, turnTrimCap * t);
       }
-      if (hasNextMatch && endTurnAbs > 0.24) {
+      if (!refineExitTail && hasNextMatch && endTurnAbs > 0.24) {
         const t = Math.min(1, (endTurnAbs - 0.24) / 1.05);
         effectiveTrimEnd = Math.max(effectiveTrimEnd, turnTrimCap * t);
       }
@@ -6806,7 +6806,7 @@ function rebuildThreeRouteScene() {
       if (hasOneSidedContinuation && dividerLen < 0.95 && !refineExitTail) {
         continue;
       }
-      if (dividerLen < 0.22) {
+      if (dividerLen < (refineExitTail ? 0.08 : 0.22)) {
         continue;
       }
       const shiftAlong = (effectiveTrimStart - effectiveTrimEnd) * 0.5;
