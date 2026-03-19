@@ -4524,13 +4524,6 @@ function routeRoadHalfWidthsAt(x, y, preferredHeading = null, preferredSegmentIn
     ) {
       laneCount = Math.max(laneCount, 3);
     }
-    if (
-      checkpoint.type === "speed_bump" ||
-      checkpoint.type === "stop_line" ||
-      checkpoint.type === "stop_line_free"
-    ) {
-      laneCount = Math.max(laneCount, Math.round(Number(checkpoint.meta?.laneCount) || 2));
-    }
   }
 
   const defaultBaseHalf = ROAD_BASE_WIDTH_M * 0.5;
@@ -5192,17 +5185,43 @@ function findOccupiedParkingSlot(checkpoint) {
   return null;
 }
 
-function laneWidthAtCheckpoint(checkpoint, laneCount) {
+function laneWidthAtCheckpoint(checkpoint, laneCount, heading = null) {
   const lanes = Math.max(1, laneCount);
-  const roadWidth = Math.max(0.8, routeRoadWidthAt(checkpoint.x, checkpoint.y));
+  const preferredSeg = Number.isFinite(Number(checkpoint?.meta?.snapSegmentIndex))
+    ? Math.max(0, Math.round(Number(checkpoint.meta.snapSegmentIndex)))
+    : null;
+  const roadWidth = Math.max(
+    0.8,
+    routeRoadWidthAt(
+      Number(checkpoint?.x) || 0,
+      Number(checkpoint?.y) || 0,
+      Number.isFinite(heading) ? heading : null,
+      preferredSeg,
+    ),
+  );
   return roadWidth / lanes;
+}
+
+function effectiveLaneCountAtCheckpoint(checkpoint, requestedLaneCount, heading = null) {
+  const preferredSeg = Number.isFinite(Number(checkpoint?.meta?.snapSegmentIndex))
+    ? Math.max(0, Math.round(Number(checkpoint.meta.snapSegmentIndex)))
+    : null;
+  const halfWidths = routeRoadHalfWidthsAt(
+    Number(checkpoint?.x) || 0,
+    Number(checkpoint?.y) || 0,
+    Number.isFinite(heading) ? heading : null,
+    preferredSeg,
+  );
+  const actualLaneCount = Math.max(1, Math.round(Number(halfWidths?.laneCount) || 2));
+  const requested = Math.max(1, Math.round(Number(requestedLaneCount) || actualLaneCount));
+  return Math.max(1, Math.min(requested, actualLaneCount));
 }
 
 function speedBumpSegment(checkpoint) {
   const heading = checkpointHeadingAt(checkpoint);
-  const laneCount = Math.max(1, Math.round(Number(checkpoint.meta?.laneCount) || 2));
+  const laneCount = effectiveLaneCountAtCheckpoint(checkpoint, checkpoint.meta?.laneCount, heading);
   const lane = Math.max(1, Math.min(laneCount, Math.round(Number(checkpoint.meta?.lane) || 1)));
-  const laneWidth = laneWidthAtCheckpoint(checkpoint, laneCount);
+  const laneWidth = laneWidthAtCheckpoint(checkpoint, laneCount, heading);
   const bumpHeight = Math.max(0.05, Math.min(0.25, Number(checkpoint.meta?.bumpHeightM) || 0.1));
   const laneOffset = ((lane - 0.5) - laneCount / 2) * laneWidth;
   const center = {
@@ -5244,9 +5263,9 @@ function speedBumpSegment(checkpoint) {
 
 function stopLineSegment(checkpoint) {
   const heading = checkpointHeadingAt(checkpoint);
-  const laneCount = Math.max(1, Math.round(Number(checkpoint.meta?.laneCount) || 2));
+  const laneCount = effectiveLaneCountAtCheckpoint(checkpoint, checkpoint.meta?.laneCount, heading);
   const lane = Math.max(1, Math.min(laneCount, Math.round(Number(checkpoint.meta?.lane) || 1)));
-  const laneWidth = laneWidthAtCheckpoint(checkpoint, laneCount);
+  const laneWidth = laneWidthAtCheckpoint(checkpoint, laneCount, heading);
   const laneOffset = ((lane - 0.5) - laneCount / 2) * laneWidth;
   const center = {
     x: checkpoint.x + Math.sin(heading) * laneOffset,
