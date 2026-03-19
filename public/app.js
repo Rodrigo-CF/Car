@@ -177,41 +177,47 @@ const RENDER_QUALITY_PRESETS = {
   low: {
     label: "Low",
     pixelRatioMax: 1.0,
-    textureSize: 256,
+    textureSize: 224,
     shadows: false,
     shadowMapSize: 512,
+    textureAnisotropy: 2,
     sunIntensity: 0.84,
     hemiIntensity: 0.66,
     exposure: 0.96,
     treeLayers: 2,
     treeSegments: 8,
     skySegments: 22,
+    treeScatterStep: 42,
   },
   medium: {
     label: "Medium",
-    pixelRatioMax: 1.15,
-    textureSize: 384,
-    shadows: true,
+    pixelRatioMax: 1.08,
+    textureSize: 320,
+    shadows: false,
     shadowMapSize: 1024,
+    textureAnisotropy: 3,
     sunIntensity: 0.95,
     hemiIntensity: 0.74,
     exposure: 1.02,
-    treeLayers: 3,
-    treeSegments: 10,
-    skySegments: 28,
+    treeLayers: 2,
+    treeSegments: 9,
+    skySegments: 26,
+    treeScatterStep: 34,
   },
   high: {
     label: "High",
-    pixelRatioMax: 1.25,
-    textureSize: 512,
+    pixelRatioMax: 1.15,
+    textureSize: 448,
     shadows: true,
-    shadowMapSize: 1536,
+    shadowMapSize: 1024,
+    textureAnisotropy: 4,
     sunIntensity: 1.03,
     hemiIntensity: 0.8,
     exposure: 1.05,
-    treeLayers: 4,
-    treeSegments: 12,
-    skySegments: 36,
+    treeLayers: 3,
+    treeSegments: 10,
+    skySegments: 30,
+    treeScatterStep: 30,
   },
 };
 const CANVAS_SYNC_INTERVAL_MS = 240;
@@ -6759,11 +6765,19 @@ function createGrassTexture(THREE, size, anisotropy) {
       for (let y = 0; y < h; y += 1) {
         for (let x = 0; x < w; x += 1) {
           const idx = (y * w + x) * 4;
-          const n0 = seededNoise2D(x * 0.41, y * 0.37);
-          const n1 = seededNoise2D(x * 0.08, y * 0.06);
-          const r = Math.round(50 + n0 * 28 + n1 * 14);
-          const g = Math.round(90 + n0 * 70 + n1 * 22);
-          const b = Math.round(44 + n0 * 22);
+          const micro = seededNoise2D(x * 0.39, y * 0.36);
+          const macro = seededNoise2D(x * 0.07, y * 0.055);
+          const swell = seededNoise2D(x * 0.024, y * 0.022);
+          const swellDx = seededNoise2D((x + 1) * 0.024, y * 0.022) - seededNoise2D((x - 1) * 0.024, y * 0.022);
+          const swellDy = seededNoise2D(x * 0.024, (y + 1) * 0.022) - seededNoise2D(x * 0.024, (y - 1) * 0.022);
+          const light = clamp01(0.6 + swellDx * 1.35 + swellDy * 0.8);
+          const shade = 0.83 + light * 0.36;
+          const baseR = 42 + micro * 18 + macro * 16 + swell * 14;
+          const baseG = 86 + micro * 55 + macro * 35 + swell * 26;
+          const baseB = 40 + micro * 18 + macro * 10 + swell * 8;
+          const r = Math.round(baseR * shade);
+          const g = Math.round(baseG * shade);
+          const b = Math.round(baseB * shade);
           data[idx] = r;
           data[idx + 1] = g;
           data[idx + 2] = b;
@@ -6771,15 +6785,15 @@ function createGrassTexture(THREE, size, anisotropy) {
         }
       }
       ctx2d.putImageData(imageData, 0, 0);
-      ctx2d.strokeStyle = "rgba(200,230,170,0.09)";
+      ctx2d.strokeStyle = "rgba(188, 228, 166, 0.08)";
       ctx2d.lineWidth = 1;
-      for (let i = 0; i < 90; i += 1) {
+      for (let i = 0; i < 84; i += 1) {
         const x = seededNoise2D(i, 9.1) * w;
         const y = seededNoise2D(i, 14.7) * h;
-        const len = 3 + seededNoise2D(i, 23.2) * 5;
+        const len = 4 + seededNoise2D(i, 23.2) * 6;
         ctx2d.beginPath();
         ctx2d.moveTo(x, y);
-        ctx2d.lineTo(x + seededNoise2D(i, 33.6) * 4 - 2, y - len);
+        ctx2d.lineTo(x + seededNoise2D(i, 33.6) * 3.6 - 1.8, y - len);
         ctx2d.stroke();
       }
     },
@@ -6876,7 +6890,7 @@ function ensureThreeEnvironmentAssets(THREE) {
 
   disposeEnvironmentAssets(three);
   const maxAnisotropy = Math.max(1, three.renderer.capabilities?.getMaxAnisotropy?.() || 1);
-  const anisotropy = Math.min(maxAnisotropy, preset.shadows ? 8 : 4);
+  const anisotropy = Math.max(1, Math.min(maxAnisotropy, Math.round(Number(preset.textureAnisotropy) || (preset.shadows ? 6 : 4))));
   const textureSize = Math.max(128, Math.round(preset.textureSize || 384));
   const assets = {
     quality,
@@ -7028,9 +7042,28 @@ function rebuildThreeRouteScene() {
   const bounds = state.sim.routeBounds ?? computeRouteBounds(state.sim.routeDensePath);
   const groundW = Math.max(180, bounds.maxX - bounds.minX + 120);
   const groundH = Math.max(180, bounds.maxY - bounds.minY + 120);
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(groundW, groundH), grassMat);
+  const groundCenterX = (bounds.minX + bounds.maxX) / 2;
+  const groundCenterY = (bounds.minY + bounds.maxY) / 2;
+  const terrainSegments = quality.label === "high" ? 48 : quality.label === "medium" ? 32 : 20;
+  const groundGeometry = new THREE.PlaneGeometry(groundW, groundH, terrainSegments, terrainSegments);
+  if (groundGeometry?.attributes?.position) {
+    const positions = groundGeometry.attributes.position;
+    for (let i = 0; i < positions.count; i += 1) {
+      const localX = positions.getX(i);
+      const localY = positions.getY(i);
+      const worldX = localX + groundCenterX;
+      const worldY = localY + groundCenterY;
+      const macro = seededNoise2D(worldX * 0.018, worldY * 0.016) - 0.5;
+      const micro = seededNoise2D(worldX * 0.053, worldY * 0.048) - 0.5;
+      const relief = -0.058 + macro * 0.072 + micro * 0.03;
+      positions.setZ(i, Math.min(-0.008, relief));
+    }
+    positions.needsUpdate = true;
+    groundGeometry.computeVertexNormals();
+  }
+  const ground = new THREE.Mesh(groundGeometry, grassMat);
   ground.rotation.x = -Math.PI / 2;
-  ground.position.set((bounds.minX + bounds.maxX) / 2, -0.03, -((bounds.minY + bounds.maxY) / 2));
+  ground.position.set(groundCenterX, -0.02, -groundCenterY);
   ground.receiveShadow = Boolean(quality.shadows);
   routeGroup.add(ground);
 
@@ -7664,7 +7697,8 @@ function rebuildThreeRouteScene() {
       }
     }
 
-    for (let i = 0; i < roadPath.length; i += 26) {
+    const treeScatterStep = Math.max(18, Math.round(Number(quality.treeScatterStep) || 32));
+    for (let i = 0; i < roadPath.length; i += treeScatterStep) {
       const p = roadPath[i];
       const next = roadPath[Math.min(i + 1, roadPath.length - 1)];
       if (!p || !next || next.move) {
