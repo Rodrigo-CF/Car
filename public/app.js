@@ -88,6 +88,11 @@ const state = {
       remoteAfkLabelTexture: null,
       environmentAssets: null,
       skyDome: null,
+      pixelRatioScale: 1,
+      frameMsEma: 16.7,
+      lastDprAdjustAt: 0,
+      lastAppliedPixelRatio: 0,
+      lastParkingVizUpdateAt: 0,
     },
   },
   mapper: {
@@ -265,6 +270,13 @@ const ROAD_RENDER_JOINT_SEGMENTS = 24;
 // Keep road render density aligned with route density to avoid entry bulges
 // at trim_previous 2L->3L joins.
 const ROAD_RENDER_DENSE_STEP_M = 0.9;
+const ADAPTIVE_DPR_MIN_SCALE = 0.62;
+const ADAPTIVE_DPR_MAX_SCALE = 1.0;
+const ADAPTIVE_DPR_ADJUST_INTERVAL_MS = 320;
+const ADAPTIVE_DPR_FRAME_EMA_ALPHA = 0.1;
+const ADAPTIVE_DPR_DEGRADE_MS = 20.5;
+const ADAPTIVE_DPR_RECOVER_MS = 15.2;
+const PARKING_VIS_UPDATE_INTERVAL_MS = 120;
 const CAMERA_MODE_CYCLE = ["first", "third", "right", "front", "left", "top"];
 const EXTERNAL_CAMERA_MODES = new Set(["third", "right", "front", "left", "top"]);
 
@@ -2453,9 +2465,70 @@ function syncCanvasSize() {
   const three = state.sim.three;
   if (three.ready && three.renderer && three.camera) {
     three.renderer.setSize(width, height, false);
+    setThreeRendererPixelRatio(true);
     three.camera.aspect = width / Math.max(1, height);
     three.camera.updateProjectionMatrix();
   }
+}
+
+function baseRenderPixelRatioCap() {
+  const preset = currentRenderQualityPreset();
+  return Math.min(MAX_RENDER_PIXEL_RATIO, Number(preset.pixelRatioMax) || MAX_RENDER_PIXEL_RATIO);
+}
+
+function setThreeRendererPixelRatio(force = false) {
+  const three = state.sim.three;
+  if (!three?.renderer) {
+    return;
+  }
+  const scaleRaw = Number(three.pixelRatioScale);
+  const scale = Math.max(
+    ADAPTIVE_DPR_MIN_SCALE,
+    Math.min(ADAPTIVE_DPR_MAX_SCALE, Number.isFinite(scaleRaw) ? scaleRaw : 1),
+  );
+  const desired = Math.min(window.devicePixelRatio || 1, baseRenderPixelRatioCap() * scale);
+  const lastApplied = Number(three.lastAppliedPixelRatio) || 0;
+  if (!force && Math.abs(desired - lastApplied) < 0.015) {
+    return;
+  }
+  three.renderer.setPixelRatio(desired);
+  three.lastAppliedPixelRatio = desired;
+}
+
+function updateAdaptivePixelRatio(dt = 1 / 60) {
+  const three = state.sim.three;
+  if (!three?.renderer) {
+    return;
+  }
+  const frameMs = Math.max(8, Math.min(45, dt * 1000));
+  const emaPrev = Number.isFinite(three.frameMsEma) ? three.frameMsEma : frameMs;
+  const alpha = ADAPTIVE_DPR_FRAME_EMA_ALPHA;
+  const ema = emaPrev + (frameMs - emaPrev) * alpha;
+  three.frameMsEma = ema;
+
+  const now = Date.now();
+  if (now - (Number(three.lastDprAdjustAt) || 0) < ADAPTIVE_DPR_ADJUST_INTERVAL_MS) {
+    return;
+  }
+  three.lastDprAdjustAt = now;
+
+  let scale = Number.isFinite(three.pixelRatioScale) ? three.pixelRatioScale : 1;
+  if (ema > ADAPTIVE_DPR_DEGRADE_MS) {
+    const pressure = Math.min(1.8, (ema - ADAPTIVE_DPR_DEGRADE_MS) / 6);
+    scale -= 0.045 * pressure;
+  } else if (ema < ADAPTIVE_DPR_RECOVER_MS) {
+    const headroom = Math.min(1.5, (ADAPTIVE_DPR_RECOVER_MS - ema) / 5);
+    scale += 0.02 * headroom;
+  } else {
+    return;
+  }
+
+  scale = Math.max(ADAPTIVE_DPR_MIN_SCALE, Math.min(ADAPTIVE_DPR_MAX_SCALE, scale));
+  if (Math.abs(scale - (three.pixelRatioScale || 1)) < 0.008) {
+    return;
+  }
+  three.pixelRatioScale = scale;
+  setThreeRendererPixelRatio();
 }
 
 function smoothTowards(current, target, lambda, dt) {
@@ -7070,8 +7143,9 @@ function applyRenderQualitySettings({ rebuildRoute = true } = {}) {
   const THREE = three.lib;
   const preset = currentRenderQualityPreset();
   const renderer = three.renderer;
-  const pixelRatioCap = Math.min(MAX_RENDER_PIXEL_RATIO, Number(preset.pixelRatioMax) || MAX_RENDER_PIXEL_RATIO);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, pixelRatioCap));
+  const currentScale = Number.isFinite(three.pixelRatioScale) ? three.pixelRatioScale : 1;
+  three.pixelRatioScale = Math.max(ADAPTIVE_DPR_MIN_SCALE, Math.min(ADAPTIVE_DPR_MAX_SCALE, currentScale));
+  setThreeRendererPixelRatio(true);
   renderer.shadowMap.enabled = Boolean(preset.shadows);
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   if ("toneMapping" in renderer && THREE.ACESFilmicToneMapping) {
@@ -9424,6 +9498,11 @@ async function initThreeEngine() {
     three.dashDisplayTargetName = "";
     three.environmentAssets = null;
     three.skyDome = null;
+    three.pixelRatioScale = 1;
+    three.frameMsEma = 16.7;
+    three.lastDprAdjustAt = 0;
+    three.lastAppliedPixelRatio = 0;
+    three.lastParkingVizUpdateAt = 0;
     three.lights = { hemi, sun };
     three.ready = true;
     three.failed = false;
@@ -9805,6 +9884,7 @@ function updateThreeScene(dt = 1 / 60) {
   }
 
   const { camera, renderer, scene, carMarker, cockpitRoot, cockpitModelRoot, vehicleModelRoot, wheelMesh, trafficLightRefs } = three;
+  const nowMs = Date.now();
   const car = state.sim.car;
   const heading = toRadians(car?.headingDeg ?? 0);
   const bumpLift = (state.sim.bumpOffset || 0) + (state.sim.bumpSupport || 0);
@@ -9987,11 +10067,17 @@ function updateThreeScene(dt = 1 / 60) {
     }
   }
   if (Array.isArray(three.parkingSlotRefs) && three.parkingSlotRefs.length) {
-    for (const ref of three.parkingSlotRefs) {
-      const checkpoint = routeCheckpoint(ref.checkpointType || "parking_parallel");
-      const occupied = checkpoint?.id === ref.checkpointId && isParkingSlotOccupied(checkpoint, ref.shape);
-      ref.bayMaterial.color.setHex(occupied ? 0x2f9f5e : 0x2a3036);
-      ref.frameMaterial.color.setHex(occupied ? 0xb9ffd0 : 0xeff4f8);
+    if (
+      nowMs - (Number(three.lastParkingVizUpdateAt) || 0) >= PARKING_VIS_UPDATE_INTERVAL_MS ||
+      !Number.isFinite(Number(three.lastParkingVizUpdateAt))
+    ) {
+      for (const ref of three.parkingSlotRefs) {
+        const checkpoint = routeCheckpoint(ref.checkpointType || "parking_parallel");
+        const occupied = checkpoint?.id === ref.checkpointId && isParkingSlotOccupied(checkpoint, ref.shape);
+        ref.bayMaterial.color.setHex(occupied ? 0x2f9f5e : 0x2a3036);
+        ref.frameMaterial.color.setHex(occupied ? 0xb9ffd0 : 0xeff4f8);
+      }
+      three.lastParkingVizUpdateAt = nowMs;
     }
   }
   if (three.dashDisplayMesh) {
@@ -10009,6 +10095,7 @@ function updateThreeScene(dt = 1 / 60) {
     three.skyDome.position.set(anchorX, 36, anchorZ);
   }
 
+  updateAdaptivePixelRatio(dt);
   renderer.render(scene, camera);
   return true;
 }
