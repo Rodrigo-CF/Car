@@ -5589,6 +5589,205 @@ function buildProceduralTreeGroup(THREE, checkpointOrPoint, options = {}) {
   return group;
 }
 
+function collectTreePlacements(roadPath, quality) {
+  const placements = [];
+  const explicitTrees = routeCheckpoints("tree");
+  if (explicitTrees.length) {
+    for (let i = 0; i < explicitTrees.length; i += 1) {
+      const checkpoint = explicitTrees[i];
+      const sizeRaw = Number(checkpoint?.meta?.size ?? 1);
+      const size = Math.max(0.58, Math.min(2.8, sizeRaw));
+      placements.push({
+        x: Number(checkpoint?.x) || 0,
+        y: Number(checkpoint?.y) || 0,
+        size,
+        seedOffset: i * 1.7,
+      });
+    }
+    return placements;
+  }
+
+  // Lightweight scatter when no explicit trees are authored.
+  const treeRoadClearanceM = 1.1;
+  const treeParkingClearanceScale = 1.08;
+  const treeOffsetStepM = 3.6;
+  const treeMaxAttempts = 4;
+  const parkingAvoidPolygons = [];
+  const parkingCheckpoints = [
+    ...routeCheckpoints("parking_parallel"),
+    ...routeCheckpoints("parking_diagonal"),
+  ];
+  for (const checkpoint of parkingCheckpoints) {
+    const shape = parkingShape(checkpoint);
+    if (shape?.corners?.length >= 3) {
+      parkingAvoidPolygons.push(insetPolygon(shape.corners, shape.center, treeParkingClearanceScale));
+    }
+    const connector = parkingConnectorShape(checkpoint, shape);
+    if (connector?.corners?.length >= 3) {
+      parkingAvoidPolygons.push(
+        insetPolygon(
+          connector.corners,
+          connector.center || shape?.center || checkpoint,
+          treeParkingClearanceScale,
+        ),
+      );
+    }
+  }
+
+  const treeScatterStep = Math.max(18, Math.round(Number(quality.treeScatterStep) || 32));
+  for (let i = 0; i < roadPath.length; i += treeScatterStep) {
+    const p = roadPath[i];
+    const next = roadPath[Math.min(i + 1, roadPath.length - 1)];
+    if (!p || !next || next.move) {
+      continue;
+    }
+    const heading = Math.atan2(next.y - p.y, next.x - p.x);
+    const side = i % 2 === 0 ? 1 : -1;
+    const offset = 16 + (i % 4) * 2.5;
+    let treePlaced = false;
+    for (let attempt = 0; attempt <= treeMaxAttempts && !treePlaced; attempt += 1) {
+      const attemptOffset = offset + treeOffsetStepM * attempt;
+      const tx = p.x + Math.sin(heading) * attemptOffset * side;
+      const ty = p.y - Math.cos(heading) * attemptOffset * side;
+      if (isPointInsideRoadOrShoulder(tx, ty, treeRoadClearanceM)) {
+        continue;
+      }
+      if (parkingAvoidPolygons.length) {
+        const point = { x: tx, y: ty };
+        let blockedByParking = false;
+        for (const polygon of parkingAvoidPolygons) {
+          if (pointInConvexPolygon(point, polygon)) {
+            blockedByParking = true;
+            break;
+          }
+        }
+        if (blockedByParking) {
+          continue;
+        }
+      }
+      placements.push({
+        x: tx,
+        y: ty,
+        size: 0.95,
+        seedOffset: i + attempt * 3.1,
+      });
+      treePlaced = true;
+    }
+  }
+
+  return placements;
+}
+
+function addProceduralTreeInstances(THREE, routeGroup, placements, quality) {
+  if (!THREE || !routeGroup || !Array.isArray(placements) || !placements.length) {
+    return;
+  }
+
+  const canopyLayers = Math.max(2, Math.round(quality.treeLayers || 3));
+  const radialSegments = Math.max(6, Math.round(quality.treeSegments || 10));
+  const trunkTransforms = [];
+  const topTransforms = [];
+  const layerTransforms = Array.from({ length: canopyLayers }, () => []);
+  const leafPalette = [0x2f6c34, 0x3c8244, 0x2c5f2f];
+
+  const trunkGeometry = new THREE.CylinderGeometry(0.12, 0.16, 1, Math.max(6, radialSegments - 2));
+  const coneGeometry = new THREE.ConeGeometry(1, 1, radialSegments);
+  const topGeometry = new THREE.IcosahedronGeometry(1, quality.label === "high" ? 1 : 0);
+
+  const trunkMat = new THREE.MeshStandardMaterial({
+    color: 0x5b3d2d,
+    roughness: 0.95,
+    metalness: 0.02,
+  });
+  const topMat = new THREE.MeshStandardMaterial({
+    color: 0x3f8b45,
+    roughness: 0.86,
+    metalness: 0,
+  });
+  const layerMats = leafPalette.map(
+    (color) =>
+      new THREE.MeshStandardMaterial({
+        color,
+        roughness: 0.9,
+        metalness: 0,
+      }),
+  );
+
+  for (let idx = 0; idx < placements.length; idx += 1) {
+    const placement = placements[idx];
+    const x = Number(placement?.x) || 0;
+    const y = Number(placement?.y) || 0;
+    const sizeRaw = Number(placement?.size ?? 1);
+    const size = Math.max(0.58, Math.min(2.8, sizeRaw));
+    const seed = proceduralTreeSeed(x, y, Number(placement?.seedOffset) || 0);
+    const trunkHeight = (1.5 + seed * 0.75) * size;
+    const trunkTop = (0.14 + seed * 0.05) * size;
+    const trunkBottom = trunkTop * 1.3;
+    const trunkRadius = (trunkTop + trunkBottom) * 0.5;
+
+    trunkTransforms.push({
+      x,
+      y: trunkHeight * 0.5,
+      z: -y,
+      yaw: 0,
+      sx: Math.max(0.12, trunkRadius) / 0.14,
+      sy: trunkHeight,
+      sz: Math.max(0.12, trunkRadius) / 0.14,
+    });
+
+    for (let layer = 0; layer < canopyLayers; layer += 1) {
+      const t = layer / Math.max(1, canopyLayers - 1);
+      const crownRadius = (1.05 - t * 0.27) * size * (0.9 + proceduralTreeSeed(x, y, layer + 5) * 0.18);
+      const crownHeight = (1.15 - t * 0.12) * size;
+      const layerY = trunkHeight + crownHeight * 0.45 + layer * (crownHeight * 0.45);
+      const yaw = proceduralTreeSeed(x, y, layer + 11) * Math.PI * 2;
+      layerTransforms[layer].push({
+        x,
+        y: layerY,
+        z: -y,
+        yaw,
+        sx: crownRadius,
+        sy: crownHeight,
+        sz: crownRadius,
+      });
+    }
+
+    const topRadius = 0.42 * size;
+    const topY = trunkHeight + canopyLayers * (0.48 * size);
+    topTransforms.push({
+      x,
+      y: topY,
+      z: -y,
+      yaw: 0,
+      sx: topRadius,
+      sy: topRadius,
+      sz: topRadius,
+    });
+  }
+
+  addStaticInstances(THREE, routeGroup, trunkGeometry, trunkMat, trunkTransforms, {
+    castShadow: Boolean(quality.shadows),
+    receiveShadow: Boolean(quality.shadows),
+  });
+
+  for (let layer = 0; layer < canopyLayers; layer += 1) {
+    const transforms = layerTransforms[layer];
+    if (!transforms.length) {
+      continue;
+    }
+    const mat = layerMats[layer % layerMats.length];
+    addStaticInstances(THREE, routeGroup, coneGeometry, mat, transforms, {
+      castShadow: Boolean(quality.shadows),
+      receiveShadow: Boolean(quality.shadows),
+    });
+  }
+
+  addStaticInstances(THREE, routeGroup, topGeometry, topMat, topTransforms, {
+    castShadow: Boolean(quality.shadows),
+    receiveShadow: Boolean(quality.shadows),
+  });
+}
+
 function createCanopyLabelTexture(THREE, text, options = {}) {
   const width = Math.max(64, Math.round(Number(options.width) || 512));
   const height = Math.max(64, Math.round(Number(options.height) || 192));
@@ -5660,7 +5859,7 @@ function clearThreeGroup(group) {
   }
 }
 
-function addStaticBoxInstances(THREE, group, geometry, material, transforms, options = {}) {
+function addStaticInstances(THREE, group, geometry, material, transforms, options = {}) {
   if (!THREE || !group || !geometry || !material || !Array.isArray(transforms) || !transforms.length) {
     return null;
   }
@@ -5676,10 +5875,17 @@ function addStaticBoxInstances(THREE, group, geometry, material, transforms, opt
     mesh.setMatrixAt(i, dummy.matrix);
   }
   mesh.instanceMatrix.needsUpdate = true;
-  mesh.castShadow = false;
+  if (typeof mesh.computeBoundingSphere === "function") {
+    mesh.computeBoundingSphere();
+  }
+  mesh.castShadow = Boolean(options.castShadow);
   mesh.receiveShadow = Boolean(options.receiveShadow);
   group.add(mesh);
   return mesh;
+}
+
+function addStaticBoxInstances(THREE, group, geometry, material, transforms, options = {}) {
+  return addStaticInstances(THREE, group, geometry, material, transforms, options);
 }
 
 function applyGroundAlignedYaw(object3d, yawRad) {
@@ -7915,78 +8121,9 @@ function rebuildThreeRouteScene() {
     routeGroup.add(towerGroup);
   }
 
-  const treeCheckpoints = routeCheckpoints("tree");
-  if (treeCheckpoints.length) {
-    for (let i = 0; i < treeCheckpoints.length; i += 1) {
-      const checkpoint = treeCheckpoints[i];
-      const tree = buildProceduralTreeGroup(THREE, checkpoint, { seedOffset: i * 1.7 });
-      routeGroup.add(tree);
-    }
-  } else {
-    // Lightweight tree scatter for extra depth when no explicit trees exist.
-    const treeRoadClearanceM = 1.1;
-    const treeParkingClearanceScale = 1.08;
-    const treeOffsetStepM = 3.6;
-    const treeMaxAttempts = 4;
-    const parkingAvoidPolygons = [];
-    const parkingCheckpoints = [
-      ...routeCheckpoints("parking_parallel"),
-      ...routeCheckpoints("parking_diagonal"),
-    ];
-    for (const checkpoint of parkingCheckpoints) {
-      const shape = parkingShape(checkpoint);
-      if (shape?.corners?.length >= 3) {
-        parkingAvoidPolygons.push(insetPolygon(shape.corners, shape.center, treeParkingClearanceScale));
-      }
-      const connector = parkingConnectorShape(checkpoint, shape);
-      if (connector?.corners?.length >= 3) {
-        parkingAvoidPolygons.push(
-          insetPolygon(
-            connector.corners,
-            connector.center || shape?.center || checkpoint,
-            treeParkingClearanceScale,
-          ),
-        );
-      }
-    }
-
-    const treeScatterStep = Math.max(18, Math.round(Number(quality.treeScatterStep) || 32));
-    for (let i = 0; i < roadPath.length; i += treeScatterStep) {
-      const p = roadPath[i];
-      const next = roadPath[Math.min(i + 1, roadPath.length - 1)];
-      if (!p || !next || next.move) {
-        continue;
-      }
-      const heading = Math.atan2(next.y - p.y, next.x - p.x);
-      const side = i % 2 === 0 ? 1 : -1;
-      const offset = 16 + (i % 4) * 2.5;
-      let treePlaced = false;
-      for (let attempt = 0; attempt <= treeMaxAttempts && !treePlaced; attempt += 1) {
-        const attemptOffset = offset + treeOffsetStepM * attempt;
-        const tx = p.x + Math.sin(heading) * attemptOffset * side;
-        const ty = p.y - Math.cos(heading) * attemptOffset * side;
-        if (isPointInsideRoadOrShoulder(tx, ty, treeRoadClearanceM)) {
-          continue;
-        }
-        if (parkingAvoidPolygons.length) {
-          const point = { x: tx, y: ty };
-          let blockedByParking = false;
-          for (const polygon of parkingAvoidPolygons) {
-            if (pointInConvexPolygon(point, polygon)) {
-              blockedByParking = true;
-              break;
-            }
-          }
-          if (blockedByParking) {
-            continue;
-          }
-        }
-
-        const tree = buildProceduralTreeGroup(THREE, { x: tx, y: ty }, { size: 0.95, seedOffset: i + attempt * 3.1 });
-        routeGroup.add(tree);
-        treePlaced = true;
-      }
-    }
+  const treePlacements = collectTreePlacements(roadPath, quality);
+  if (treePlacements.length) {
+    addProceduralTreeInstances(THREE, routeGroup, treePlacements, quality);
   }
 
   if (quality.shadows) {
