@@ -5241,8 +5241,10 @@ function laneContextAtCheckpoint(checkpoint, requestedLaneCount, heading = null)
   const actualLaneCount = Math.max(1, Math.round(Number(halfWidths?.laneCount) || 2));
   const laneCount = Math.max(1, Math.min(requested, actualLaneCount));
   const roadWidth = Math.max(0.8, Number(halfWidths?.roadWidth) || ROAD_BASE_WIDTH_M);
+  const leftHalf = Math.max(0.4, Number(halfWidths?.left) || roadWidth * 0.5);
+  const rightHalf = Math.max(0.4, Number(halfWidths?.right) || roadWidth * 0.5);
   const laneWidth = roadWidth / laneCount;
-  return { laneCount, laneWidth };
+  return { laneCount, laneWidth, roadWidth, leftHalf, rightHalf };
 }
 
 function speedBumpSegment(checkpoint) {
@@ -5252,7 +5254,7 @@ function speedBumpSegment(checkpoint) {
   const lane = Math.max(1, Math.min(laneCount, Math.round(Number(checkpoint.meta?.lane) || 1)));
   const laneWidth = laneContext.laneWidth;
   const bumpHeight = Math.max(0.05, Math.min(0.25, Number(checkpoint.meta?.bumpHeightM) || 0.1));
-  const laneOffset = ((lane - 0.5) - laneCount / 2) * laneWidth;
+  const laneOffset = -laneContext.leftHalf + (lane - 0.5) * laneWidth;
   const center = {
     x: checkpoint.x + Math.sin(heading) * laneOffset,
     y: checkpoint.y - Math.cos(heading) * laneOffset,
@@ -5296,7 +5298,7 @@ function stopLineSegment(checkpoint) {
   const laneCount = laneContext.laneCount;
   const lane = Math.max(1, Math.min(laneCount, Math.round(Number(checkpoint.meta?.lane) || 1)));
   const laneWidth = laneContext.laneWidth;
-  const laneOffset = ((lane - 0.5) - laneCount / 2) * laneWidth;
+  const laneOffset = -laneContext.leftHalf + (lane - 0.5) * laneWidth;
   const center = {
     x: checkpoint.x + Math.sin(heading) * laneOffset,
     y: checkpoint.y - Math.cos(heading) * laneOffset,
