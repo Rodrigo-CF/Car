@@ -4498,6 +4498,16 @@ function routeRoadWidthAt(x, y, preferredHeading = null, preferredSegmentIndex =
   return routeRoadHalfWidthsAt(x, y, preferredHeading, preferredSegmentIndex).roadWidth;
 }
 
+function isPointInsideRoadOrShoulder(x, y, clearanceM = 0) {
+  const halfWidths = routeRoadHalfWidthsAt(x, y);
+  const frame = halfWidths?.frame || routeFrameAt(x, y);
+  const lateralSigned = Number(frame?.lateral) || 0;
+  const lateral = Math.abs(lateralSigned);
+  const sideHalf = lateralSigned >= 0 ? Number(halfWidths?.right) || 0 : Number(halfWidths?.left) || 0;
+  const threshold = sideHalf + ROAD_SHOULDER_HALF_EXTRA_M + Math.max(0, Number(clearanceM) || 0);
+  return lateral <= threshold;
+}
+
 function parkingShape(checkpoint) {
   const headingDegMeta = Number(checkpoint?.meta?.headingDeg);
   const preferredHeading = Number.isFinite(headingDegMeta) ? toRadians(headingDegMeta) : null;
@@ -7120,6 +7130,9 @@ function rebuildThreeRouteScene() {
     }
   } else {
     // Lightweight tree scatter for extra depth when no explicit trees exist.
+    const treeRoadClearanceM = 1.1;
+    const treeOffsetStepM = 3.6;
+    const treeMaxAttempts = 4;
     for (let i = 0; i < roadPath.length; i += 26) {
       const p = roadPath[i];
       const next = roadPath[Math.min(i + 1, roadPath.length - 1)];
@@ -7129,22 +7142,30 @@ function rebuildThreeRouteScene() {
       const heading = Math.atan2(next.y - p.y, next.x - p.x);
       const side = i % 2 === 0 ? 1 : -1;
       const offset = 16 + (i % 4) * 2.5;
-      const tx = p.x + Math.sin(heading) * offset * side;
-      const ty = p.y - Math.cos(heading) * offset * side;
+      let treePlaced = false;
+      for (let attempt = 0; attempt <= treeMaxAttempts && !treePlaced; attempt += 1) {
+        const attemptOffset = offset + treeOffsetStepM * attempt;
+        const tx = p.x + Math.sin(heading) * attemptOffset * side;
+        const ty = p.y - Math.cos(heading) * attemptOffset * side;
+        if (isPointInsideRoadOrShoulder(tx, ty, treeRoadClearanceM)) {
+          continue;
+        }
 
-      const trunk = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.22, 0.28, 2.4, 8),
-        new THREE.MeshStandardMaterial({ color: 0x4f3a2f, roughness: 1 }),
-      );
-      trunk.position.set(tx, 1.2, -ty);
-      routeGroup.add(trunk);
+        const trunk = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.22, 0.28, 2.4, 8),
+          new THREE.MeshStandardMaterial({ color: 0x4f3a2f, roughness: 1 }),
+        );
+        trunk.position.set(tx, 1.2, -ty);
+        routeGroup.add(trunk);
 
-      const crown = new THREE.Mesh(
-        new THREE.SphereGeometry(1.35, 10, 10),
-        new THREE.MeshStandardMaterial({ color: 0x2d5f35, roughness: 0.95 }),
-      );
-      crown.position.set(tx, 3.1, -ty);
-      routeGroup.add(crown);
+        const crown = new THREE.Mesh(
+          new THREE.SphereGeometry(1.35, 10, 10),
+          new THREE.MeshStandardMaterial({ color: 0x2d5f35, roughness: 0.95 }),
+        );
+        crown.position.set(tx, 3.1, -ty);
+        routeGroup.add(crown);
+        treePlaced = true;
+      }
     }
   }
 }
