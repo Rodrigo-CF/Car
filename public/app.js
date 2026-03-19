@@ -184,10 +184,11 @@ const RENDER_QUALITY_PRESETS = {
     sunIntensity: 0.84,
     hemiIntensity: 0.66,
     exposure: 0.96,
-    treeLayers: 2,
-    treeSegments: 8,
+    treeLayers: 1,
+    treeSegments: 6,
     skySegments: 22,
-    treeScatterStep: 42,
+    treeScatterStep: 56,
+    treeTopBall: false,
   },
   medium: {
     label: "Medium",
@@ -199,10 +200,11 @@ const RENDER_QUALITY_PRESETS = {
     sunIntensity: 0.95,
     hemiIntensity: 0.74,
     exposure: 1.02,
-    treeLayers: 2,
-    treeSegments: 9,
+    treeLayers: 1,
+    treeSegments: 6,
     skySegments: 26,
-    treeScatterStep: 34,
+    treeScatterStep: 48,
+    treeTopBall: false,
   },
   high: {
     label: "High",
@@ -214,10 +216,11 @@ const RENDER_QUALITY_PRESETS = {
     sunIntensity: 1.03,
     hemiIntensity: 0.8,
     exposure: 1.05,
-    treeLayers: 3,
-    treeSegments: 10,
+    treeLayers: 2,
+    treeSegments: 7,
     skySegments: 30,
-    treeScatterStep: 30,
+    treeScatterStep: 40,
+    treeTopBall: true,
   },
 };
 const CANVAS_SYNC_INTERVAL_MS = 240;
@@ -5338,8 +5341,8 @@ function buildProceduralTreeGroup(THREE, checkpointOrPoint, options = {}) {
   const trunkHeight = (1.5 + seed * 0.75) * size;
   const trunkTop = (0.14 + seed * 0.05) * size;
   const trunkBottom = trunkTop * 1.3;
-  const canopyLayers = Math.max(2, Math.round(options.layers || quality.treeLayers || 3));
-  const radialSegments = Math.max(6, Math.round(options.segments || quality.treeSegments || 10));
+  const canopyLayers = Math.max(1, Math.round(options.layers || quality.treeLayers || 2));
+  const radialSegments = Math.max(5, Math.round(options.segments || quality.treeSegments || 7));
 
   const trunkMat = new THREE.MeshStandardMaterial({
     color: 0x5b3d2d,
@@ -5377,18 +5380,20 @@ function buildProceduralTreeGroup(THREE, checkpointOrPoint, options = {}) {
     group.add(crown);
   }
 
-  const topBall = new THREE.Mesh(
-    new THREE.IcosahedronGeometry(0.42 * size, quality.label === "high" ? 1 : 0),
-    new THREE.MeshStandardMaterial({
-      color: 0x3f8b45,
-      roughness: 0.86,
-      metalness: 0,
-    }),
-  );
-  topBall.position.y = trunkHeight + canopyLayers * (0.48 * size);
-  topBall.castShadow = Boolean(quality.shadows);
-  topBall.receiveShadow = Boolean(quality.shadows);
-  group.add(topBall);
+  if (quality.treeTopBall !== false) {
+    const topBall = new THREE.Mesh(
+      new THREE.IcosahedronGeometry(0.42 * size, quality.label === "high" ? 1 : 0),
+      new THREE.MeshStandardMaterial({
+        color: 0x3f8b45,
+        roughness: 0.86,
+        metalness: 0,
+      }),
+    );
+    topBall.position.y = trunkHeight + canopyLayers * (0.48 * size);
+    topBall.castShadow = Boolean(quality.shadows);
+    topBall.receiveShadow = Boolean(quality.shadows);
+    group.add(topBall);
+  }
 
   group.position.set(x, 0, -y);
   return group;
@@ -6755,26 +6760,28 @@ function createRoadNormalTexture(THREE, size, anisotropy) {
 }
 
 function createGrassTexture(THREE, size, anisotropy) {
+  const tileSize = Math.max(96, Math.min(160, Math.round(size)));
   return buildCanvasTexture(
     THREE,
-    size,
-    size,
+    tileSize,
+    tileSize,
     (ctx2d, w, h) => {
       const imageData = ctx2d.createImageData(w, h);
       const data = imageData.data;
+      const patch = Math.max(5, Math.round(w / 18));
       for (let y = 0; y < h; y += 1) {
         for (let x = 0; x < w; x += 1) {
           const idx = (y * w + x) * 4;
-          const micro = seededNoise2D(x * 0.39, y * 0.36);
-          const macro = seededNoise2D(x * 0.07, y * 0.055);
-          const swell = seededNoise2D(x * 0.024, y * 0.022);
-          const swellDx = seededNoise2D((x + 1) * 0.024, y * 0.022) - seededNoise2D((x - 1) * 0.024, y * 0.022);
-          const swellDy = seededNoise2D(x * 0.024, (y + 1) * 0.022) - seededNoise2D(x * 0.024, (y - 1) * 0.022);
-          const light = clamp01(0.6 + swellDx * 1.35 + swellDy * 0.8);
-          const shade = 0.83 + light * 0.36;
-          const baseR = 42 + micro * 18 + macro * 16 + swell * 14;
-          const baseG = 86 + micro * 55 + macro * 35 + swell * 26;
-          const baseB = 40 + micro * 18 + macro * 10 + swell * 8;
+          const px = Math.floor(x / patch);
+          const py = Math.floor(y / patch);
+          const patchNoise = seededNoise2D(px * 0.73, py * 0.69);
+          const micro = seededNoise2D(x * 0.41, y * 0.37);
+          const macro = seededNoise2D(x * 0.11, y * 0.085);
+          const swell = seededNoise2D(x * 0.031, y * 0.028);
+          const shade = 0.82 + macro * 0.32;
+          const baseR = 40 + patchNoise * 18 + micro * 9 + swell * 12;
+          const baseG = 82 + patchNoise * 48 + micro * 20 + swell * 24;
+          const baseB = 36 + patchNoise * 11 + micro * 8 + swell * 10;
           const r = Math.round(baseR * shade);
           const g = Math.round(baseG * shade);
           const b = Math.round(baseB * shade);
@@ -6785,19 +6792,57 @@ function createGrassTexture(THREE, size, anisotropy) {
         }
       }
       ctx2d.putImageData(imageData, 0, 0);
-      ctx2d.strokeStyle = "rgba(188, 228, 166, 0.08)";
+      ctx2d.strokeStyle = "rgba(188, 228, 166, 0.09)";
       ctx2d.lineWidth = 1;
-      for (let i = 0; i < 84; i += 1) {
+      for (let i = 0; i < 56; i += 1) {
         const x = seededNoise2D(i, 9.1) * w;
         const y = seededNoise2D(i, 14.7) * h;
-        const len = 4 + seededNoise2D(i, 23.2) * 6;
+        const len = 4 + seededNoise2D(i, 23.2) * 4;
         ctx2d.beginPath();
         ctx2d.moveTo(x, y);
-        ctx2d.lineTo(x + seededNoise2D(i, 33.6) * 3.6 - 1.8, y - len);
+        ctx2d.lineTo(x + seededNoise2D(i, 33.6) * 2.8 - 1.4, y - len);
         ctx2d.stroke();
       }
     },
-    { anisotropy, colorSpace: "srgb", repeatX: 10, repeatY: 10 },
+    { anisotropy, colorSpace: "srgb", repeatX: 18, repeatY: 18 },
+  );
+}
+
+function createGrassNormalTexture(THREE, size, anisotropy) {
+  const tileSize = Math.max(96, Math.min(160, Math.round(size)));
+  return buildCanvasTexture(
+    THREE,
+    tileSize,
+    tileSize,
+    (ctx2d, w, h) => {
+      const imageData = ctx2d.createImageData(w, h);
+      const data = imageData.data;
+      for (let y = 0; y < h; y += 1) {
+        for (let x = 0; x < w; x += 1) {
+          const idx = (y * w + x) * 4;
+          const macroDx =
+            seededNoise2D((x + 1) * 0.08, y * 0.07) -
+            seededNoise2D((x - 1) * 0.08, y * 0.07);
+          const macroDy =
+            seededNoise2D(x * 0.08, (y + 1) * 0.07) -
+            seededNoise2D(x * 0.08, (y - 1) * 0.07);
+          const microDx =
+            seededNoise2D((x + 1) * 0.33, y * 0.31) -
+            seededNoise2D((x - 1) * 0.33, y * 0.31);
+          const microDy =
+            seededNoise2D(x * 0.33, (y + 1) * 0.31) -
+            seededNoise2D(x * 0.33, (y - 1) * 0.31);
+          const nx = macroDx * 1.2 + microDx * 0.4;
+          const ny = macroDy * 1.2 + microDy * 0.4;
+          data[idx] = Math.round(128 + nx * 44);
+          data[idx + 1] = Math.round(128 + ny * 44);
+          data[idx + 2] = 255;
+          data[idx + 3] = 255;
+        }
+      }
+      ctx2d.putImageData(imageData, 0, 0);
+    },
+    { anisotropy, repeatX: 18, repeatY: 18 },
   );
 }
 
@@ -6892,12 +6937,15 @@ function ensureThreeEnvironmentAssets(THREE) {
   const maxAnisotropy = Math.max(1, three.renderer.capabilities?.getMaxAnisotropy?.() || 1);
   const anisotropy = Math.max(1, Math.min(maxAnisotropy, Math.round(Number(preset.textureAnisotropy) || (preset.shadows ? 6 : 4))));
   const textureSize = Math.max(128, Math.round(preset.textureSize || 384));
+  const grassSize = Math.max(96, Math.min(160, Math.round(textureSize * 0.45)));
+  const grassAnisotropy = Math.max(1, Math.min(anisotropy, 2));
   const assets = {
     quality,
     roadAlbedo: createRoadAlbedoTexture(THREE, textureSize, anisotropy),
     roadRoughness: createRoadRoughnessTexture(THREE, textureSize, anisotropy),
     roadNormal: createRoadNormalTexture(THREE, textureSize, anisotropy),
-    grassAlbedo: createGrassTexture(THREE, textureSize, anisotropy),
+    grassAlbedo: createGrassTexture(THREE, grassSize, grassAnisotropy),
+    grassNormal: createGrassNormalTexture(THREE, grassSize, grassAnisotropy),
     shoulderAlbedo: createShoulderTexture(THREE, textureSize, anisotropy),
     skyAlbedo: createSkyTexture(THREE, textureSize, anisotropy),
   };
@@ -7035,6 +7083,8 @@ function rebuildThreeRouteScene() {
   const grassMat = new THREE.MeshStandardMaterial({
     color: 0xffffff,
     map: env?.grassAlbedo || null,
+    normalMap: env?.grassNormal || null,
+    normalScale: env?.grassNormal ? new THREE.Vector2(0.44, 0.44) : null,
     roughness: 0.96,
     metalness: 0,
   });
@@ -7044,7 +7094,7 @@ function rebuildThreeRouteScene() {
   const groundH = Math.max(180, bounds.maxY - bounds.minY + 120);
   const groundCenterX = (bounds.minX + bounds.maxX) / 2;
   const groundCenterY = (bounds.minY + bounds.maxY) / 2;
-  const terrainSegments = quality.label === "high" ? 48 : quality.label === "medium" ? 32 : 20;
+  const terrainSegments = quality.label === "high" ? 36 : quality.label === "medium" ? 24 : 16;
   const groundGeometry = new THREE.PlaneGeometry(groundW, groundH, terrainSegments, terrainSegments);
   if (groundGeometry?.attributes?.position) {
     const positions = groundGeometry.attributes.position;
