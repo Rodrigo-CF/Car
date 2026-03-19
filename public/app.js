@@ -5660,6 +5660,28 @@ function clearThreeGroup(group) {
   }
 }
 
+function addStaticBoxInstances(THREE, group, geometry, material, transforms, options = {}) {
+  if (!THREE || !group || !geometry || !material || !Array.isArray(transforms) || !transforms.length) {
+    return null;
+  }
+  const mesh = new THREE.InstancedMesh(geometry, material, transforms.length);
+  mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+  const dummy = new THREE.Object3D();
+  for (let i = 0; i < transforms.length; i += 1) {
+    const tr = transforms[i];
+    dummy.position.set(tr.x || 0, tr.y || 0, tr.z || 0);
+    dummy.rotation.set(0, tr.yaw || 0, 0);
+    dummy.scale.set(tr.sx || 1, tr.sy || 1, tr.sz || 1);
+    dummy.updateMatrix();
+    mesh.setMatrixAt(i, dummy.matrix);
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+  mesh.castShadow = false;
+  mesh.receiveShadow = Boolean(options.receiveShadow);
+  group.add(mesh);
+  return mesh;
+}
+
 function applyGroundAlignedYaw(object3d, yawRad) {
   // Keep geometry flat on ground and rotate only around world up axis.
   object3d.rotation.order = "YXZ";
@@ -7282,6 +7304,12 @@ function rebuildThreeRouteScene() {
     1.6,
   );
   const laneProfileExitNodes = collectLaneProfileExitNodes(profileCheckpoints, profileRoutePath);
+  const roadTransforms = [];
+  const shoulderTransforms = [];
+  const dividerTransforms = [];
+  const roadInstanceGeometry = new THREE.BoxGeometry(1, 0.04, 1);
+  const shoulderInstanceGeometry = new THREE.BoxGeometry(1, 0.03, 1);
+  const dividerInstanceGeometry = new THREE.BoxGeometry(1, 0.042, 0.14);
   for (let i = 0; i < roadPath.length - 1; i += 1) {
     const a = roadPath[i];
     const b = roadPath[Math.min(i + 1, roadPath.length - 1)];
@@ -7374,36 +7402,50 @@ function rebuildThreeRouteScene() {
       const roadWidth = roadLeft + roadRight;
       const shoulderWidth = roadWidth + ROAD_SHOULDER_HALF_EXTRA_M * 2;
       const isAsymmetric = Math.abs(roadRight - roadLeft) > 0.05;
+      const renderYaw = -angle;
 
       if (!isAsymmetric) {
-        const shoulder = new THREE.Mesh(new THREE.BoxGeometry(slen, 0.03, shoulderWidth), shoulderMat);
-        shoulder.position.set(renderCenterX, 0.005, renderCenterZ);
-        shoulder.rotation.y = -angle;
-        shoulder.receiveShadow = Boolean(quality.shadows);
-        routeGroup.add(shoulder);
-
-        const road = new THREE.Mesh(new THREE.BoxGeometry(slen, 0.04, roadWidth), roadMat);
-        road.position.set(renderCenterX, 0.02, renderCenterZ);
-        road.rotation.y = -angle;
-        road.receiveShadow = Boolean(quality.shadows);
-        routeGroup.add(road);
+        shoulderTransforms.push({
+          x: renderCenterX,
+          y: 0.005,
+          z: renderCenterZ,
+          yaw: renderYaw,
+          sx: slen,
+          sy: 1,
+          sz: shoulderWidth,
+        });
+        roadTransforms.push({
+          x: renderCenterX,
+          y: 0.02,
+          z: renderCenterZ,
+          yaw: renderYaw,
+          sx: slen,
+          sy: 1,
+          sz: roadWidth,
+        });
       } else {
         const centerShift = (roadRight - roadLeft) * 0.5;
         const centerX = renderCenterX + rightMap.x * centerShift;
         const centerY = renderCenterY + rightMap.y * centerShift;
         const centerZ = -centerY;
-
-        const shoulder = new THREE.Mesh(new THREE.BoxGeometry(slen, 0.03, shoulderWidth), shoulderMat);
-        shoulder.position.set(centerX, 0.005, centerZ);
-        shoulder.rotation.y = -angle;
-        shoulder.receiveShadow = Boolean(quality.shadows);
-        routeGroup.add(shoulder);
-
-        const road = new THREE.Mesh(new THREE.BoxGeometry(slen, 0.04, roadWidth), roadMat);
-        road.position.set(centerX, 0.02, centerZ);
-        road.rotation.y = -angle;
-        road.receiveShadow = Boolean(quality.shadows);
-        routeGroup.add(road);
+        shoulderTransforms.push({
+          x: centerX,
+          y: 0.005,
+          z: centerZ,
+          yaw: renderYaw,
+          sx: slen,
+          sy: 1,
+          sz: shoulderWidth,
+        });
+        roadTransforms.push({
+          x: centerX,
+          y: 0.02,
+          z: centerZ,
+          yaw: renderYaw,
+          sx: slen,
+          sy: 1,
+          sz: roadWidth,
+        });
       }
     }
   }
@@ -7617,12 +7659,27 @@ function rebuildThreeRouteScene() {
       const dirZ = dz / Math.max(0.001, len);
       const dividerX = mx + rightMap.x * renderOffset;
       const dividerY = -mz + rightMap.y * renderOffset;
-      const divider = new THREE.Mesh(new THREE.BoxGeometry(dividerLen, 0.042, 0.14), lineMat);
-      divider.position.set(dividerX + dirX * shiftAlong, 0.043, -dividerY - dirZ * shiftAlong);
-      divider.rotation.y = -angle;
-      routeGroup.add(divider);
+      dividerTransforms.push({
+        x: dividerX + dirX * shiftAlong,
+        y: 0.043,
+        z: -dividerY - dirZ * shiftAlong,
+        yaw: -angle,
+        sx: dividerLen,
+        sy: 1,
+        sz: 1,
+      });
     }
   }
+
+  addStaticBoxInstances(THREE, routeGroup, shoulderInstanceGeometry, shoulderMat, shoulderTransforms, {
+    receiveShadow: Boolean(quality.shadows),
+  });
+  addStaticBoxInstances(THREE, routeGroup, roadInstanceGeometry, roadMat, roadTransforms, {
+    receiveShadow: Boolean(quality.shadows),
+  });
+  addStaticBoxInstances(THREE, routeGroup, dividerInstanceGeometry, lineMat, dividerTransforms, {
+    receiveShadow: false,
+  });
 
   renderLaneProfileEntryTrimPatches(THREE, routeGroup);
   renderLaneProfileExitJoinPatches(THREE, routeGroup);
