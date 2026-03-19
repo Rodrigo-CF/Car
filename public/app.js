@@ -7131,8 +7131,31 @@ function rebuildThreeRouteScene() {
   } else {
     // Lightweight tree scatter for extra depth when no explicit trees exist.
     const treeRoadClearanceM = 1.1;
+    const treeParkingClearanceScale = 1.08;
     const treeOffsetStepM = 3.6;
     const treeMaxAttempts = 4;
+    const parkingAvoidPolygons = [];
+    const parkingCheckpoints = [
+      ...routeCheckpoints("parking_parallel"),
+      ...routeCheckpoints("parking_diagonal"),
+    ];
+    for (const checkpoint of parkingCheckpoints) {
+      const shape = parkingShape(checkpoint);
+      if (shape?.corners?.length >= 3) {
+        parkingAvoidPolygons.push(insetPolygon(shape.corners, shape.center, treeParkingClearanceScale));
+      }
+      const connector = parkingConnectorShape(checkpoint, shape);
+      if (connector?.corners?.length >= 3) {
+        parkingAvoidPolygons.push(
+          insetPolygon(
+            connector.corners,
+            connector.center || shape?.center || checkpoint,
+            treeParkingClearanceScale,
+          ),
+        );
+      }
+    }
+
     for (let i = 0; i < roadPath.length; i += 26) {
       const p = roadPath[i];
       const next = roadPath[Math.min(i + 1, roadPath.length - 1)];
@@ -7149,6 +7172,19 @@ function rebuildThreeRouteScene() {
         const ty = p.y - Math.cos(heading) * attemptOffset * side;
         if (isPointInsideRoadOrShoulder(tx, ty, treeRoadClearanceM)) {
           continue;
+        }
+        if (parkingAvoidPolygons.length) {
+          const point = { x: tx, y: ty };
+          let blockedByParking = false;
+          for (const polygon of parkingAvoidPolygons) {
+            if (pointInConvexPolygon(point, polygon)) {
+              blockedByParking = true;
+              break;
+            }
+          }
+          if (blockedByParking) {
+            continue;
+          }
         }
 
         const trunk = new THREE.Mesh(
