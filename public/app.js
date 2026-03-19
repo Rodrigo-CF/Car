@@ -6933,13 +6933,10 @@ function buildGrassBillboardLayer(THREE, bounds, quality, assets) {
   if (!THREE || !bounds || !assets?.grassBlade) {
     return null;
   }
-  const width = Math.max(1, bounds.maxX - bounds.minX);
-  const height = Math.max(1, bounds.maxY - bounds.minY);
-  const area = width * height;
-  const targetTuftsCap = quality.label === "high" ? 820 : quality.label === "medium" ? 620 : 420;
-  const targetTufts = Math.max(220, Math.min(targetTuftsCap, Math.round(area * 0.018)));
-  const planesPerTuft = quality.label === "high" ? 3 : 2;
-  const maxInstances = targetTufts * planesPerTuft;
+  const qualityLabel = String(quality?.label || "medium").toLowerCase();
+  const planesPerTuft = qualityLabel === "high" ? 3 : 2;
+  const tuftCap = qualityLabel === "high" ? 12000 : qualityLabel === "medium" ? 8500 : 5600;
+  let coverageStep = qualityLabel === "high" ? 0.78 : qualityLabel === "medium" ? 0.96 : 1.16;
   const geometry = new THREE.PlaneGeometry(0.22, 0.58);
   const material = new THREE.MeshBasicMaterial({
     map: assets.grassBlade,
@@ -6949,56 +6946,89 @@ function buildGrassBillboardLayer(THREE, bounds, quality, assets) {
     depthWrite: true,
     fog: true,
   });
-  const instanced = new THREE.InstancedMesh(geometry, material, maxInstances);
-  instanced.castShadow = false;
-  instanced.receiveShadow = false;
-
   const avoidPolygons = buildParkingAvoidPolygonsForDecor();
-  const dummy = new THREE.Object3D();
   const minX = bounds.minX - 14;
   const maxX = bounds.maxX + 14;
   const minY = bounds.minY - 14;
   const maxY = bounds.maxY + 14;
-  let tuftPlaced = 0;
-  let instanceIndex = 0;
-  const maxAttempts = targetTufts * 12;
-  for (let attempt = 0; attempt < maxAttempts && tuftPlaced < targetTufts; attempt += 1) {
-    const tx = minX + seededNoise2D(attempt * 1.13, 4.7) * (maxX - minX);
-    const ty = minY + seededNoise2D(attempt * 1.27, 8.9) * (maxY - minY);
-    if (isPointInsideRoadOrShoulder(tx, ty, 1.15)) {
-      continue;
-    }
-    if (avoidPolygons.length) {
-      const point = { x: tx, y: ty };
-      let blocked = false;
-      for (const poly of avoidPolygons) {
-        if (pointInConvexPolygon(point, poly)) {
-          blocked = true;
-          break;
-        }
-      }
-      if (blocked) {
+  const candidateCount = Math.max(1, Math.round((maxX - minX) / coverageStep) * Math.round((maxY - minY) / coverageStep));
+  if (candidateCount > tuftCap * 1.9) {
+    const factor = Math.sqrt(candidateCount / (tuftCap * 1.9));
+    coverageStep *= factor;
+  }
+  const jitter = coverageStep * 0.34;
+  const tufts = [];
+  const cols = Math.max(1, Math.floor((maxX - minX) / coverageStep) + 1);
+  const rows = Math.max(1, Math.floor((maxY - minY) / coverageStep) + 1);
+  for (let gy = 0; gy < rows; gy += 1) {
+    const yBase = minY + gy * coverageStep;
+    for (let gx = 0; gx < cols; gx += 1) {
+      const xBase = minX + gx * coverageStep;
+      const noiseX = seededNoise2D(gx * 1.71, gy * 2.31);
+      const noiseY = seededNoise2D(gx * 2.07 + 17.9, gy * 1.43 + 9.4);
+      const tx = xBase + (noiseX - 0.5) * 2 * jitter;
+      const ty = yBase + (noiseY - 0.5) * 2 * jitter;
+      if (isPointInsideRoadOrShoulder(tx, ty, 1.15)) {
         continue;
       }
+      if (avoidPolygons.length) {
+        const point = { x: tx, y: ty };
+        let blocked = false;
+        for (const poly of avoidPolygons) {
+          if (pointInConvexPolygon(point, poly)) {
+            blocked = true;
+            break;
+          }
+        }
+        if (blocked) {
+          continue;
+        }
+      }
+      tufts.push({ x: tx, y: ty });
     }
+  }
+  if (!tufts.length) {
+    geometry.dispose();
+    material.dispose();
+    return null;
+  }
+  if (tufts.length > tuftCap) {
+    const stride = tufts.length / tuftCap;
+    const reduced = [];
+    let cursor = 0;
+    for (let i = 0; i < tuftCap; i += 1) {
+      reduced.push(tufts[Math.floor(cursor)]);
+      cursor += stride;
+    }
+    tufts.length = 0;
+    Array.prototype.push.apply(tufts, reduced);
+  }
 
-    const tuftScale = 0.8 + seededNoise2D(tx * 0.17, ty * 0.14) * 0.7;
-    const tuftHeight = (0.78 + seededNoise2D(tx * 0.11, ty * 0.09) * 0.58) * tuftScale;
-    const tuftWidth = (0.68 + seededNoise2D(tx * 0.13, ty * 0.1) * 0.52) * tuftScale;
+  const maxInstances = tufts.length * planesPerTuft;
+  const instanced = new THREE.InstancedMesh(geometry, material, maxInstances);
+  instanced.castShadow = false;
+  instanced.receiveShadow = false;
+  const dummy = new THREE.Object3D();
+  let instanceIndex = 0;
+  for (let i = 0; i < tufts.length; i += 1) {
+    const tx = tufts[i].x;
+    const ty = tufts[i].y;
+    const tuftScale = 0.84 + seededNoise2D(tx * 0.17, ty * 0.14) * 0.64;
+    const tuftHeight = (0.78 + seededNoise2D(tx * 0.11, ty * 0.09) * 0.52) * tuftScale;
+    const tuftWidth = (0.72 + seededNoise2D(tx * 0.13, ty * 0.1) * 0.46) * tuftScale;
     for (let p = 0; p < planesPerTuft && instanceIndex < maxInstances; p += 1) {
-      const localJitter = (seededNoise2D(tx * (0.9 + p * 0.1), ty * (0.8 + p * 0.07)) - 0.5) * 0.18;
+      const localJitter = (seededNoise2D(tx * (0.9 + p * 0.1), ty * (0.8 + p * 0.07)) - 0.5) * Math.max(0.08, coverageStep * 0.16);
       const worldX = tx + localJitter;
       const worldY = ty - localJitter * 0.7;
       const yaw = seededNoise2D(tx * (0.5 + p * 0.08), ty * (0.46 + p * 0.08)) * Math.PI * 2 + p * (Math.PI / 3);
       const lift = -0.01 + seededNoise2D(tx * 0.23, ty * 0.2) * 0.026;
       dummy.position.set(worldX, lift, -worldY);
       dummy.rotation.set(0, yaw, 0);
-      dummy.scale.set(Math.max(0.34, tuftWidth * (0.8 + p * 0.08)), Math.max(0.42, tuftHeight), 1);
+      dummy.scale.set(Math.max(0.32, tuftWidth * (0.84 + p * 0.08)), Math.max(0.4, tuftHeight), 1);
       dummy.updateMatrix();
       instanced.setMatrixAt(instanceIndex, dummy.matrix);
       instanceIndex += 1;
     }
-    tuftPlaced += 1;
   }
   instanced.count = instanceIndex;
   instanced.instanceMatrix.needsUpdate = true;
