@@ -20,6 +20,7 @@ const state = {
     lastKeepAliveAt: 0,
     keepAliveTimer: null,
     camera: "first",
+    renderQuality: "medium",
     trafficLightRed: true,
     trafficLightManual: null,
     trafficLightCycleSec: 30,
@@ -85,6 +86,8 @@ const state = {
       remotePlayerMarkers: new Map(),
       remoteAfkLabelMaterial: null,
       remoteAfkLabelTexture: null,
+      environmentAssets: null,
+      skyDome: null,
     },
   },
   mapper: {
@@ -169,6 +172,48 @@ const MODEL_DASH_DISPLAY = {
 };
 const TARGET_OVERLAY_UI_TOP_SCALE = 0.82;
 const MAX_RENDER_PIXEL_RATIO = 1.25;
+const RENDER_QUALITY_STORAGE_KEY = "sim_render_quality_v1";
+const RENDER_QUALITY_PRESETS = {
+  low: {
+    label: "Low",
+    pixelRatioMax: 1.0,
+    textureSize: 256,
+    shadows: false,
+    shadowMapSize: 512,
+    sunIntensity: 0.84,
+    hemiIntensity: 0.66,
+    exposure: 0.96,
+    treeLayers: 2,
+    treeSegments: 8,
+    skySegments: 22,
+  },
+  medium: {
+    label: "Medium",
+    pixelRatioMax: 1.15,
+    textureSize: 384,
+    shadows: true,
+    shadowMapSize: 1024,
+    sunIntensity: 0.95,
+    hemiIntensity: 0.74,
+    exposure: 1.02,
+    treeLayers: 3,
+    treeSegments: 10,
+    skySegments: 28,
+  },
+  high: {
+    label: "High",
+    pixelRatioMax: 1.25,
+    textureSize: 512,
+    shadows: true,
+    shadowMapSize: 1536,
+    sunIntensity: 1.03,
+    hemiIntensity: 0.8,
+    exposure: 1.05,
+    treeLayers: 4,
+    treeSegments: 12,
+    skySegments: 36,
+  },
+};
 const CANVAS_SYNC_INTERVAL_MS = 240;
 const HUD_UPDATE_INTERVAL_ACTIVE_MS = 90;
 const HUD_UPDATE_INTERVAL_IDLE_MS = 300;
@@ -241,6 +286,7 @@ const dom = {
   theoryTableBody: document.querySelector("#theory-table tbody"),
   simTableBody: document.querySelector("#sim-table tbody"),
   routeSelect: document.querySelector("#route-select"),
+  renderQuality: document.querySelector("#render-quality"),
   multiplayerRoom: document.querySelector("#multiplayer-room"),
   multiplayerJoinBtn: document.querySelector("#multiplayer-join"),
   multiplayerLeaveBtn: document.querySelector("#multiplayer-leave"),
@@ -311,6 +357,31 @@ const ctx = dom.canvas.getContext("2d");
 const miniCtx = dom.miniMapCanvas.getContext("2d");
 const mapperCtx = dom.mapperCanvas.getContext("2d");
 let simPenaltyCardTimer = null;
+
+function clampRenderQuality(value) {
+  return Object.prototype.hasOwnProperty.call(RENDER_QUALITY_PRESETS, value) ? value : "medium";
+}
+
+function readPersistedRenderQuality() {
+  try {
+    const stored = localStorage.getItem(RENDER_QUALITY_STORAGE_KEY);
+    return clampRenderQuality(stored || state.sim.renderQuality || "medium");
+  } catch {
+    return clampRenderQuality(state.sim.renderQuality || "medium");
+  }
+}
+
+function persistRenderQuality(value) {
+  try {
+    localStorage.setItem(RENDER_QUALITY_STORAGE_KEY, clampRenderQuality(value));
+  } catch {
+    // ignore storage failures in private/incognito contexts
+  }
+}
+
+function currentRenderQualityPreset() {
+  return RENDER_QUALITY_PRESETS[clampRenderQuality(state.sim.renderQuality)] || RENDER_QUALITY_PRESETS.medium;
+}
 
 function formatJson(value) {
   return JSON.stringify(value, null, 2);
@@ -5247,6 +5318,76 @@ function startCanopyPlacement(checkpoint) {
   return { heading, roadWidth, length, height, roofWidth };
 }
 
+function proceduralTreeSeed(x, y, extra = 0) {
+  return seededNoise2D(x * 0.73 + extra * 0.31, y * 0.61 + extra * 0.47);
+}
+
+function buildProceduralTreeGroup(THREE, checkpointOrPoint, options = {}) {
+  const quality = currentRenderQualityPreset();
+  const x = Number(checkpointOrPoint?.x) || 0;
+  const y = Number(checkpointOrPoint?.y) || 0;
+  const sizeRaw = Number(options.size ?? checkpointOrPoint?.meta?.size ?? 1);
+  const size = Math.max(0.58, Math.min(2.8, sizeRaw));
+  const seed = proceduralTreeSeed(x, y, Number(options.seedOffset) || 0);
+  const trunkHeight = (1.5 + seed * 0.75) * size;
+  const trunkTop = (0.14 + seed * 0.05) * size;
+  const trunkBottom = trunkTop * 1.3;
+  const canopyLayers = Math.max(2, Math.round(options.layers || quality.treeLayers || 3));
+  const radialSegments = Math.max(6, Math.round(options.segments || quality.treeSegments || 10));
+
+  const trunkMat = new THREE.MeshStandardMaterial({
+    color: 0x5b3d2d,
+    roughness: 0.95,
+    metalness: 0.02,
+  });
+  const leafPalette = [0x2f6c34, 0x3c8244, 0x2c5f2f];
+
+  const group = new THREE.Group();
+  const trunk = new THREE.Mesh(
+    new THREE.CylinderGeometry(trunkTop, trunkBottom, trunkHeight, Math.max(6, radialSegments - 2)),
+    trunkMat,
+  );
+  trunk.position.y = trunkHeight * 0.5;
+  trunk.castShadow = Boolean(quality.shadows);
+  trunk.receiveShadow = Boolean(quality.shadows);
+  group.add(trunk);
+
+  for (let i = 0; i < canopyLayers; i += 1) {
+    const t = i / Math.max(1, canopyLayers - 1);
+    const crownRadius = (1.05 - t * 0.27) * size * (0.9 + proceduralTreeSeed(x, y, i + 5) * 0.18);
+    const crownHeight = (1.15 - t * 0.12) * size;
+    const crown = new THREE.Mesh(
+      new THREE.ConeGeometry(crownRadius, crownHeight, radialSegments),
+      new THREE.MeshStandardMaterial({
+        color: leafPalette[i % leafPalette.length],
+        roughness: 0.9,
+        metalness: 0,
+      }),
+    );
+    crown.position.y = trunkHeight + crownHeight * 0.45 + i * (crownHeight * 0.45);
+    crown.rotation.y = proceduralTreeSeed(x, y, i + 11) * Math.PI * 2;
+    crown.castShadow = Boolean(quality.shadows);
+    crown.receiveShadow = Boolean(quality.shadows);
+    group.add(crown);
+  }
+
+  const topBall = new THREE.Mesh(
+    new THREE.IcosahedronGeometry(0.42 * size, quality.label === "high" ? 1 : 0),
+    new THREE.MeshStandardMaterial({
+      color: 0x3f8b45,
+      roughness: 0.86,
+      metalness: 0,
+    }),
+  );
+  topBall.position.y = trunkHeight + canopyLayers * (0.48 * size);
+  topBall.castShadow = Boolean(quality.shadows);
+  topBall.receiveShadow = Boolean(quality.shadows);
+  group.add(topBall);
+
+  group.position.set(x, 0, -y);
+  return group;
+}
+
 function createCanopyLabelTexture(THREE, text, options = {}) {
   const width = Math.max(64, Math.round(Number(options.width) || 512));
   const height = Math.max(64, Math.round(Number(options.height) || 192));
@@ -6490,6 +6631,359 @@ function renderLaneProfileExitJoinPatches(THREE, routeGroup) {
   }
 }
 
+function seededNoise2D(x, y) {
+  const value = Math.sin(x * 127.1 + y * 311.7) * 43758.5453123;
+  return value - Math.floor(value);
+}
+
+function buildCanvasTexture(THREE, width, height, painter, options = {}) {
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx2d = canvas.getContext("2d");
+  if (!ctx2d) {
+    return null;
+  }
+  painter(ctx2d, width, height);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = options.wrapS || THREE.RepeatWrapping;
+  texture.wrapT = options.wrapT || THREE.RepeatWrapping;
+  texture.repeat.set(options.repeatX || 1, options.repeatY || 1);
+  if (Number.isFinite(options.anisotropy) && options.anisotropy > 1) {
+    texture.anisotropy = options.anisotropy;
+  }
+  if (options.colorSpace === "srgb") {
+    if ("colorSpace" in texture && THREE.SRGBColorSpace) {
+      texture.colorSpace = THREE.SRGBColorSpace;
+    } else if ("encoding" in texture && THREE.sRGBEncoding) {
+      texture.encoding = THREE.sRGBEncoding;
+    }
+  }
+  texture.needsUpdate = true;
+  return texture;
+}
+
+function createRoadAlbedoTexture(THREE, size, anisotropy) {
+  return buildCanvasTexture(
+    THREE,
+    size,
+    size,
+    (ctx2d, w, h) => {
+      const imageData = ctx2d.createImageData(w, h);
+      const data = imageData.data;
+      for (let y = 0; y < h; y += 1) {
+        for (let x = 0; x < w; x += 1) {
+          const idx = (y * w + x) * 4;
+          const grain = seededNoise2D(x * 0.51, y * 0.53);
+          const macro = seededNoise2D(x * 0.07, y * 0.08);
+          const value = Math.round(46 + grain * 24 + macro * 16);
+          data[idx] = value;
+          data[idx + 1] = value + 2;
+          data[idx + 2] = value + 4;
+          data[idx + 3] = 255;
+        }
+      }
+      ctx2d.putImageData(imageData, 0, 0);
+      ctx2d.strokeStyle = "rgba(175,185,196,0.06)";
+      ctx2d.lineWidth = Math.max(1, Math.round(size / 320));
+      for (let i = 0; i < 18; i += 1) {
+        const y = (i / 18) * h + seededNoise2D(i, 17.4) * 10 - 5;
+        ctx2d.beginPath();
+        ctx2d.moveTo(0, y);
+        ctx2d.lineTo(w, y + (seededNoise2D(i, 25.4) - 0.5) * 14);
+        ctx2d.stroke();
+      }
+    },
+    { anisotropy, colorSpace: "srgb", repeatX: 6, repeatY: 6 },
+  );
+}
+
+function createRoadRoughnessTexture(THREE, size, anisotropy) {
+  return buildCanvasTexture(
+    THREE,
+    size,
+    size,
+    (ctx2d, w, h) => {
+      const imageData = ctx2d.createImageData(w, h);
+      const data = imageData.data;
+      for (let y = 0; y < h; y += 1) {
+        for (let x = 0; x < w; x += 1) {
+          const idx = (y * w + x) * 4;
+          const grain = seededNoise2D(x * 0.45, y * 0.49);
+          const value = Math.round(186 + grain * 46);
+          data[idx] = value;
+          data[idx + 1] = value;
+          data[idx + 2] = value;
+          data[idx + 3] = 255;
+        }
+      }
+      ctx2d.putImageData(imageData, 0, 0);
+    },
+    { anisotropy, repeatX: 6, repeatY: 6 },
+  );
+}
+
+function createRoadNormalTexture(THREE, size, anisotropy) {
+  return buildCanvasTexture(
+    THREE,
+    size,
+    size,
+    (ctx2d, w, h) => {
+      const imageData = ctx2d.createImageData(w, h);
+      const data = imageData.data;
+      for (let y = 0; y < h; y += 1) {
+        for (let x = 0; x < w; x += 1) {
+          const idx = (y * w + x) * 4;
+          const nx = seededNoise2D(x * 0.44, y * 0.39) * 2 - 1;
+          const ny = seededNoise2D(x * 0.37, y * 0.43) * 2 - 1;
+          data[idx] = Math.round(128 + nx * 20);
+          data[idx + 1] = Math.round(128 + ny * 20);
+          data[idx + 2] = 255;
+          data[idx + 3] = 255;
+        }
+      }
+      ctx2d.putImageData(imageData, 0, 0);
+    },
+    { anisotropy, repeatX: 6, repeatY: 6 },
+  );
+}
+
+function createGrassTexture(THREE, size, anisotropy) {
+  return buildCanvasTexture(
+    THREE,
+    size,
+    size,
+    (ctx2d, w, h) => {
+      const imageData = ctx2d.createImageData(w, h);
+      const data = imageData.data;
+      for (let y = 0; y < h; y += 1) {
+        for (let x = 0; x < w; x += 1) {
+          const idx = (y * w + x) * 4;
+          const n0 = seededNoise2D(x * 0.41, y * 0.37);
+          const n1 = seededNoise2D(x * 0.08, y * 0.06);
+          const r = Math.round(50 + n0 * 28 + n1 * 14);
+          const g = Math.round(90 + n0 * 70 + n1 * 22);
+          const b = Math.round(44 + n0 * 22);
+          data[idx] = r;
+          data[idx + 1] = g;
+          data[idx + 2] = b;
+          data[idx + 3] = 255;
+        }
+      }
+      ctx2d.putImageData(imageData, 0, 0);
+      ctx2d.strokeStyle = "rgba(200,230,170,0.09)";
+      ctx2d.lineWidth = 1;
+      for (let i = 0; i < 90; i += 1) {
+        const x = seededNoise2D(i, 9.1) * w;
+        const y = seededNoise2D(i, 14.7) * h;
+        const len = 3 + seededNoise2D(i, 23.2) * 5;
+        ctx2d.beginPath();
+        ctx2d.moveTo(x, y);
+        ctx2d.lineTo(x + seededNoise2D(i, 33.6) * 4 - 2, y - len);
+        ctx2d.stroke();
+      }
+    },
+    { anisotropy, colorSpace: "srgb", repeatX: 10, repeatY: 10 },
+  );
+}
+
+function createShoulderTexture(THREE, size, anisotropy) {
+  return buildCanvasTexture(
+    THREE,
+    size,
+    size,
+    (ctx2d, w, h) => {
+      const imageData = ctx2d.createImageData(w, h);
+      const data = imageData.data;
+      for (let y = 0; y < h; y += 1) {
+        for (let x = 0; x < w; x += 1) {
+          const idx = (y * w + x) * 4;
+          const n0 = seededNoise2D(x * 0.33, y * 0.31);
+          const n1 = seededNoise2D(x * 0.07, y * 0.05);
+          const r = Math.round(78 + n0 * 40 + n1 * 20);
+          const g = Math.round(58 + n0 * 22 + n1 * 14);
+          const b = Math.round(44 + n0 * 15 + n1 * 10);
+          data[idx] = r;
+          data[idx + 1] = g;
+          data[idx + 2] = b;
+          data[idx + 3] = 255;
+        }
+      }
+      ctx2d.putImageData(imageData, 0, 0);
+    },
+    { anisotropy, colorSpace: "srgb", repeatX: 8, repeatY: 8 },
+  );
+}
+
+function createSkyTexture(THREE, size, anisotropy) {
+  return buildCanvasTexture(
+    THREE,
+    size * 2,
+    size,
+    (ctx2d, w, h) => {
+      const grad = ctx2d.createLinearGradient(0, 0, 0, h);
+      grad.addColorStop(0, "#1f5f99");
+      grad.addColorStop(0.4, "#4d90c6");
+      grad.addColorStop(0.72, "#8dc2e1");
+      grad.addColorStop(1, "#d8eefc");
+      ctx2d.fillStyle = grad;
+      ctx2d.fillRect(0, 0, w, h);
+
+      const cloudCount = Math.max(12, Math.round(size / 20));
+      for (let i = 0; i < cloudCount; i += 1) {
+        const cx = seededNoise2D(i, 11.7) * w;
+        const cy = h * (0.1 + seededNoise2D(i, 15.3) * 0.45);
+        const rx = 38 + seededNoise2D(i, 22.4) * 90;
+        const ry = rx * (0.3 + seededNoise2D(i, 32.9) * 0.22);
+        const alpha = 0.05 + seededNoise2D(i, 42.1) * 0.12;
+        const cloud = ctx2d.createRadialGradient(cx, cy, rx * 0.12, cx, cy, rx);
+        cloud.addColorStop(0, `rgba(255,255,255,${alpha})`);
+        cloud.addColorStop(1, "rgba(255,255,255,0)");
+        ctx2d.fillStyle = cloud;
+        ctx2d.beginPath();
+        ctx2d.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+        ctx2d.fill();
+      }
+    },
+    { anisotropy, colorSpace: "srgb", repeatX: 1, repeatY: 1 },
+  );
+}
+
+function disposeEnvironmentAssets(three) {
+  if (!three?.environmentAssets) {
+    return;
+  }
+  const assets = three.environmentAssets;
+  for (const key of Object.keys(assets)) {
+    const value = assets[key];
+    if (value?.isTexture && typeof value.dispose === "function") {
+      value.dispose();
+    }
+  }
+  three.environmentAssets = null;
+}
+
+function ensureThreeEnvironmentAssets(THREE) {
+  const three = state.sim.three;
+  if (!three?.renderer || !THREE) {
+    return null;
+  }
+  const quality = clampRenderQuality(state.sim.renderQuality);
+  const preset = currentRenderQualityPreset();
+  if (three.environmentAssets?.quality === quality) {
+    return three.environmentAssets;
+  }
+
+  disposeEnvironmentAssets(three);
+  const maxAnisotropy = Math.max(1, three.renderer.capabilities?.getMaxAnisotropy?.() || 1);
+  const anisotropy = Math.min(maxAnisotropy, preset.shadows ? 8 : 4);
+  const textureSize = Math.max(128, Math.round(preset.textureSize || 384));
+  const assets = {
+    quality,
+    roadAlbedo: createRoadAlbedoTexture(THREE, textureSize, anisotropy),
+    roadRoughness: createRoadRoughnessTexture(THREE, textureSize, anisotropy),
+    roadNormal: createRoadNormalTexture(THREE, textureSize, anisotropy),
+    grassAlbedo: createGrassTexture(THREE, textureSize, anisotropy),
+    shoulderAlbedo: createShoulderTexture(THREE, textureSize, anisotropy),
+    skyAlbedo: createSkyTexture(THREE, textureSize, anisotropy),
+  };
+  three.environmentAssets = assets;
+  return assets;
+}
+
+function rebuildSkyDome(THREE) {
+  const three = state.sim.three;
+  if (!three?.scene || !THREE) {
+    return;
+  }
+  if (three.skyDome) {
+    three.scene.remove(three.skyDome);
+    if (three.skyDome.geometry) {
+      three.skyDome.geometry.dispose();
+    }
+    if (three.skyDome.material) {
+      three.skyDome.material.dispose();
+    }
+    three.skyDome = null;
+  }
+  const assets = ensureThreeEnvironmentAssets(THREE);
+  if (!assets?.skyAlbedo) {
+    return;
+  }
+  const preset = currentRenderQualityPreset();
+  const sky = new THREE.Mesh(
+    new THREE.SphereGeometry(360, Math.max(18, preset.skySegments || 28), Math.max(12, Math.round((preset.skySegments || 28) * 0.58))),
+    new THREE.MeshBasicMaterial({
+      map: assets.skyAlbedo,
+      side: THREE.BackSide,
+      depthWrite: false,
+      fog: false,
+    }),
+  );
+  sky.position.set(0, 36, 0);
+  sky.frustumCulled = false;
+  three.scene.add(sky);
+  three.skyDome = sky;
+}
+
+function applyRenderQualitySettings({ rebuildRoute = true } = {}) {
+  const three = state.sim.three;
+  if (!three?.renderer || !three?.lib) {
+    return;
+  }
+  const THREE = three.lib;
+  const preset = currentRenderQualityPreset();
+  const renderer = three.renderer;
+  const pixelRatioCap = Math.min(MAX_RENDER_PIXEL_RATIO, Number(preset.pixelRatioMax) || MAX_RENDER_PIXEL_RATIO);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, pixelRatioCap));
+  renderer.shadowMap.enabled = Boolean(preset.shadows);
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  if ("toneMapping" in renderer && THREE.ACESFilmicToneMapping) {
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  }
+  if ("toneMappingExposure" in renderer) {
+    renderer.toneMappingExposure = Number(preset.exposure) || 1;
+  }
+  if ("outputColorSpace" in renderer && THREE.SRGBColorSpace) {
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+  } else if ("outputEncoding" in renderer && THREE.sRGBEncoding) {
+    renderer.outputEncoding = THREE.sRGBEncoding;
+  }
+
+  if (three.lights?.hemi) {
+    three.lights.hemi.intensity = Number(preset.hemiIntensity) || 0.72;
+  }
+  if (three.lights?.sun) {
+    three.lights.sun.intensity = Number(preset.sunIntensity) || 0.95;
+    three.lights.sun.castShadow = Boolean(preset.shadows);
+    if (three.lights.sun.shadow?.mapSize) {
+      const size = Math.max(512, Math.round(Number(preset.shadowMapSize) || 1024));
+      three.lights.sun.shadow.mapSize.set(size, size);
+    }
+  }
+
+  ensureThreeEnvironmentAssets(THREE);
+  rebuildSkyDome(THREE);
+  if (rebuildRoute && state.sim.route) {
+    rebuildThreeRouteScene();
+  }
+  if (dom.renderQuality && dom.renderQuality.value !== state.sim.renderQuality) {
+    dom.renderQuality.value = state.sim.renderQuality;
+  }
+}
+
+function setRenderQuality(value, options = {}) {
+  const nextQuality = clampRenderQuality(value);
+  state.sim.renderQuality = nextQuality;
+  persistRenderQuality(nextQuality);
+  if (dom.renderQuality && dom.renderQuality.value !== nextQuality) {
+    dom.renderQuality.value = nextQuality;
+  }
+  if (state.sim.three?.ready) {
+    applyRenderQualitySettings({ rebuildRoute: options.rebuildRoute !== false });
+  }
+}
+
 function rebuildThreeRouteScene() {
   const three = state.sim.three;
   if (!three.ready || !state.sim.route) {
@@ -6505,11 +6999,31 @@ function rebuildThreeRouteScene() {
   clearThreeGroup(routeGroup);
   three.trafficLightRefs = [];
   three.parkingSlotRefs = [];
+  const quality = currentRenderQualityPreset();
+  const env = ensureThreeEnvironmentAssets(THREE);
 
-  const roadMat = new THREE.MeshStandardMaterial({ color: 0x2e343b, roughness: 0.95, metalness: 0.03 });
-  const shoulderMat = new THREE.MeshStandardMaterial({ color: 0x4f3f33, roughness: 1, metalness: 0 });
-  const lineMat = new THREE.MeshStandardMaterial({ color: 0xe7eaee, roughness: 0.65, metalness: 0 });
-  const grassMat = new THREE.MeshStandardMaterial({ color: 0x496949, roughness: 1, metalness: 0 });
+  const roadMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    map: env?.roadAlbedo || null,
+    roughnessMap: env?.roadRoughness || null,
+    normalMap: env?.roadNormal || null,
+    normalScale: env?.roadNormal ? new THREE.Vector2(0.28, 0.28) : null,
+    roughness: 0.93,
+    metalness: 0.03,
+  });
+  const shoulderMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    map: env?.shoulderAlbedo || null,
+    roughness: 0.98,
+    metalness: 0,
+  });
+  const lineMat = new THREE.MeshStandardMaterial({ color: 0xf0f5f8, roughness: 0.58, metalness: 0 });
+  const grassMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    map: env?.grassAlbedo || null,
+    roughness: 0.96,
+    metalness: 0,
+  });
 
   const bounds = state.sim.routeBounds ?? computeRouteBounds(state.sim.routeDensePath);
   const groundW = Math.max(180, bounds.maxX - bounds.minX + 120);
@@ -6517,6 +7031,7 @@ function rebuildThreeRouteScene() {
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(groundW, groundH), grassMat);
   ground.rotation.x = -Math.PI / 2;
   ground.position.set((bounds.minX + bounds.maxX) / 2, -0.03, -((bounds.minY + bounds.maxY) / 2));
+  ground.receiveShadow = Boolean(quality.shadows);
   routeGroup.add(ground);
 
   const rawPath = state.sim.routeDensePath?.length ? state.sim.routeDensePath : state.sim.routePath;
@@ -6635,11 +7150,13 @@ function rebuildThreeRouteScene() {
         const shoulder = new THREE.Mesh(new THREE.BoxGeometry(slen, 0.03, shoulderWidth), shoulderMat);
         shoulder.position.set(renderCenterX, 0.005, renderCenterZ);
         shoulder.rotation.y = -angle;
+        shoulder.receiveShadow = Boolean(quality.shadows);
         routeGroup.add(shoulder);
 
         const road = new THREE.Mesh(new THREE.BoxGeometry(slen, 0.04, roadWidth), roadMat);
         road.position.set(renderCenterX, 0.02, renderCenterZ);
         road.rotation.y = -angle;
+        road.receiveShadow = Boolean(quality.shadows);
         routeGroup.add(road);
       } else {
         const centerShift = (roadRight - roadLeft) * 0.5;
@@ -6650,11 +7167,13 @@ function rebuildThreeRouteScene() {
         const shoulder = new THREE.Mesh(new THREE.BoxGeometry(slen, 0.03, shoulderWidth), shoulderMat);
         shoulder.position.set(centerX, 0.005, centerZ);
         shoulder.rotation.y = -angle;
+        shoulder.receiveShadow = Boolean(quality.shadows);
         routeGroup.add(shoulder);
 
         const road = new THREE.Mesh(new THREE.BoxGeometry(slen, 0.04, roadWidth), roadMat);
         road.position.set(centerX, 0.02, centerZ);
         road.rotation.y = -angle;
+        road.receiveShadow = Boolean(quality.shadows);
         routeGroup.add(road);
       }
     }
@@ -7112,21 +7631,10 @@ function rebuildThreeRouteScene() {
 
   const treeCheckpoints = routeCheckpoints("tree");
   if (treeCheckpoints.length) {
-    for (const checkpoint of treeCheckpoints) {
-      const size = Math.max(0.6, Math.min(2.6, Number(checkpoint.meta?.size) || 1));
-      const trunk = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.16 * size, 0.22 * size, 1.8 * size, 8),
-        new THREE.MeshStandardMaterial({ color: 0x4f3a2f, roughness: 1 }),
-      );
-      trunk.position.set(checkpoint.x, 0.9 * size, -checkpoint.y);
-      routeGroup.add(trunk);
-
-      const crown = new THREE.Mesh(
-        new THREE.SphereGeometry(1.0 * size, 10, 10),
-        new THREE.MeshStandardMaterial({ color: 0x2d5f35, roughness: 0.95 }),
-      );
-      crown.position.set(checkpoint.x, 2.3 * size, -checkpoint.y);
-      routeGroup.add(crown);
+    for (let i = 0; i < treeCheckpoints.length; i += 1) {
+      const checkpoint = treeCheckpoints[i];
+      const tree = buildProceduralTreeGroup(THREE, checkpoint, { seedOffset: i * 1.7 });
+      routeGroup.add(tree);
     }
   } else {
     // Lightweight tree scatter for extra depth when no explicit trees exist.
@@ -7187,22 +7695,23 @@ function rebuildThreeRouteScene() {
           }
         }
 
-        const trunk = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.22, 0.28, 2.4, 8),
-          new THREE.MeshStandardMaterial({ color: 0x4f3a2f, roughness: 1 }),
-        );
-        trunk.position.set(tx, 1.2, -ty);
-        routeGroup.add(trunk);
-
-        const crown = new THREE.Mesh(
-          new THREE.SphereGeometry(1.35, 10, 10),
-          new THREE.MeshStandardMaterial({ color: 0x2d5f35, roughness: 0.95 }),
-        );
-        crown.position.set(tx, 3.1, -ty);
-        routeGroup.add(crown);
+        const tree = buildProceduralTreeGroup(THREE, { x: tx, y: ty }, { size: 0.95, seedOffset: i + attempt * 3.1 });
+        routeGroup.add(tree);
         treePlaced = true;
       }
     }
+  }
+
+  if (quality.shadows) {
+    routeGroup.traverse((node) => {
+      if (!node?.isMesh) {
+        return;
+      }
+      if (node.castShadow !== true) {
+        node.castShadow = false;
+      }
+      node.receiveShadow = true;
+    });
   }
 }
 
@@ -8658,10 +9167,21 @@ async function initThreeEngine() {
       powerPreference: "high-performance",
     });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, MAX_RENDER_PIXEL_RATIO));
+    if ("toneMapping" in renderer && THREE.ACESFilmicToneMapping) {
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1;
+    }
+    if ("outputColorSpace" in renderer && THREE.SRGBColorSpace) {
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+    } else if ("outputEncoding" in renderer && THREE.sRGBEncoding) {
+      renderer.outputEncoding = THREE.sRGBEncoding;
+    }
+    renderer.shadowMap.enabled = false;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x79a8c7);
-    scene.fog = new THREE.Fog(0x79a8c7, 80, 260);
+    scene.background = new THREE.Color(0x87b6d3);
+    scene.fog = new THREE.Fog(0x87b6d3, 90, 290);
 
     const camera = new THREE.PerspectiveCamera(
       68,
@@ -8671,12 +9191,21 @@ async function initThreeEngine() {
     );
     camera.position.set(0, 1.5, 10);
 
-    const hemi = new THREE.HemisphereLight(0xc6e3ff, 0x446341, 0.76);
+    const hemi = new THREE.HemisphereLight(0xb7d8f2, 0x3d5935, 0.74);
     hemi.position.set(0, 60, 0);
     scene.add(hemi);
 
-    const sun = new THREE.DirectionalLight(0xfff7e6, 0.92);
-    sun.position.set(30, 45, 18);
+    const sun = new THREE.DirectionalLight(0xfff2d6, 0.95);
+    sun.position.set(42, 56, 18);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(1024, 1024);
+    sun.shadow.camera.near = 0.5;
+    sun.shadow.camera.far = 260;
+    sun.shadow.camera.left = -96;
+    sun.shadow.camera.right = 96;
+    sun.shadow.camera.top = 96;
+    sun.shadow.camera.bottom = -96;
+    sun.shadow.normalBias = 0.02;
     scene.add(sun);
 
     const routeGroup = new THREE.Group();
@@ -8737,6 +9266,9 @@ async function initThreeEngine() {
     three.dashDisplayMode = "overlay";
     three.dashDisplayTargetMesh = null;
     three.dashDisplayTargetName = "";
+    three.environmentAssets = null;
+    three.skyDome = null;
+    three.lights = { hemi, sun };
     three.ready = true;
     three.failed = false;
     three.loading = false;
@@ -8752,6 +9284,7 @@ async function initThreeEngine() {
     drawDashDisplaySpeed(state.sim.car?.speedKmh ?? 0);
 
     syncCanvasSize();
+    applyRenderQualitySettings({ rebuildRoute: false });
     dom.canvas.style.opacity = "0";
     if (state.sim.route) {
       rebuildThreeRouteScene();
@@ -9314,6 +9847,11 @@ function updateThreeScene(dt = 1 / 60) {
   }
   drawDashDisplaySpeed(car?.speedKmh ?? 0);
   syncThreeRemotePlayers();
+  if (three.skyDome) {
+    const anchorX = car ? car.x : camera.position.x;
+    const anchorZ = car ? -car.y : camera.position.z;
+    three.skyDome.position.set(anchorX, 36, anchorZ);
+  }
 
   renderer.render(scene, camera);
   return true;
@@ -12051,6 +12589,8 @@ function bindRouteMapperUi() {
 }
 
 function bindUi() {
+  setRenderQuality(readPersistedRenderQuality(), { rebuildRoute: false });
+
   document.querySelector("#register-btn").addEventListener("click", () => {
     register().catch((error) => {
       showAuthFeedback(error.message, "error");
@@ -12115,6 +12655,13 @@ function bindUi() {
       if (!isManual || !dom.multiplayerRoom.value.trim()) {
         dom.multiplayerRoom.value = defaultMultiplayerRoomId(dom.routeSelect.value);
       }
+    });
+  }
+  if (dom.renderQuality) {
+    dom.renderQuality.addEventListener("change", () => {
+      setRenderQuality(dom.renderQuality.value, { rebuildRoute: true });
+      const preset = currentRenderQualityPreset();
+      dom.simState.textContent = `Graphics quality set to ${preset.label}.`;
     });
   }
   if (dom.multiplayerJoinBtn) {
