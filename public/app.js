@@ -6801,53 +6801,6 @@ function createGrassTexture(THREE, size, anisotropy) {
   );
 }
 
-function createGrassBladeTexture(THREE, size, anisotropy) {
-  const bladeW = Math.max(64, Math.min(96, Math.round(size * 0.28)));
-  const bladeH = Math.max(112, Math.min(164, Math.round(size * 0.52)));
-  return buildCanvasTexture(
-    THREE,
-    bladeW,
-    bladeH,
-    (ctx2d, w, h) => {
-      ctx2d.clearRect(0, 0, w, h);
-      const blades = 20;
-      for (let i = 0; i < blades; i += 1) {
-        const seed = i + 1;
-        const t = seed / blades;
-        const baseX = w * (0.12 + seededNoise2D(seed, 1.7) * 0.76);
-        const baseY = h - 2;
-        const bend = (seededNoise2D(seed, 5.9) - 0.5) * (w * 0.26);
-        const tipX = baseX + bend;
-        const tipY = h * (0.08 + seededNoise2D(seed, 9.4) * 0.42);
-        const cp1x = baseX + bend * 0.15;
-        const cp1y = h * (0.82 - t * 0.18);
-        const cp2x = baseX + bend * 0.62;
-        const cp2y = h * (0.45 - t * 0.18);
-        const width = 1.1 + seededNoise2D(seed, 13.2) * 2.3;
-        const grad = ctx2d.createLinearGradient(baseX, baseY, tipX, tipY);
-        grad.addColorStop(0, "rgba(64,124,45,0.98)");
-        grad.addColorStop(0.55, "rgba(98,176,54,0.95)");
-        grad.addColorStop(1, "rgba(182,232,86,0.9)");
-        ctx2d.strokeStyle = grad;
-        ctx2d.lineWidth = width;
-        ctx2d.lineCap = "round";
-        ctx2d.beginPath();
-        ctx2d.moveTo(baseX, baseY);
-        ctx2d.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, tipX, tipY);
-        ctx2d.stroke();
-      }
-    },
-    {
-      anisotropy: Math.max(1, Math.min(2, anisotropy)),
-      colorSpace: "srgb",
-      wrapS: THREE.ClampToEdgeWrapping,
-      wrapT: THREE.ClampToEdgeWrapping,
-      repeatX: 1,
-      repeatY: 1,
-    },
-  );
-}
-
 function createShoulderTexture(THREE, size, anisotropy) {
   return buildCanvasTexture(
     THREE,
@@ -6910,131 +6863,6 @@ function createSkyTexture(THREE, size, anisotropy) {
   );
 }
 
-function buildParkingAvoidPolygonsForDecor() {
-  const polygons = [];
-  const parkingCheckpoints = [
-    ...routeCheckpoints("parking_parallel"),
-    ...routeCheckpoints("parking_diagonal"),
-  ];
-  for (const checkpoint of parkingCheckpoints) {
-    const shape = parkingShape(checkpoint);
-    if (shape?.corners?.length >= 3) {
-      polygons.push(insetPolygon(shape.corners, shape.center, 1.06));
-    }
-    const connector = parkingConnectorShape(checkpoint, shape);
-    if (connector?.corners?.length >= 3) {
-      polygons.push(insetPolygon(connector.corners, connector.center || shape?.center || checkpoint, 1.06));
-    }
-  }
-  return polygons;
-}
-
-function buildGrassBillboardLayer(THREE, bounds, quality, assets) {
-  if (!THREE || !bounds || !assets?.grassBlade) {
-    return null;
-  }
-  const qualityLabel = String(quality?.label || "medium").toLowerCase();
-  const planesPerTuft = qualityLabel === "high" ? 3 : 2;
-  const tuftCap = qualityLabel === "high" ? 12000 : qualityLabel === "medium" ? 8500 : 5600;
-  let coverageStep = qualityLabel === "high" ? 0.78 : qualityLabel === "medium" ? 0.96 : 1.16;
-  const geometry = new THREE.PlaneGeometry(0.22, 0.58);
-  const material = new THREE.MeshBasicMaterial({
-    map: assets.grassBlade,
-    transparent: true,
-    alphaTest: 0.44,
-    side: THREE.DoubleSide,
-    depthWrite: true,
-    fog: true,
-  });
-  const avoidPolygons = buildParkingAvoidPolygonsForDecor();
-  const minX = bounds.minX - 14;
-  const maxX = bounds.maxX + 14;
-  const minY = bounds.minY - 14;
-  const maxY = bounds.maxY + 14;
-  const candidateCount = Math.max(1, Math.round((maxX - minX) / coverageStep) * Math.round((maxY - minY) / coverageStep));
-  if (candidateCount > tuftCap * 1.9) {
-    const factor = Math.sqrt(candidateCount / (tuftCap * 1.9));
-    coverageStep *= factor;
-  }
-  const jitter = coverageStep * 0.34;
-  const tufts = [];
-  const cols = Math.max(1, Math.floor((maxX - minX) / coverageStep) + 1);
-  const rows = Math.max(1, Math.floor((maxY - minY) / coverageStep) + 1);
-  for (let gy = 0; gy < rows; gy += 1) {
-    const yBase = minY + gy * coverageStep;
-    for (let gx = 0; gx < cols; gx += 1) {
-      const xBase = minX + gx * coverageStep;
-      const noiseX = seededNoise2D(gx * 1.71, gy * 2.31);
-      const noiseY = seededNoise2D(gx * 2.07 + 17.9, gy * 1.43 + 9.4);
-      const tx = xBase + (noiseX - 0.5) * 2 * jitter;
-      const ty = yBase + (noiseY - 0.5) * 2 * jitter;
-      if (isPointInsideRoadOrShoulder(tx, ty, 1.15)) {
-        continue;
-      }
-      if (avoidPolygons.length) {
-        const point = { x: tx, y: ty };
-        let blocked = false;
-        for (const poly of avoidPolygons) {
-          if (pointInConvexPolygon(point, poly)) {
-            blocked = true;
-            break;
-          }
-        }
-        if (blocked) {
-          continue;
-        }
-      }
-      tufts.push({ x: tx, y: ty });
-    }
-  }
-  if (!tufts.length) {
-    geometry.dispose();
-    material.dispose();
-    return null;
-  }
-  if (tufts.length > tuftCap) {
-    const stride = tufts.length / tuftCap;
-    const reduced = [];
-    let cursor = 0;
-    for (let i = 0; i < tuftCap; i += 1) {
-      reduced.push(tufts[Math.floor(cursor)]);
-      cursor += stride;
-    }
-    tufts.length = 0;
-    Array.prototype.push.apply(tufts, reduced);
-  }
-
-  const maxInstances = tufts.length * planesPerTuft;
-  const instanced = new THREE.InstancedMesh(geometry, material, maxInstances);
-  instanced.castShadow = false;
-  instanced.receiveShadow = false;
-  const dummy = new THREE.Object3D();
-  let instanceIndex = 0;
-  for (let i = 0; i < tufts.length; i += 1) {
-    const tx = tufts[i].x;
-    const ty = tufts[i].y;
-    const tuftScale = 0.84 + seededNoise2D(tx * 0.17, ty * 0.14) * 0.64;
-    const tuftHeight = (0.78 + seededNoise2D(tx * 0.11, ty * 0.09) * 0.52) * tuftScale;
-    const tuftWidth = (0.72 + seededNoise2D(tx * 0.13, ty * 0.1) * 0.46) * tuftScale;
-    for (let p = 0; p < planesPerTuft && instanceIndex < maxInstances; p += 1) {
-      const localJitter = (seededNoise2D(tx * (0.9 + p * 0.1), ty * (0.8 + p * 0.07)) - 0.5) * Math.max(0.08, coverageStep * 0.16);
-      const worldX = tx + localJitter;
-      const worldY = ty - localJitter * 0.7;
-      const yaw = seededNoise2D(tx * (0.5 + p * 0.08), ty * (0.46 + p * 0.08)) * Math.PI * 2 + p * (Math.PI / 3);
-      const lift = -0.01 + seededNoise2D(tx * 0.23, ty * 0.2) * 0.026;
-      dummy.position.set(worldX, lift, -worldY);
-      dummy.rotation.set(0, yaw, 0);
-      dummy.scale.set(Math.max(0.32, tuftWidth * (0.84 + p * 0.08)), Math.max(0.4, tuftHeight), 1);
-      dummy.updateMatrix();
-      instanced.setMatrixAt(instanceIndex, dummy.matrix);
-      instanceIndex += 1;
-    }
-  }
-  instanced.count = instanceIndex;
-  instanced.instanceMatrix.needsUpdate = true;
-  return instanced;
-}
-
 function disposeEnvironmentAssets(three) {
   if (!three?.environmentAssets) {
     return;
@@ -7064,14 +6892,12 @@ function ensureThreeEnvironmentAssets(THREE) {
   const maxAnisotropy = Math.max(1, three.renderer.capabilities?.getMaxAnisotropy?.() || 1);
   const anisotropy = Math.max(1, Math.min(maxAnisotropy, Math.round(Number(preset.textureAnisotropy) || (preset.shadows ? 6 : 4))));
   const textureSize = Math.max(128, Math.round(preset.textureSize || 384));
-  const grassBladeSize = Math.max(128, Math.min(220, Math.round(textureSize * 0.52)));
   const assets = {
     quality,
     roadAlbedo: createRoadAlbedoTexture(THREE, textureSize, anisotropy),
     roadRoughness: createRoadRoughnessTexture(THREE, textureSize, anisotropy),
     roadNormal: createRoadNormalTexture(THREE, textureSize, anisotropy),
     grassAlbedo: createGrassTexture(THREE, textureSize, anisotropy),
-    grassBlade: createGrassBladeTexture(THREE, grassBladeSize, anisotropy),
     shoulderAlbedo: createShoulderTexture(THREE, textureSize, anisotropy),
     skyAlbedo: createSkyTexture(THREE, textureSize, anisotropy),
   };
@@ -7240,11 +7066,6 @@ function rebuildThreeRouteScene() {
   ground.position.set(groundCenterX, -0.02, -groundCenterY);
   ground.receiveShadow = Boolean(quality.shadows);
   routeGroup.add(ground);
-
-  const grassLayer = buildGrassBillboardLayer(THREE, bounds, quality, env);
-  if (grassLayer) {
-    routeGroup.add(grassLayer);
-  }
 
   const rawPath = state.sim.routeDensePath?.length ? state.sim.routeDensePath : state.sim.routePath;
   const roadRenderPath = densifyPath(rawPath, ROAD_RENDER_DENSE_STEP_M);
