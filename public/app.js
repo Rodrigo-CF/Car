@@ -265,6 +265,7 @@ const ROAD_RENDER_JOINT_SEGMENTS = 24;
 // Keep road render density aligned with route density to avoid entry bulges
 // at trim_previous 2L->3L joins.
 const ROAD_RENDER_DENSE_STEP_M = 0.9;
+const STOP_LINE_LANE_EDGE_MARGIN_M = 0.13;
 const CAMERA_MODE_CYCLE = ["first", "third", "right", "front", "left", "top"];
 const EXTERNAL_CAMERA_MODES = new Set(["third", "right", "front", "left", "top"]);
 
@@ -5305,7 +5306,8 @@ function stopLineSegment(checkpoint) {
   };
   const lineWidth = Math.max(0.1, Math.min(0.8, Number(checkpoint.meta?.lineWidthM) || 0.26));
   const halfLongitudinal = lineWidth * 0.5;
-  const halfLateral = laneWidth / 2;
+  const laneEdgeMargin = Math.min(laneWidth * 0.2, STOP_LINE_LANE_EDGE_MARGIN_M);
+  const halfLateral = Math.max(0.2, laneWidth * 0.5 - laneEdgeMargin);
   const dir = { x: Math.cos(heading), y: Math.sin(heading) };
   const right = { x: Math.sin(heading), y: -Math.cos(heading) };
 
