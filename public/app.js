@@ -473,9 +473,37 @@ function mapperAllowsMultiple(type) {
 
 function mapperLaneSelection() {
   const laneCount = Math.max(1, Math.round(Number(dom.mapperLaneCount.value) || 2));
-  const side = dom.mapperLaneSide?.value === "right" ? "right" : "left";
-  const lane = side === "left" ? 1 : laneCount;
+  let side = "right";
+  if (dom.mapperLaneSide?.value === "left") {
+    side = "left";
+  } else if (dom.mapperLaneSide?.value === "center") {
+    side = "center";
+  }
+  if (side === "center" && laneCount < 3) {
+    side = "right";
+  }
+  const lane =
+    side === "left" ? 1
+      : side === "center" ? Math.ceil(laneCount / 2)
+      : laneCount;
   return { lane, laneCount, side };
+}
+
+function updateMapperLaneSideOptions() {
+  if (!dom.mapperLaneSide || !dom.mapperLaneCount) {
+    return;
+  }
+  const type = dom.mapperCheckpointType?.value || "";
+  const laneCount = Math.max(1, Math.round(Number(dom.mapperLaneCount.value) || 2));
+  const centerOption = dom.mapperLaneSide.querySelector('option[value="center"]');
+  const allowCenter = type === "stop_line_free" && laneCount >= 3;
+  if (centerOption) {
+    centerOption.hidden = !allowCenter;
+    centerOption.disabled = !allowCenter;
+  }
+  if (!allowCenter && dom.mapperLaneSide.value === "center") {
+    dom.mapperLaneSide.value = "right";
+  }
 }
 
 function mapperDefaultMeta(type) {
@@ -1988,6 +2016,7 @@ function updateMapperCheckpointUi() {
   dom.mapperTrafficFields.classList.toggle("hidden", !trafficMode);
   dom.mapperLaneFields.classList.toggle("hidden", !bumpMode);
   dom.mapperParkingFields.classList.toggle("hidden", !parkingMode);
+  updateMapperLaneSideOptions();
 
   const helpByType = {
     speed_zone: "Speed Zone: place at the lane section where speed limit starts.",
@@ -1995,7 +2024,7 @@ function updateMapperCheckpointUi() {
       "Traffic Light: click near a road edge and it snaps to the closest path edge. Choose orientation, then add at least one Stop Line nearby.",
     stop_line: "Stop Line: choose lanes + lane side, click near the road. It snaps to the closest path and occupies one lane.",
     stop_line_free:
-      "Standalone Stop Line: same lane snap as Stop Line, but it is not paired to a traffic light and does not trigger red-light penalties.",
+      "Standalone Stop Line: same lane snap as Stop Line, but it is not paired to a traffic light and does not trigger red-light penalties. For 3 lanes, choose left/center/right.",
     roundabout: "Roundabout: place at the ovalo center area.",
     parking_parallel: "Parking Parallel: choose number of slots, then click left/right of path; bays auto-snap to that road edge.",
     parking_diagonal: "Parking Diagonal: choose slots/angle, then click left/right of path; bays auto-snap to that road edge.",
@@ -12137,6 +12166,7 @@ function bindRouteMapperUi() {
   state.mapper.librarySearch = dom.mapperLibrarySearch?.value || "";
 
   dom.mapperCheckpointType.addEventListener("change", updateMapperCheckpointUi);
+  dom.mapperLaneCount?.addEventListener("change", updateMapperLaneSideOptions);
   dom.mapperLaneWidth.addEventListener("input", () => {
     if (state.mapper.scalePointsPx.length === 2) {
       const [a, b] = state.mapper.scalePointsPx;
