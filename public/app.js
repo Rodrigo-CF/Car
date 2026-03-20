@@ -54,6 +54,7 @@ const state = {
       lights: null,
       routeGroup: null,
       trafficLightRefs: null,
+      lastTrafficLightRed: null,
       parkingSlotRefs: [],
       wheelMesh: null,
       wheelSteerRef: null,
@@ -5892,17 +5893,35 @@ function clearThreeGroup(group) {
     return;
   }
 
+  const disposedGeometries = new Set();
+  const disposedMaterials = new Set();
+  function disposeNodeResources(node) {
+    if (!node) {
+      return;
+    }
+    if (node.geometry && !disposedGeometries.has(node.geometry)) {
+      disposedGeometries.add(node.geometry);
+      node.geometry.dispose();
+    }
+    if (Array.isArray(node.material)) {
+      for (const mat of node.material) {
+        if (mat && !disposedMaterials.has(mat)) {
+          disposedMaterials.add(mat);
+          mat.dispose();
+        }
+      }
+    } else if (node.material && !disposedMaterials.has(node.material)) {
+      disposedMaterials.add(node.material);
+      node.material.dispose();
+    }
+  }
+
   while (group.children.length > 0) {
     const child = group.children.pop();
-    if (child.geometry) {
-      child.geometry.dispose();
-    }
-    if (Array.isArray(child.material)) {
-      for (const mat of child.material) {
-        mat.dispose();
-      }
-    } else if (child.material) {
-      child.material.dispose();
+    if (typeof child?.traverse === "function") {
+      child.traverse(disposeNodeResources);
+    } else {
+      disposeNodeResources(child);
     }
   }
 }
@@ -5934,6 +5953,24 @@ function addStaticInstances(THREE, group, geometry, material, transforms, option
 
 function addStaticBoxInstances(THREE, group, geometry, material, transforms, options = {}) {
   return addStaticInstances(THREE, group, geometry, material, transforms, options);
+}
+
+function freezeStaticRouteMatrices(group) {
+  if (!group?.traverse) {
+    return;
+  }
+  group.traverse((node) => {
+    if (!node || node === group) {
+      return;
+    }
+    node.matrixAutoUpdate = false;
+    if (typeof node.updateMatrix === "function") {
+      node.updateMatrix();
+    }
+    if (typeof node.updateMatrixWorld === "function") {
+      node.updateMatrixWorld(true);
+    }
+  });
 }
 
 function registerRouteCullRef(three, object, centerX, centerY, maxDistanceM = 120) {
@@ -7540,6 +7577,7 @@ function rebuildThreeRouteScene() {
 
   clearThreeGroup(routeGroup);
   three.trafficLightRefs = [];
+  three.lastTrafficLightRed = null;
   three.parkingSlotRefs = [];
   three.routeCullRefs = [];
   three.lastRouteCullUpdateAt = 0;
@@ -7998,6 +8036,8 @@ function rebuildThreeRouteScene() {
 
   // Fill segment joints with rounded caps so curves/roundabouts look smooth
   // instead of showing polygonal wedge gaps between straight road pieces.
+  const shoulderCapTransforms = [];
+  const roadCapTransforms = [];
   for (let i = 0; i < roadPath.length; i += 1) {
     const point = roadPath[i];
     if (!point) {
@@ -8056,19 +8096,44 @@ function rebuildThreeRouteScene() {
     const roadRadius = (avgLeft + avgRight) * 0.5;
     const shoulderRadius = roadRadius + ROAD_SHOULDER_HALF_EXTRA_M;
 
-    const shoulderCap = new THREE.Mesh(
-      new THREE.CylinderGeometry(shoulderRadius, shoulderRadius, 0.03, ROAD_RENDER_JOINT_SEGMENTS),
+    shoulderCapTransforms.push({
+      x: capCenterX,
+      y: 0.005,
+      z: -capCenterY,
+      yaw: 0,
+      sx: shoulderRadius,
+      sy: 1,
+      sz: shoulderRadius,
+    });
+    roadCapTransforms.push({
+      x: capCenterX,
+      y: 0.02,
+      z: -capCenterY,
+      yaw: 0,
+      sx: roadRadius,
+      sy: 1,
+      sz: roadRadius,
+    });
+  }
+  if (shoulderCapTransforms.length) {
+    addStaticInstances(
+      THREE,
+      routeGroup,
+      new THREE.CylinderGeometry(1, 1, 0.03, ROAD_RENDER_JOINT_SEGMENTS),
       shoulderMat,
+      shoulderCapTransforms,
+      { receiveShadow: Boolean(quality.shadows) },
     );
-    shoulderCap.position.set(capCenterX, 0.005, -capCenterY);
-    routeGroup.add(shoulderCap);
-
-    const roadCap = new THREE.Mesh(
-      new THREE.CylinderGeometry(roadRadius, roadRadius, 0.04, ROAD_RENDER_JOINT_SEGMENTS),
+  }
+  if (roadCapTransforms.length) {
+    addStaticInstances(
+      THREE,
+      routeGroup,
+      new THREE.CylinderGeometry(1, 1, 0.04, ROAD_RENDER_JOINT_SEGMENTS),
       roadMat,
+      roadCapTransforms,
+      { receiveShadow: Boolean(quality.shadows) },
     );
-    roadCap.position.set(capCenterX, 0.02, -capCenterY);
-    routeGroup.add(roadCap);
   }
 
   for (const checkpoint of state.sim.route.checkpoints) {
@@ -8255,6 +8320,8 @@ function rebuildThreeRouteScene() {
       node.receiveShadow = true;
     });
   }
+
+  freezeStaticRouteMatrices(routeGroup);
 }
 
 function drawMiniMapOverlay() {
@@ -10375,9 +10442,12 @@ function updateThreeScene(dt = 1 / 60) {
   }
   if (Array.isArray(trafficLightRefs) && trafficLightRefs.length) {
     const redOn = isTrafficLightRed();
-    for (const refs of trafficLightRefs) {
-      refs.redMat.emissive.setHex(redOn ? 0xd21f2e : 0x1a0205);
-      refs.greenMat.emissive.setHex(redOn ? 0x041009 : 0x26ba82);
+    if (redOn !== three.lastTrafficLightRed) {
+      for (const refs of trafficLightRefs) {
+        refs.redMat.emissive.setHex(redOn ? 0xd21f2e : 0x1a0205);
+        refs.greenMat.emissive.setHex(redOn ? 0x041009 : 0x26ba82);
+      }
+      three.lastTrafficLightRed = redOn;
     }
   }
   updateRouteCullVisibility(nowMs);
