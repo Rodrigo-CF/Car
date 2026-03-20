@@ -48,6 +48,9 @@ const state = {
       blockedBoxId: "",
       active: null,
       lastHudTickSec: -1,
+      bubbleText: "",
+      bubbleUntilMs: 0,
+      bubbleAnchor: null,
     },
     three: {
       ready: false,
@@ -342,6 +345,8 @@ const dom = {
   resetPenaltyBtn: document.querySelector("#reset-penalty"),
   simWebglStatus: document.querySelector("#sim-webgl-status"),
   simPenaltyCard: document.querySelector("#sim-penalty-card"),
+  simVeedorBubble: document.querySelector("#sim-veedor-bubble"),
+  simAssignmentBanner: document.querySelector("#sim-assignment-banner"),
   simSignalLeft: document.querySelector("#sim-signal-left"),
   simSignalRight: document.querySelector("#sim-signal-right"),
   mapperImageFile: document.querySelector("#mapper-image-file"),
@@ -395,6 +400,7 @@ const ctx = dom.canvas.getContext("2d");
 const miniCtx = dom.miniMapCanvas.getContext("2d");
 const mapperCtx = dom.mapperCanvas.getContext("2d");
 let simPenaltyCardTimer = null;
+let parkingAssignmentSpeechSeq = 0;
 
 function clampRenderQuality(value) {
   return Object.prototype.hasOwnProperty.call(RENDER_QUALITY_PRESETS, value) ? value : "medium";
@@ -450,6 +456,73 @@ function showPenaltyCard(message, durationMs = 2600) {
     hidePenaltyCard();
     simPenaltyCardTimer = null;
   }, durationMs);
+}
+
+function hideVeedorBubble() {
+  if (!dom.simVeedorBubble) {
+    return;
+  }
+  dom.simVeedorBubble.classList.add("hidden");
+  dom.simVeedorBubble.textContent = "";
+}
+
+function hideAssignmentBanner() {
+  if (!dom.simAssignmentBanner) {
+    return;
+  }
+  dom.simAssignmentBanner.classList.add("hidden");
+  dom.simAssignmentBanner.classList.remove("danger");
+  dom.simAssignmentBanner.textContent = "";
+}
+
+function assignmentDisplayUsername() {
+  const raw = String(state.user?.username || "participante").trim();
+  if (!raw) {
+    return "Participante";
+  }
+  const display = peerDisplayName(raw);
+  return `${display.charAt(0).toUpperCase()}${display.slice(1)}`;
+}
+
+function formatClockCountdown(totalSec) {
+  const sec = Math.max(0, Math.round(Number(totalSec) || 0));
+  const minutes = Math.floor(sec / 60);
+  const seconds = sec % 60;
+  return `${String(minutes).padStart(1, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function speakVeedorAssignment(text) {
+  if (!text || typeof window === "undefined" || !("speechSynthesis" in window)) {
+    return;
+  }
+  try {
+    parkingAssignmentSpeechSeq += 1;
+    const seq = parkingAssignmentSpeechSeq;
+    const synth = window.speechSynthesis;
+    synth.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = "es-PE";
+    utterance.rate = 0.95;
+    utterance.pitch = 1;
+    utterance.volume = 1;
+    const voices = synth.getVoices ? synth.getVoices() : [];
+    const voice =
+      voices.find((item) => /^es(-|_)(pe|mx|es)\b/i.test(String(item.lang || ""))) ||
+      voices.find((item) => /^es(-|_)/i.test(String(item.lang || ""))) ||
+      null;
+    if (voice) {
+      utterance.voice = voice;
+    }
+    // Guard against queued stale utterances if assignment changes quickly.
+    utterance.onstart = () => {
+      if (seq !== parkingAssignmentSpeechSeq) {
+        synth.cancel();
+      }
+    };
+    synth.speak(utterance);
+  } catch {
+    // Voice is optional; ignore environments where synthesis is restricted.
+  }
 }
 
 function resetPenaltyPoints() {
@@ -2469,7 +2542,98 @@ function parkingAssignmentHudText(nowMs = Date.now()) {
   return "Assignment: none";
 }
 
+function setParkingAssignmentBubble(text, anchor = null, durationMs = 4300) {
+  const assignmentState = state.sim.parkingAssignment;
+  if (!assignmentState) {
+    return;
+  }
+  const cleanText = String(text || "").trim();
+  if (!cleanText) {
+    assignmentState.bubbleText = "";
+    assignmentState.bubbleUntilMs = 0;
+    assignmentState.bubbleAnchor = null;
+    hideVeedorBubble();
+    return;
+  }
+  assignmentState.bubbleText = cleanText;
+  assignmentState.bubbleUntilMs = Date.now() + Math.max(1200, Math.round(Number(durationMs) || 0));
+  assignmentState.bubbleAnchor = anchor && Number.isFinite(anchor.x) && Number.isFinite(anchor.y)
+    ? { x: Number(anchor.x), y: Number(anchor.y), h: Number(anchor.h) || 2.6 }
+    : null;
+}
+
+function projectRoutePointToViewport(x, y, h = 2.6) {
+  const three = state.sim.three;
+  if (!three?.ready || !three.camera || !three.lib || !dom.glCanvas) {
+    return null;
+  }
+  const width = dom.glCanvas.clientWidth || 0;
+  const height = dom.glCanvas.clientHeight || 0;
+  if (!(width > 0 && height > 0)) {
+    return null;
+  }
+  const point = new three.lib.Vector3(x, h, -y);
+  point.project(three.camera);
+  if (!Number.isFinite(point.x) || !Number.isFinite(point.y) || point.z < -1 || point.z > 1) {
+    return null;
+  }
+  const px = (point.x * 0.5 + 0.5) * width;
+  const py = (-point.y * 0.5 + 0.5) * height;
+  if (!Number.isFinite(px) || !Number.isFinite(py)) {
+    return null;
+  }
+  return {
+    x: Math.max(18, Math.min(width - 18, px)),
+    y: Math.max(18, Math.min(height - 18, py)),
+  };
+}
+
+function updateParkingAssignmentOverlays(nowMs = Date.now()) {
+  const assignmentState = state.sim.parkingAssignment;
+  const active = assignmentState?.active;
+  if (dom.simAssignmentBanner) {
+    if (active) {
+      const username = assignmentDisplayUsername();
+      const remainingMs = Math.max(0, Number(active.deadlineMs || 0) - nowMs);
+      const remainingSec = Math.max(0, Math.ceil(remainingMs / 1000));
+      dom.simAssignmentBanner.textContent = `${username}, tienes ${formatClockCountdown(remainingSec)} para parquear.`;
+      dom.simAssignmentBanner.classList.remove("hidden");
+      dom.simAssignmentBanner.classList.toggle("danger", remainingSec <= 10);
+    } else {
+      hideAssignmentBanner();
+    }
+  }
+
+  if (!dom.simVeedorBubble || !assignmentState) {
+    return;
+  }
+  if (!assignmentState.bubbleText || Number(assignmentState.bubbleUntilMs || 0) <= nowMs) {
+    assignmentState.bubbleText = "";
+    assignmentState.bubbleUntilMs = 0;
+    assignmentState.bubbleAnchor = null;
+    hideVeedorBubble();
+    return;
+  }
+  dom.simVeedorBubble.textContent = assignmentState.bubbleText;
+  dom.simVeedorBubble.classList.remove("hidden");
+  const anchor = assignmentState.bubbleAnchor;
+  if (!anchor) {
+    dom.simVeedorBubble.style.left = "50%";
+    dom.simVeedorBubble.style.top = "24%";
+    return;
+  }
+  const point = projectRoutePointToViewport(anchor.x, anchor.y, anchor.h);
+  if (!point) {
+    dom.simVeedorBubble.style.left = "50%";
+    dom.simVeedorBubble.style.top = "20%";
+    return;
+  }
+  dom.simVeedorBubble.style.left = `${point.x}px`;
+  dom.simVeedorBubble.style.top = `${point.y}px`;
+}
+
 function updateHudOverlay() {
+  const nowMs = Date.now();
   dom.hudSpeed.textContent = `Speed: ${Math.max(0, state.sim.car?.speedKmh ?? 0).toFixed(1)} km/h`;
   dom.hudSignal.textContent = `Signal: ${state.sim.lastSignal || "off"}`;
   if (dom.simSignalLeft) {
@@ -2497,8 +2661,9 @@ function updateHudOverlay() {
     dom.hudLight.textContent = `Light: ${isRed ? "RED" : "GREEN"}`;
   }
   if (dom.hudAssignment) {
-    dom.hudAssignment.textContent = parkingAssignmentHudText();
+    dom.hudAssignment.textContent = parkingAssignmentHudText(nowMs);
   }
+  updateParkingAssignmentOverlays(nowMs);
 }
 
 function setWebglStatus(message = "", isError = false) {
@@ -5735,6 +5900,11 @@ function clearParkingAssignmentState() {
   assignmentState.blockedBoxId = "";
   assignmentState.active = null;
   assignmentState.lastHudTickSec = -1;
+  assignmentState.bubbleText = "";
+  assignmentState.bubbleUntilMs = 0;
+  assignmentState.bubbleAnchor = null;
+  hideVeedorBubble();
+  hideAssignmentBanner();
 }
 
 function parkingAssignBoxVisualState(checkpointId) {
@@ -5827,12 +5997,25 @@ function issueParkingAssignmentFromBox(contact, nowMs = Date.now()) {
   assignmentState.blockedBoxId = boxCheckpoint.id || "";
   assignmentState.lastHudTickSec = -1;
 
-  const username = peerDisplayName(state.user?.username || "participante");
+  const username = assignmentDisplayUsername();
   const veedorLabel = nearestTower?.checkpoint?.id ? `Veedor ${nearestTower.checkpoint.id}` : "Veedor";
   const parkingKind = parkingTypeDisplayName(nearestParking.checkpoint.type);
-  const message = `${veedorLabel}: ${username} parqueo ${parkingKind} numero ${slotNumber}. Tienes ${timeoutSec}s.`;
+  const message = `${veedorLabel}: ${username} a parqueo ${parkingKind} numero ${slotNumber}.`;
   dom.simState.textContent = message;
   dom.simOutput.textContent = message;
+  const bubbleAnchor = nearestTower?.placement
+    ? {
+        x: nearestTower.placement.center.x + Math.cos(nearestTower.placement.faceHeading || 0) * 0.5,
+        y: nearestTower.placement.center.y + Math.sin(nearestTower.placement.faceHeading || 0) * 0.5,
+        h: 3.15,
+      }
+    : {
+        x: assignmentOrigin.x,
+        y: assignmentOrigin.y,
+        h: 2.35,
+      };
+  setParkingAssignmentBubble(`${username} a parqueo ${parkingKind} numero ${slotNumber}.`, bubbleAnchor, 5200);
+  speakVeedorAssignment(`${username}, a parqueo ${parkingKind} numero ${slotNumber}.`);
   sendSimEvent(
     "parking_assignment_issued",
     {
@@ -5868,9 +6051,11 @@ function updateParkingAssignmentRule(nowMs = Date.now()) {
     }
 
     const occupied = findOccupiedParkingSlot(assignedCheckpoint);
+    const username = assignmentDisplayUsername();
     if (occupied && occupied.index === active.slotIndex) {
-      const doneMessage = `Asignacion completada: ${parkingTypeDisplayName(active.parkingType)} #${active.slotNumber}.`;
+      const doneMessage = "Parqueado correctamente.";
       dom.simState.textContent = doneMessage;
+      dom.simOutput.textContent = doneMessage;
       sendSimEvent(
         "parking_assignment_completed",
         {
@@ -5886,10 +6071,34 @@ function updateParkingAssignmentRule(nowMs = Date.now()) {
       assignmentState.active = null;
       return;
     }
+    if (occupied && occupied.index !== active.slotIndex) {
+      const wrongSlot = Math.max(1, Number(occupied.index) + 1);
+      const wrongMessage = `Parqueado incorrectamente (se parqueo en otro numero).`;
+      dom.simState.textContent = wrongMessage;
+      dom.simOutput.textContent = `${wrongMessage} Asignado: #${active.slotNumber}, actual: #${wrongSlot}.`;
+      showPenaltyCard(wrongMessage, 3600);
+      sendSimEvent(
+        "parking_assignment_wrong_slot",
+        {
+          checkpoint: active.boxId || null,
+          parkingCheckpoint: active.parkingCheckpointId,
+          parkingType: active.parkingType,
+          expectedSlotIndex: active.slotIndex,
+          expectedSlotNumber: active.slotNumber,
+          parkedSlotIndex: occupied.index,
+          parkedSlotNumber: wrongSlot,
+        },
+        { dedupe: false },
+      );
+      assignmentState.active = null;
+      return;
+    }
 
     if (Number.isFinite(active.deadlineMs) && nowMs >= Number(active.deadlineMs)) {
-      const timeoutMessage = `Tiempo agotado: no se completo ${parkingTypeDisplayName(active.parkingType)} #${active.slotNumber}.`;
+      const timeoutMessage = `${username} no se parqueo.`;
       dom.simState.textContent = timeoutMessage;
+      dom.simOutput.textContent = `${timeoutMessage} Se esperaba ${parkingTypeDisplayName(active.parkingType)} #${active.slotNumber}.`;
+      showPenaltyCard(timeoutMessage, 3800);
       sendSimEvent(
         "parking_assignment_timeout",
         {
@@ -6386,7 +6595,7 @@ function createParkingSlotNumberTexture(THREE, slotNumber, options = {}) {
     return null;
   }
   const value = Math.max(1, Math.round(Number(slotNumber) || 1));
-  const size = Math.max(64, Math.round(Number(options.size) || 160));
+  const size = Math.max(64, Math.round(Number(options.size) || 208));
   const canvas = document.createElement("canvas");
   canvas.width = size;
   canvas.height = size;
@@ -6397,7 +6606,7 @@ function createParkingSlotNumberTexture(THREE, slotNumber, options = {}) {
 
   const cx = size * 0.5;
   const cy = size * 0.5;
-  const radius = size * 0.39;
+  const radius = size * 0.43;
   ctx2d.clearRect(0, 0, size, size);
   ctx2d.fillStyle = "rgba(12, 24, 34, 0)";
   ctx2d.fillRect(0, 0, size, size);
@@ -6410,7 +6619,7 @@ function createParkingSlotNumberTexture(THREE, slotNumber, options = {}) {
   ctx2d.stroke();
 
   const label = String(value);
-  const fontSize = Math.max(16, Math.round(size * (label.length >= 3 ? 0.36 : label.length === 2 ? 0.44 : 0.5)));
+  const fontSize = Math.max(18, Math.round(size * (label.length >= 3 ? 0.39 : label.length === 2 ? 0.47 : 0.54)));
   ctx2d.fillStyle = "rgba(6, 17, 28, 0.95)";
   ctx2d.font = `800 ${fontSize}px Sora, Manrope, sans-serif`;
   ctx2d.textAlign = "center";
@@ -8702,7 +8911,7 @@ function rebuildThreeRouteScene() {
     if (parkingSlotNumberTextureCache.has(key)) {
       return parkingSlotNumberTextureCache.get(key);
     }
-    const texture = createParkingSlotNumberTexture(THREE, Number(key), { size: 176 });
+    const texture = createParkingSlotNumberTexture(THREE, Number(key), { size: 232 });
     if (texture) {
       three.parkingSlotNumberTextures.push(texture);
       parkingSlotNumberTextureCache.set(key, texture);
@@ -8782,9 +8991,9 @@ function rebuildThreeRouteScene() {
             depthWrite: false,
             toneMapped: false,
           });
-          const badgeSize = Math.max(0.44, Math.min(0.76, Math.min(boxL, boxW) * 0.19));
+          const badgeSize = Math.max(0.56, Math.min(0.92, Math.min(boxL, boxW) * 0.245));
           const badge = new THREE.Mesh(new THREE.PlaneGeometry(badgeSize, badgeSize), badgeMaterial);
-          applyGroundAlignedYaw(badge, shape.orientation);
+          applyGroundAlignedYaw(badge, shape.orientation + Math.PI);
           badge.position.set(shape.center.x, 0.071, -shape.center.y);
           parkingGroup.add(badge);
         }
@@ -11133,6 +11342,7 @@ function updateThreeScene(dt = 1 / 60) {
     const anchorZ = car ? -car.y : camera.position.z;
     three.skyDome.position.set(anchorX, 36, anchorZ);
   }
+  updateParkingAssignmentOverlays(nowMs);
 
   updateAdaptivePixelRatio(dt);
   renderer.render(scene, camera);
