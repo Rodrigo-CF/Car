@@ -42,6 +42,13 @@ const state = {
     bumpAxleContacts: {},
     bumpAxleHitAtMs: {},
     stopLineContacts: {},
+    parkingAssignment: {
+      pendingBoxId: "",
+      pendingSinceMs: 0,
+      blockedBoxId: "",
+      active: null,
+      lastHudTickSec: -1,
+    },
     three: {
       ready: false,
       failed: false,
@@ -56,6 +63,8 @@ const state = {
       trafficLightRefs: null,
       lastTrafficLightRed: null,
       parkingSlotRefs: [],
+      parkingAssignRefs: [],
+      parkingSlotNumberTextures: [],
       wheelMesh: null,
       wheelSteerRef: null,
       rimRollRefs: [],
@@ -180,6 +189,8 @@ const MODEL_DASH_DISPLAY = {
 };
 const TARGET_OVERLAY_UI_TOP_SCALE = 0.82;
 const MAX_RENDER_PIXEL_RATIO = 1.25;
+const PARKING_ASSIGN_DWELL_MS_DEFAULT = 3000;
+const PARKING_ASSIGN_TIMEOUT_MS_DEFAULT = 60 * 1000;
 const RENDER_QUALITY_STORAGE_KEY = "sim_render_quality_v1";
 const RENDER_QUALITY_PRESETS = {
   low: {
@@ -267,6 +278,9 @@ const LANE_PROFILE_EXIT_START_T_MAX = 0.77;
 // Keep 3L -> 2L collapse constrained to the final segment so the
 // transition is a single straight diagonal (not multi-part/curved).
 const LANE_PROFILE_EXIT_TAIL_SEGMENTS = 1;
+const PARKING_ASSIGN_BOX_LENGTH_M = 3.8;
+const PARKING_ASSIGN_BOX_MIN_COVERAGE = 0.56;
+const PARKING_ASSIGN_READY_MAX_SPEED_KMH = 2.6;
 const ROAD_RENDER_SMOOTH_ITERATIONS = 2;
 const LINE_RENDER_SMOOTH_ITERATIONS = 1;
 const ROAD_RENDER_JOINT_SEGMENTS = 24;
@@ -323,6 +337,7 @@ const dom = {
   hudLight: document.querySelector("#hud-light"),
   hudCam: document.querySelector("#hud-cam"),
   hudPenalty: document.querySelector("#hud-penalty"),
+  hudAssignment: document.querySelector("#hud-assignment"),
   simPenaltyTotal: document.querySelector("#sim-penalty-total"),
   resetPenaltyBtn: document.querySelector("#reset-penalty"),
   simWebglStatus: document.querySelector("#sim-webgl-status"),
@@ -465,6 +480,7 @@ function mapperCheckpointColor(type) {
     parking_parallel: "#ffd166",
     parking_diagonal: "#ba68ff",
     speed_bump: "#ff9554",
+    parking_assign_box: "#ffcc6f",
     lane_add: "#8f9bff",
     lane_profile_3: "#85f0ff",
     start_canopy: "#6ea8ff",
@@ -481,6 +497,7 @@ function mapperAllowsMultiple(type) {
     type === "lane_profile_3" ||
     type === "stop_line" ||
     type === "stop_line_free" ||
+    type === "parking_assign_box" ||
     type === "start_canopy" ||
     type === "tree" ||
     type === "guard_tower" ||
@@ -513,7 +530,7 @@ function updateMapperLaneSideOptions() {
   const type = dom.mapperCheckpointType?.value || "";
   const laneCount = Math.max(1, Math.round(Number(dom.mapperLaneCount.value) || 2));
   const centerOption = dom.mapperLaneSide.querySelector('option[value="center"]');
-  const allowCenter = type === "stop_line_free" && laneCount >= 3;
+  const allowCenter = (type === "stop_line_free" || type === "parking_assign_box") && laneCount >= 3;
   if (centerOption) {
     centerOption.hidden = !allowCenter;
     centerOption.disabled = !allowCenter;
@@ -534,6 +551,10 @@ function mapperDefaultMeta(type) {
   if (type === "stop_line" || type === "stop_line_free") {
     const { lane, laneCount } = mapperLaneSelection();
     return { lane, laneCount, lineWidthM: 0.26 };
+  }
+  if (type === "parking_assign_box") {
+    const { lane, laneCount } = mapperLaneSelection();
+    return { lane, laneCount, dwellSec: 3, timeoutSec: 60 };
   }
   if (type === "roundabout") {
     return { entry: "west", exit: "east", yieldLeft: true };
@@ -600,6 +621,9 @@ function mapperCheckpointPrefix(type) {
   }
   if (type === "speed_bump") {
     return "A_BP";
+  }
+  if (type === "parking_assign_box") {
+    return "A_PAB";
   }
   if (type === "lane_add") {
     return "A_LX";
@@ -970,7 +994,12 @@ function mapperBuildRouteAFromCanvas() {
       }
       meta.extraLanes = Math.max(1, Math.min(2, Math.round(Number(meta.extraLanes) || 1)));
     }
-    if (cp.type === "speed_bump" || cp.type === "stop_line" || cp.type === "stop_line_free") {
+    if (
+      cp.type === "speed_bump" ||
+      cp.type === "stop_line" ||
+      cp.type === "stop_line_free" ||
+      cp.type === "parking_assign_box"
+    ) {
       const preferredSeg = Number.isFinite(meta.snapSegmentIndex) ? Number(meta.snapSegmentIndex) : null;
       const preferredHeading = preferredSeg != null ? Number(meta.headingDeg) : null;
       const placement = inferParkingPlacement(world, preferredHeading, preferredSeg);
@@ -988,6 +1017,10 @@ function mapperBuildRouteAFromCanvas() {
       meta.laneCount = laneCount;
       if (cp.type === "stop_line" || cp.type === "stop_line_free") {
         meta.lineWidthM = Math.max(0.1, Math.min(0.8, Number(meta.lineWidthM) || 0.26));
+      }
+      if (cp.type === "parking_assign_box") {
+        meta.dwellSec = Math.max(1, Math.min(10, Number(meta.dwellSec) || 3));
+        meta.timeoutSec = Math.max(10, Math.min(180, Number(meta.timeoutSec) || 60));
       }
     }
     return {
@@ -2027,11 +2060,15 @@ function drawMapperCanvas() {
 
 function updateMapperCheckpointUi() {
   const type = dom.mapperCheckpointType.value;
-  const bumpMode = type === "speed_bump" || type === "stop_line" || type === "stop_line_free";
+  const laneMode =
+    type === "speed_bump" ||
+    type === "stop_line" ||
+    type === "stop_line_free" ||
+    type === "parking_assign_box";
   const trafficMode = type === "traffic_light";
   const parkingMode = type === "parking_parallel" || type === "parking_diagonal";
   dom.mapperTrafficFields.classList.toggle("hidden", !trafficMode);
-  dom.mapperLaneFields.classList.toggle("hidden", !bumpMode);
+  dom.mapperLaneFields.classList.toggle("hidden", !laneMode);
   dom.mapperParkingFields.classList.toggle("hidden", !parkingMode);
   updateMapperLaneSideOptions();
 
@@ -2042,6 +2079,8 @@ function updateMapperCheckpointUi() {
     stop_line: "Stop Line: choose lanes + lane side, click near the road. It snaps to the closest path and occupies one lane.",
     stop_line_free:
       "Standalone Stop Line: same lane snap as Stop Line, but it is not paired to a traffic light and does not trigger red-light penalties. For 3 lanes, choose left/center/right.",
+    parking_assign_box:
+      "Parking Assign Box: place on a lane. Driver must stay 3s on it, then nearest Guard Tower assigns a random slot in nearest parking area.",
     roundabout: "Roundabout: place at the ovalo center area.",
     parking_parallel: "Parking Parallel: choose number of slots, then click left/right of path; bays auto-snap to that road edge.",
     parking_diagonal: "Parking Diagonal: choose slots/angle, then click left/right of path; bays auto-snap to that road edge.",
@@ -2236,6 +2275,7 @@ function handleMapperCanvasClick(event) {
       (type === "speed_bump" ||
         type === "stop_line" ||
         type === "stop_line_free" ||
+        type === "parking_assign_box" ||
         type === "start_canopy" ||
         type === "lane_add") &&
       Number.isFinite(frame?.segmentIndex)
@@ -2381,6 +2421,7 @@ function handleMapperCanvasPointerUp() {
       cp?.type === "stop_line" ||
       cp?.type === "stop_line_free" ||
       cp?.type === "speed_bump" ||
+      cp?.type === "parking_assign_box" ||
       cp?.type === "lane_add" ||
       cp?.type === "start_canopy" ||
       cp?.type === "guard_tower"
@@ -2403,6 +2444,29 @@ function handleMapperCanvasPointerUp() {
   persistMapperRouteOverride();
   refreshMapperJsonPreview();
   drawMapperCanvas();
+}
+
+function parkingAssignmentHudText(nowMs = Date.now()) {
+  const assignmentState = state.sim.parkingAssignment;
+  if (!assignmentState) {
+    return "Assignment: none";
+  }
+  const active = assignmentState.active;
+  if (active) {
+    const remainingMs = Math.max(0, Number(active.deadlineMs || 0) - nowMs);
+    const remainingSec = Math.max(0, Math.ceil(remainingMs / 1000));
+    const slotNumber = Math.max(1, Math.round(Number(active.slotNumber) || Number(active.slotIndex) + 1 || 1));
+    const kind = active.parkingType === "parking_diagonal" ? "Diagonal" : "Parallel";
+    return `Assignment: ${kind} #${slotNumber} (${remainingSec}s)`;
+  }
+  if (assignmentState.pendingBoxId && assignmentState.pendingSinceMs > 0) {
+    const checkpoint = routeCheckpoints("parking_assign_box").find((item) => item.id === assignmentState.pendingBoxId);
+    const dwellMs = Math.max(1000, Math.round(Number(checkpoint?.meta?.dwellSec || 3) * 1000));
+    const elapsedMs = Math.max(0, nowMs - assignmentState.pendingSinceMs);
+    const waitSec = Math.max(0, Math.ceil((dwellMs - elapsedMs) / 1000));
+    return `Assignment: waiting (${waitSec}s)`;
+  }
+  return "Assignment: none";
 }
 
 function updateHudOverlay() {
@@ -2431,6 +2495,9 @@ function updateHudOverlay() {
     dom.hudLight.textContent = `Light: ${isRed ? "RED" : "GREEN"} (${remaining}s)`;
   } else {
     dom.hudLight.textContent = `Light: ${isRed ? "RED" : "GREEN"}`;
+  }
+  if (dom.hudAssignment) {
+    dom.hudAssignment.textContent = parkingAssignmentHudText();
   }
 }
 
@@ -2812,11 +2879,13 @@ function clearAuth() {
   state.sim.bumpAxleContacts = {};
   state.sim.bumpAxleHitAtMs = {};
   state.sim.stopLineContacts = {};
+  clearParkingAssignmentState();
   state.mapper.mapLibrary = [];
   state.mapper.selectedMapId = "";
   stopSimKeepAliveLoop();
   leaveMultiplayerRoom({ silent: true }).catch(() => {});
   if (state.sim.three.ready) {
+    disposeParkingSlotNumberTextures(state.sim.three);
     clearThreeGroup(state.sim.three.routeGroup);
   }
   updateAuthState();
@@ -5455,6 +5524,430 @@ function stopLineSegment(checkpoint) {
   };
 }
 
+function parkingAssignBoxShape(checkpoint) {
+  if (!checkpoint) {
+    return null;
+  }
+  const heading = checkpointHeadingAt(checkpoint);
+  const laneContext = laneContextAtCheckpoint(checkpoint, checkpoint.meta?.laneCount, heading);
+  const laneCount = laneContext.laneCount;
+  const lane = Math.max(1, Math.min(laneCount, Math.round(Number(checkpoint.meta?.lane) || 1)));
+  const laneWidth = laneContext.laneWidth;
+  const preferredSeg = Number.isFinite(Number(checkpoint.meta?.snapSegmentIndex))
+    ? Number(checkpoint.meta.snapSegmentIndex)
+    : null;
+  const halfWidths = routeRoadHalfWidthsAt(checkpoint.x, checkpoint.y, heading, preferredSeg);
+  const dividerOffsets = routeLaneDividerOffsets(halfWidths)
+    .filter((value) => Number.isFinite(value))
+    .sort((a, b) => a - b);
+  const laneBounds = [-laneContext.leftHalf];
+  for (const dividerOffset of dividerOffsets) {
+    const clamped = Math.max(-laneContext.leftHalf, Math.min(laneContext.rightHalf, dividerOffset));
+    const prev = laneBounds[laneBounds.length - 1];
+    if (clamped - prev > 0.04) {
+      laneBounds.push(clamped);
+    }
+  }
+  laneBounds.push(laneContext.rightHalf);
+  laneBounds.sort((a, b) => a - b);
+  if (laneBounds.length !== laneCount + 1) {
+    laneBounds.length = 0;
+    for (let i = 0; i <= laneCount; i += 1) {
+      laneBounds.push(-laneContext.leftHalf + i * laneWidth);
+    }
+  }
+  let laneStart = laneBounds[Math.max(0, lane - 1)];
+  let laneEnd = laneBounds[Math.min(laneBounds.length - 1, lane)];
+  if (!(Number.isFinite(laneStart) && Number.isFinite(laneEnd)) || laneEnd <= laneStart + 0.05) {
+    laneStart = -laneContext.leftHalf + (lane - 1) * laneWidth;
+    laneEnd = laneStart + laneWidth;
+  }
+  const innerMargin = Math.min(0.12, Math.max(0.05, laneWidth * 0.06));
+  if (lane > 1) {
+    laneStart += innerMargin;
+  }
+  if (lane < laneCount) {
+    laneEnd -= innerMargin;
+  }
+  if (laneEnd - laneStart <= 0.24) {
+    laneStart = -laneContext.leftHalf + (lane - 1) * laneWidth;
+    laneEnd = laneStart + laneWidth;
+  }
+
+  const laneOffset = (laneStart + laneEnd) * 0.5;
+  const center = {
+    x: checkpoint.x + Math.sin(heading) * laneOffset,
+    y: checkpoint.y - Math.cos(heading) * laneOffset,
+  };
+  const boxLength = Math.max(1.6, Math.min(7.5, Number(checkpoint.meta?.boxLengthM) || PARKING_ASSIGN_BOX_LENGTH_M));
+  const boxWidth = Math.max(0.75, laneEnd - laneStart);
+  const halfLongitudinal = boxLength * 0.5;
+  const halfLateral = boxWidth * 0.5;
+  const dir = { x: Math.cos(heading), y: Math.sin(heading) };
+  const right = { x: Math.sin(heading), y: -Math.cos(heading) };
+
+  return {
+    heading,
+    lane,
+    laneCount,
+    laneWidth,
+    center,
+    boxLength,
+    boxWidth,
+    dwellSec: Math.max(1, Math.min(10, Number(checkpoint.meta?.dwellSec) || 3)),
+    timeoutSec: Math.max(10, Math.min(180, Number(checkpoint.meta?.timeoutSec) || 60)),
+    corners: [
+      {
+        x: center.x - dir.x * halfLongitudinal - right.x * halfLateral,
+        y: center.y - dir.y * halfLongitudinal - right.y * halfLateral,
+      },
+      {
+        x: center.x + dir.x * halfLongitudinal - right.x * halfLateral,
+        y: center.y + dir.y * halfLongitudinal - right.y * halfLateral,
+      },
+      {
+        x: center.x + dir.x * halfLongitudinal + right.x * halfLateral,
+        y: center.y + dir.y * halfLongitudinal + right.y * halfLateral,
+      },
+      {
+        x: center.x - dir.x * halfLongitudinal + right.x * halfLateral,
+        y: center.y - dir.y * halfLongitudinal + right.y * halfLateral,
+      },
+    ],
+  };
+}
+
+function routeCheckpointById(id, allowedTypes = null) {
+  if (!id || !state.sim.route?.checkpoints?.length) {
+    return null;
+  }
+  const byType = Array.isArray(allowedTypes) && allowedTypes.length
+    ? state.sim.route.checkpoints.filter((cp) => allowedTypes.includes(cp.type))
+    : state.sim.route.checkpoints;
+  return byType.find((checkpoint) => checkpoint.id === id) || null;
+}
+
+function detectParkingAssignBoxContact(checkpoint) {
+  if (!checkpoint || !state.sim.car) {
+    return null;
+  }
+  const shape = parkingAssignBoxShape(checkpoint);
+  if (!shape) {
+    return null;
+  }
+  const geometry = parkingVehicleGeometry();
+  if (!geometry) {
+    return null;
+  }
+  let insideCount = 0;
+  for (const probe of geometry.probes) {
+    if (pointInConvexPolygon(probe, shape.corners)) {
+      insideCount += 1;
+    }
+  }
+  const centerInside = pointInConvexPolygon(geometry.center, shape.corners);
+  const coverage = geometry.probes.length > 0 ? insideCount / geometry.probes.length : 0;
+  const insideBox = centerInside && coverage >= PARKING_ASSIGN_BOX_MIN_COVERAGE;
+  const speed = Math.abs(state.sim.car.speedKmh || 0);
+  const ready = insideBox && speed <= PARKING_ASSIGN_READY_MAX_SPEED_KMH;
+  const centerDist = Math.hypot(geometry.center.x - shape.center.x, geometry.center.y - shape.center.y);
+  return {
+    checkpoint,
+    shape,
+    insideBox,
+    ready,
+    centerInside,
+    coverage,
+    centerDist,
+    speedKmh: speed,
+  };
+}
+
+function activeParkingAssignContact({ requireReady = true } = {}) {
+  const boxes = routeCheckpoints("parking_assign_box");
+  if (!boxes.length) {
+    return null;
+  }
+  let best = null;
+  for (const checkpoint of boxes) {
+    const contact = detectParkingAssignBoxContact(checkpoint);
+    if (!contact) {
+      continue;
+    }
+    const valid = requireReady ? contact.ready : contact.insideBox;
+    if (!valid) {
+      continue;
+    }
+    if (
+      !best ||
+      contact.coverage > best.coverage + 0.001 ||
+      (Math.abs(contact.coverage - best.coverage) <= 0.001 && contact.centerDist < best.centerDist)
+    ) {
+      best = contact;
+    }
+  }
+  return best;
+}
+
+function nearestGuardTowerForPoint(point) {
+  const towers = routeCheckpoints("guard_tower");
+  if (!towers.length || !point) {
+    return null;
+  }
+  let best = null;
+  for (const checkpoint of towers) {
+    const placement = guardTowerPlacement(checkpoint);
+    const dist = Math.hypot(point.x - placement.center.x, point.y - placement.center.y);
+    if (!best || dist < best.distance) {
+      best = {
+        checkpoint,
+        placement,
+        distance: dist,
+      };
+    }
+  }
+  return best;
+}
+
+function nearestParkingCheckpointForPoint(point) {
+  const candidates = [
+    ...routeCheckpoints("parking_parallel"),
+    ...routeCheckpoints("parking_diagonal"),
+  ];
+  if (!candidates.length || !point) {
+    return null;
+  }
+  let best = null;
+  for (const checkpoint of candidates) {
+    const shape = parkingShape(checkpoint);
+    const dist = Math.hypot(point.x - shape.center.x, point.y - shape.center.y);
+    if (!best || dist < best.distance) {
+      best = { checkpoint, shape, distance: dist };
+    }
+  }
+  return best;
+}
+
+function clearParkingAssignmentState() {
+  const assignmentState = state.sim.parkingAssignment;
+  assignmentState.pendingBoxId = "";
+  assignmentState.pendingSinceMs = 0;
+  assignmentState.blockedBoxId = "";
+  assignmentState.active = null;
+  assignmentState.lastHudTickSec = -1;
+}
+
+function parkingAssignBoxVisualState(checkpointId) {
+  const assignmentState = state.sim.parkingAssignment || {};
+  const activeBoxId = String(assignmentState.active?.boxId || "");
+  const pendingBoxId = String(assignmentState.pendingBoxId || "");
+  const blockedBoxId = String(assignmentState.blockedBoxId || "");
+  const currentId = String(checkpointId || "");
+
+  if (activeBoxId && activeBoxId === currentId) {
+    return {
+      fill: 0x2f8b57,
+      stroke: 0xc9ffd7,
+      fillAlpha: 0.78,
+      strokeAlpha: 0.98,
+    };
+  }
+  if (pendingBoxId && pendingBoxId === currentId) {
+    return {
+      fill: 0xa6782a,
+      stroke: 0xffdf95,
+      fillAlpha: 0.72,
+      strokeAlpha: 0.98,
+    };
+  }
+  if (blockedBoxId && blockedBoxId === currentId) {
+    return {
+      fill: 0x5d3333,
+      stroke: 0xffa8a8,
+      fillAlpha: 0.66,
+      strokeAlpha: 0.92,
+    };
+  }
+  return {
+    fill: 0x34556e,
+    stroke: 0xffcc6f,
+    fillAlpha: 0.62,
+    strokeAlpha: 0.95,
+  };
+}
+
+function parkingTypeDisplayName(type) {
+  return type === "parking_diagonal" ? "diagonal" : "paralelo";
+}
+
+function issueParkingAssignmentFromBox(contact, nowMs = Date.now()) {
+  const assignmentState = state.sim.parkingAssignment;
+  if (!contact?.checkpoint) {
+    return false;
+  }
+
+  const boxCheckpoint = contact.checkpoint;
+  const nearestTower = nearestGuardTowerForPoint(contact.shape?.center || { x: boxCheckpoint.x, y: boxCheckpoint.y });
+  const assignmentOrigin = nearestTower?.placement?.center || (contact.shape?.center || { x: boxCheckpoint.x, y: boxCheckpoint.y });
+  const nearestParking = nearestParkingCheckpointForPoint(assignmentOrigin);
+  if (!nearestParking?.checkpoint) {
+    assignmentState.pendingBoxId = "";
+    assignmentState.pendingSinceMs = 0;
+    assignmentState.blockedBoxId = boxCheckpoint.id || "";
+    dom.simState.textContent = "Veedor: no hay parqueos configurados para asignar.";
+    return false;
+  }
+
+  const slots = parkingSlotShapes(nearestParking.checkpoint);
+  if (!slots.length) {
+    assignmentState.pendingBoxId = "";
+    assignmentState.pendingSinceMs = 0;
+    assignmentState.blockedBoxId = boxCheckpoint.id || "";
+    dom.simState.textContent = "Veedor: parqueo sin slots disponibles.";
+    return false;
+  }
+
+  const slotIndex = Math.floor(Math.random() * slots.length);
+  const slotNumber = slotIndex + 1;
+  const timeoutSec = Math.max(10, Math.min(180, Number(contact.shape?.timeoutSec) || 60));
+  assignmentState.active = {
+    boxId: boxCheckpoint.id || "",
+    boxCenter: { x: contact.shape.center.x, y: contact.shape.center.y },
+    towerId: nearestTower?.checkpoint?.id || "",
+    parkingCheckpointId: nearestParking.checkpoint.id,
+    parkingType: nearestParking.checkpoint.type,
+    slotIndex,
+    slotNumber,
+    assignedAtMs: nowMs,
+    deadlineMs: nowMs + timeoutSec * 1000,
+    timeoutSec,
+  };
+  assignmentState.pendingBoxId = "";
+  assignmentState.pendingSinceMs = 0;
+  assignmentState.blockedBoxId = boxCheckpoint.id || "";
+  assignmentState.lastHudTickSec = -1;
+
+  const username = peerDisplayName(state.user?.username || "participante");
+  const veedorLabel = nearestTower?.checkpoint?.id ? `Veedor ${nearestTower.checkpoint.id}` : "Veedor";
+  const parkingKind = parkingTypeDisplayName(nearestParking.checkpoint.type);
+  const message = `${veedorLabel}: ${username} parqueo ${parkingKind} numero ${slotNumber}. Tienes ${timeoutSec}s.`;
+  dom.simState.textContent = message;
+  dom.simOutput.textContent = message;
+  sendSimEvent(
+    "parking_assignment_issued",
+    {
+      checkpoint: boxCheckpoint.id,
+      tower: nearestTower?.checkpoint?.id || null,
+      parkingCheckpoint: nearestParking.checkpoint.id,
+      parkingType: nearestParking.checkpoint.type,
+      slotIndex,
+      slotNumber,
+      timeoutSec,
+      username,
+    },
+    { dedupe: false },
+  );
+  return true;
+}
+
+function updateParkingAssignmentRule(nowMs = Date.now()) {
+  const assignmentState = state.sim.parkingAssignment;
+  if (!assignmentState || !state.sim.sessionId || !state.sim.car) {
+    return;
+  }
+
+  const active = assignmentState.active;
+  if (active) {
+    const assignedCheckpoint = routeCheckpointById(active.parkingCheckpointId, [
+      "parking_parallel",
+      "parking_diagonal",
+    ]);
+    if (!assignedCheckpoint) {
+      assignmentState.active = null;
+      return;
+    }
+
+    const occupied = findOccupiedParkingSlot(assignedCheckpoint);
+    if (occupied && occupied.index === active.slotIndex) {
+      const doneMessage = `Asignacion completada: ${parkingTypeDisplayName(active.parkingType)} #${active.slotNumber}.`;
+      dom.simState.textContent = doneMessage;
+      sendSimEvent(
+        "parking_assignment_completed",
+        {
+          checkpoint: active.boxId || null,
+          parkingCheckpoint: active.parkingCheckpointId,
+          parkingType: active.parkingType,
+          slotIndex: active.slotIndex,
+          slotNumber: active.slotNumber,
+          elapsedSec: Math.max(0, Math.round((nowMs - Number(active.assignedAtMs || nowMs)) / 1000)),
+        },
+        { dedupe: false },
+      );
+      assignmentState.active = null;
+      return;
+    }
+
+    if (Number.isFinite(active.deadlineMs) && nowMs >= Number(active.deadlineMs)) {
+      const timeoutMessage = `Tiempo agotado: no se completo ${parkingTypeDisplayName(active.parkingType)} #${active.slotNumber}.`;
+      dom.simState.textContent = timeoutMessage;
+      sendSimEvent(
+        "parking_assignment_timeout",
+        {
+          checkpoint: active.boxId || null,
+          parkingCheckpoint: active.parkingCheckpointId,
+          parkingType: active.parkingType,
+          slotIndex: active.slotIndex,
+          slotNumber: active.slotNumber,
+          timeoutSec: active.timeoutSec,
+        },
+        { dedupe: false },
+      );
+      assignmentState.active = null;
+      return;
+    }
+  }
+
+  const blockedId = assignmentState.blockedBoxId;
+  if (blockedId) {
+    const blockedCp = routeCheckpointById(blockedId, ["parking_assign_box"]);
+    const blockedContact = blockedCp ? detectParkingAssignBoxContact(blockedCp) : null;
+    if (!blockedContact || !blockedContact.insideBox) {
+      assignmentState.blockedBoxId = "";
+    }
+  }
+
+  if (assignmentState.active) {
+    return;
+  }
+
+  const contact = activeParkingAssignContact({ requireReady: true });
+  if (!contact) {
+    assignmentState.pendingBoxId = "";
+    assignmentState.pendingSinceMs = 0;
+    return;
+  }
+
+  const boxId = contact.checkpoint.id || "";
+  if (assignmentState.blockedBoxId && assignmentState.blockedBoxId === boxId) {
+    assignmentState.pendingBoxId = "";
+    assignmentState.pendingSinceMs = 0;
+    return;
+  }
+
+  if (assignmentState.pendingBoxId !== boxId) {
+    assignmentState.pendingBoxId = boxId;
+    assignmentState.pendingSinceMs = nowMs;
+    return;
+  }
+
+  const dwellMs = Math.max(1000, Math.round(Number(contact.shape?.dwellSec || 3) * 1000));
+  if (nowMs - Number(assignmentState.pendingSinceMs || nowMs) < dwellMs) {
+    return;
+  }
+
+  issueParkingAssignmentFromBox(contact, nowMs);
+}
+
 function trafficLightPlacement(checkpoint) {
   const heading = checkpointHeadingAt(checkpoint);
   const facing = checkpoint.meta?.facing === "reverse" ? "reverse" : "with_path";
@@ -5886,6 +6379,71 @@ function createCanopyLabelTexture(THREE, text, options = {}) {
     texture.encoding = THREE.sRGBEncoding;
   }
   return texture;
+}
+
+function createParkingSlotNumberTexture(THREE, slotNumber, options = {}) {
+  if (!THREE) {
+    return null;
+  }
+  const value = Math.max(1, Math.round(Number(slotNumber) || 1));
+  const size = Math.max(64, Math.round(Number(options.size) || 160));
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx2d = canvas.getContext("2d");
+  if (!ctx2d) {
+    return null;
+  }
+
+  const cx = size * 0.5;
+  const cy = size * 0.5;
+  const radius = size * 0.39;
+  ctx2d.clearRect(0, 0, size, size);
+  ctx2d.fillStyle = "rgba(12, 24, 34, 0)";
+  ctx2d.fillRect(0, 0, size, size);
+  ctx2d.fillStyle = "rgba(246, 250, 255, 0.94)";
+  ctx2d.beginPath();
+  ctx2d.arc(cx, cy, radius, 0, Math.PI * 2);
+  ctx2d.fill();
+  ctx2d.strokeStyle = "rgba(8, 23, 36, 0.9)";
+  ctx2d.lineWidth = Math.max(2, size * 0.055);
+  ctx2d.stroke();
+
+  const label = String(value);
+  const fontSize = Math.max(16, Math.round(size * (label.length >= 3 ? 0.36 : label.length === 2 ? 0.44 : 0.5)));
+  ctx2d.fillStyle = "rgba(6, 17, 28, 0.95)";
+  ctx2d.font = `800 ${fontSize}px Sora, Manrope, sans-serif`;
+  ctx2d.textAlign = "center";
+  ctx2d.textBaseline = "middle";
+  ctx2d.fillText(label, cx, cy + size * 0.03);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.ClampToEdgeWrapping;
+  texture.wrapT = THREE.ClampToEdgeWrapping;
+  texture.generateMipmaps = false;
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.needsUpdate = true;
+  if ("colorSpace" in texture && THREE.SRGBColorSpace) {
+    texture.colorSpace = THREE.SRGBColorSpace;
+  } else if ("encoding" in texture && THREE.sRGBEncoding) {
+    texture.encoding = THREE.sRGBEncoding;
+  }
+  return texture;
+}
+
+function disposeParkingSlotNumberTextures(three) {
+  if (!three) {
+    return;
+  }
+  if (Array.isArray(three.parkingSlotNumberTextures)) {
+    for (const texture of three.parkingSlotNumberTextures) {
+      if (texture?.isTexture && typeof texture.dispose === "function") {
+        texture.dispose();
+      }
+    }
+  }
+  three.parkingSlotNumberTextures = [];
 }
 
 function clearThreeGroup(group) {
@@ -7576,9 +8134,11 @@ function rebuildThreeRouteScene() {
   }
 
   clearThreeGroup(routeGroup);
+  disposeParkingSlotNumberTextures(three);
   three.trafficLightRefs = [];
   three.lastTrafficLightRed = null;
   three.parkingSlotRefs = [];
+  three.parkingAssignRefs = [];
   three.routeCullRefs = [];
   three.lastRouteCullUpdateAt = 0;
   const quality = currentRenderQualityPreset();
@@ -8136,6 +8696,21 @@ function rebuildThreeRouteScene() {
     );
   }
 
+  const parkingSlotNumberTextureCache = new Map();
+  function textureForParkingSlot(slotNumber) {
+    const key = String(Math.max(1, Math.round(Number(slotNumber) || 1)));
+    if (parkingSlotNumberTextureCache.has(key)) {
+      return parkingSlotNumberTextureCache.get(key);
+    }
+    const texture = createParkingSlotNumberTexture(THREE, Number(key), { size: 176 });
+    if (texture) {
+      three.parkingSlotNumberTextures.push(texture);
+      parkingSlotNumberTextureCache.set(key, texture);
+      return texture;
+    }
+    return null;
+  }
+
   for (const checkpoint of state.sim.route.checkpoints) {
     if (checkpoint.type === "parking_parallel" || checkpoint.type === "parking_diagonal") {
       const baseShape = parkingShape(checkpoint);
@@ -8167,7 +8742,8 @@ function rebuildThreeRouteScene() {
         parkingGroup.add(connectorFill);
       }
 
-      for (const shape of slotShapes) {
+      for (let slotIndex = 0; slotIndex < slotShapes.length; slotIndex += 1) {
+        const shape = slotShapes[slotIndex];
         const bayMaterial = new THREE.MeshStandardMaterial({
           color: 0x2a3036,
           roughness: 0.94,
@@ -8196,6 +8772,22 @@ function rebuildThreeRouteScene() {
           frame.position.set(shape.center.x, 0.065, -shape.center.y);
         }
         parkingGroup.add(frame);
+
+        const slotTexture = textureForParkingSlot(slotIndex + 1);
+        if (slotTexture) {
+          const badgeMaterial = new THREE.MeshBasicMaterial({
+            map: slotTexture,
+            transparent: true,
+            side: THREE.DoubleSide,
+            depthWrite: false,
+            toneMapped: false,
+          });
+          const badgeSize = Math.max(0.44, Math.min(0.76, Math.min(boxL, boxW) * 0.19));
+          const badge = new THREE.Mesh(new THREE.PlaneGeometry(badgeSize, badgeSize), badgeMaterial);
+          applyGroundAlignedYaw(badge, shape.orientation);
+          badge.position.set(shape.center.x, 0.071, -shape.center.y);
+          parkingGroup.add(badge);
+        }
 
         three.parkingSlotRefs.push({
           checkpointId: checkpoint.id,
@@ -8243,6 +8835,46 @@ function rebuildThreeRouteScene() {
     lineMesh.position.y = 0.063;
     routeGroup.add(lineMesh);
     registerRouteCullRef(three, lineMesh, segment.center.x, segment.center.y, 120);
+  }
+
+  const parkingAssignBoxes = routeCheckpoints("parking_assign_box");
+  for (const checkpoint of parkingAssignBoxes) {
+    const shape = parkingAssignBoxShape(checkpoint);
+    if (!shape?.corners?.length) {
+      continue;
+    }
+    const visual = parkingAssignBoxVisualState(checkpoint.id);
+    const boxGroup = new THREE.Group();
+    routeGroup.add(boxGroup);
+
+    const fillMaterial = new THREE.MeshStandardMaterial({
+      color: visual.fill,
+      roughness: 0.8,
+      metalness: 0.03,
+      transparent: true,
+      opacity: visual.fillAlpha,
+      side: THREE.DoubleSide,
+    });
+    const fillMesh = new THREE.Mesh(buildGroundQuadGeometry(THREE, shape.corners), fillMaterial);
+    fillMesh.position.y = 0.058;
+    boxGroup.add(fillMesh);
+
+    const strokeMaterial = new THREE.LineBasicMaterial({
+      color: visual.stroke,
+      transparent: true,
+      opacity: visual.strokeAlpha,
+    });
+    const strokeMesh = new THREE.Line(buildGroundLoopGeometry(THREE, shape.corners), strokeMaterial);
+    strokeMesh.position.y = 0.068;
+    boxGroup.add(strokeMesh);
+
+    three.parkingAssignRefs.push({
+      checkpointId: checkpoint.id,
+      fillMaterial,
+      strokeMaterial,
+      group: boxGroup,
+    });
+    registerRouteCullRef(three, boxGroup, shape.center.x, shape.center.y, 115);
   }
 
   const startCanopyCheckpoints = routeCheckpoints("start_canopy");
@@ -10451,22 +11083,41 @@ function updateThreeScene(dt = 1 / 60) {
     }
   }
   updateRouteCullVisibility(nowMs);
-  if (Array.isArray(three.parkingSlotRefs) && three.parkingSlotRefs.length) {
-    if (
-      nowMs - (Number(three.lastParkingVizUpdateAt) || 0) >= PARKING_VIS_UPDATE_INTERVAL_MS ||
-      !Number.isFinite(Number(three.lastParkingVizUpdateAt))
-    ) {
+  const shouldRefreshParkingViz =
+    nowMs - (Number(three.lastParkingVizUpdateAt) || 0) >= PARKING_VIS_UPDATE_INTERVAL_MS ||
+    !Number.isFinite(Number(three.lastParkingVizUpdateAt));
+  if (shouldRefreshParkingViz) {
+    if (Array.isArray(three.parkingSlotRefs) && three.parkingSlotRefs.length) {
       for (const ref of three.parkingSlotRefs) {
         if (ref?.group && ref.group.visible === false) {
           continue;
         }
-        const checkpoint = routeCheckpoint(ref.checkpointType || "parking_parallel");
+        const checkpoint = routeCheckpointById(ref.checkpointId, [ref.checkpointType || "parking_parallel"]);
         const occupied = checkpoint?.id === ref.checkpointId && isParkingSlotOccupied(checkpoint, ref.shape);
         ref.bayMaterial.color.setHex(occupied ? 0x2f9f5e : 0x2a3036);
         ref.frameMaterial.color.setHex(occupied ? 0xb9ffd0 : 0xeff4f8);
       }
-      three.lastParkingVizUpdateAt = nowMs;
     }
+
+    if (Array.isArray(three.parkingAssignRefs) && three.parkingAssignRefs.length) {
+      for (const ref of three.parkingAssignRefs) {
+        if (ref?.group && ref.group.visible === false) {
+          continue;
+        }
+        const visual = parkingAssignBoxVisualState(ref.checkpointId);
+        ref.fillMaterial?.color?.setHex(visual.fill);
+        ref.strokeMaterial?.color?.setHex(visual.stroke);
+        if (ref.fillMaterial) {
+          ref.fillMaterial.opacity = visual.fillAlpha;
+          ref.fillMaterial.transparent = true;
+        }
+        if (ref.strokeMaterial) {
+          ref.strokeMaterial.opacity = visual.strokeAlpha;
+          ref.strokeMaterial.transparent = true;
+        }
+      }
+    }
+    three.lastParkingVizUpdateAt = nowMs;
   }
   if (three.dashDisplayMesh) {
     three.dashDisplayMesh.visible =
@@ -11599,6 +12250,7 @@ async function abandonSimulation(reasonText = "Session ended due to inactivity."
   state.sim.trafficLightManual = null;
   state.keys.clear();
   state.sim.stopLineContacts = {};
+  clearParkingAssignmentState();
   if (inactivityDisconnect) {
     const notice = inactivityReconnectHintText();
     dom.simState.textContent = notice;
@@ -12009,6 +12661,8 @@ function runRuleDetectors(prevFrontAxle = null, currFrontAxle = null, carHeading
   if (speedSign !== 0) {
     state.sim.lastSpeedSign = speedSign;
   }
+
+  updateParkingAssignmentRule(Date.now());
 }
 
 function validateParallelParking() {
@@ -12559,6 +13213,7 @@ async function startSimulation() {
   state.sim.bumpAxleContacts = {};
   state.sim.bumpAxleHitAtMs = {};
   state.sim.stopLineContacts = {};
+  clearParkingAssignmentState();
   state.sim.three.thirdCameraPos = null;
   state.sim.three.thirdCameraLook = null;
   state.sim.three.externalCameraMode = null;
@@ -12613,6 +13268,7 @@ async function finishSimulation() {
   state.sim.trafficLightManual = null;
   state.keys.clear();
   state.sim.stopLineContacts = {};
+  clearParkingAssignmentState();
   stopSimKeepAliveLoop();
   hidePenaltyCard();
   dom.toggleLightBtn.textContent = "Manual Light Override";
