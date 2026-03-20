@@ -501,17 +501,41 @@ function speakVeedorAssignment(text) {
     const synth = window.speechSynthesis;
     synth.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = "es-PE";
+    utterance.lang = "es-419";
     utterance.rate = 0.95;
     utterance.pitch = 1;
     utterance.volume = 1;
     const voices = synth.getVoices ? synth.getVoices() : [];
-    const voice =
-      voices.find((item) => /^es(-|_)(pe|mx|es)\b/i.test(String(item.lang || ""))) ||
-      voices.find((item) => /^es(-|_)/i.test(String(item.lang || ""))) ||
-      null;
+    const voiceScore = (voice) => {
+      const lang = String(voice?.lang || "").toLowerCase();
+      const name = String(voice?.name || "").toLowerCase();
+      let score = 0;
+      if (/^es(-|_)(419|pe|mx|co|ar|cl|uy)\b/.test(lang)) {
+        score += 120;
+      } else if (/^es(-|_)/.test(lang)) {
+        score += 80;
+      }
+      if (/\b(latam|latino|mex|peru|argen|colom|chile)\b/.test(name)) {
+        score += 45;
+      }
+      if (/\b(natural|premium|enhanced|neural)\b/.test(name)) {
+        score += 25;
+      }
+      if (/\b(spain|castellano|espa[nñ]a)\b/.test(name) || /^es(-|_)es\b/.test(lang)) {
+        score -= 25;
+      }
+      return score;
+    };
+    const voice = voices.length
+      ? voices
+          .slice()
+          .sort((a, b) => voiceScore(b) - voiceScore(a))[0]
+      : null;
     if (voice) {
       utterance.voice = voice;
+      if (voice.lang) {
+        utterance.lang = voice.lang;
+      }
     }
     // Guard against queued stale utterances if assignment changes quickly.
     utterance.onstart = () => {
@@ -5893,6 +5917,94 @@ function nearestParkingCheckpointForPoint(point) {
   return best;
 }
 
+function routeCheckpointArcPosition(checkpoint) {
+  if (!checkpoint) {
+    return null;
+  }
+  const routePath = state.sim.routePath?.length ? state.sim.routePath : state.sim.routeDensePath;
+  if (!Array.isArray(routePath) || routePath.length < 2) {
+    return null;
+  }
+
+  const headingHintDeg = Number(checkpoint.meta?.headingDeg);
+  const headingHint = Number.isFinite(headingHintDeg) ? toRadians(headingHintDeg) : null;
+  const segmentHint = Number.isFinite(Number(checkpoint.meta?.snapSegmentIndex))
+    ? Number(checkpoint.meta.snapSegmentIndex)
+    : null;
+  const frame = routeFrameAt(checkpoint.x, checkpoint.y, headingHint, segmentHint);
+  if (!Number.isFinite(frame?.segmentIndex)) {
+    return null;
+  }
+
+  const targetSeg = Math.max(0, Math.min(routePath.length - 2, Math.round(frame.segmentIndex)));
+  let arc = 0;
+  let subpath = 0;
+  let targetSubpath = 0;
+  let found = false;
+  for (let i = 0; i < routePath.length - 1; i += 1) {
+    const a = routePath[i];
+    const b = routePath[i + 1];
+    if (!a || !b) {
+      continue;
+    }
+    if (b.move) {
+      if (i < targetSeg) {
+        subpath += 1;
+      }
+      continue;
+    }
+    const segLen = Math.hypot((b.x || 0) - (a.x || 0), (b.y || 0) - (a.y || 0));
+    if (i < targetSeg) {
+      arc += segLen;
+      continue;
+    }
+    if (i === targetSeg) {
+      arc += segLen * clamp01(Number(frame.segmentT));
+      targetSubpath = subpath;
+      found = true;
+      break;
+    }
+  }
+  if (!found) {
+    return null;
+  }
+  return {
+    arc,
+    subpath: targetSubpath,
+    segmentIndex: targetSeg,
+    center: frame.center,
+    lateral: Number(frame.lateral) || 0,
+  };
+}
+
+function nearestParkingCheckpointForAssignment(originPoint, referenceCheckpoint = null) {
+  const candidates = [
+    ...routeCheckpoints("parking_parallel"),
+    ...routeCheckpoints("parking_diagonal"),
+  ];
+  if (!candidates.length || !originPoint) {
+    return null;
+  }
+
+  const refAnchor = routeCheckpointArcPosition(referenceCheckpoint);
+  let best = null;
+  for (const checkpoint of candidates) {
+    const shape = parkingShape(checkpoint);
+    const euclidDist = Math.hypot(originPoint.x - shape.center.x, originPoint.y - shape.center.y);
+    const candidateAnchor = refAnchor ? routeCheckpointArcPosition(checkpoint) : null;
+    let score = euclidDist;
+    if (refAnchor && candidateAnchor) {
+      const alongRouteDist = Math.abs(candidateAnchor.arc - refAnchor.arc);
+      const sameSubpathPenalty = candidateAnchor.subpath === refAnchor.subpath ? 0 : 140;
+      score = alongRouteDist + euclidDist * 0.35 + sameSubpathPenalty;
+    }
+    if (!best || score < best.score) {
+      best = { checkpoint, shape, distance: euclidDist, score };
+    }
+  }
+  return best;
+}
+
 function clearParkingAssignmentState() {
   const assignmentState = state.sim.parkingAssignment;
   assignmentState.pendingBoxId = "";
@@ -5959,7 +6071,7 @@ function issueParkingAssignmentFromBox(contact, nowMs = Date.now()) {
   const boxCheckpoint = contact.checkpoint;
   const nearestTower = nearestGuardTowerForPoint(contact.shape?.center || { x: boxCheckpoint.x, y: boxCheckpoint.y });
   const assignmentOrigin = nearestTower?.placement?.center || (contact.shape?.center || { x: boxCheckpoint.x, y: boxCheckpoint.y });
-  const nearestParking = nearestParkingCheckpointForPoint(assignmentOrigin);
+  const nearestParking = nearestParkingCheckpointForAssignment(assignmentOrigin, boxCheckpoint);
   if (!nearestParking?.checkpoint) {
     assignmentState.pendingBoxId = "";
     assignmentState.pendingSinceMs = 0;
@@ -6056,6 +6168,7 @@ function updateParkingAssignmentRule(nowMs = Date.now()) {
       const doneMessage = "Parqueado correctamente.";
       dom.simState.textContent = doneMessage;
       dom.simOutput.textContent = doneMessage;
+      showPenaltyCard(doneMessage, 2800);
       sendSimEvent(
         "parking_assignment_completed",
         {
@@ -8911,7 +9024,7 @@ function rebuildThreeRouteScene() {
     if (parkingSlotNumberTextureCache.has(key)) {
       return parkingSlotNumberTextureCache.get(key);
     }
-    const texture = createParkingSlotNumberTexture(THREE, Number(key), { size: 232 });
+    const texture = createParkingSlotNumberTexture(THREE, Number(key), { size: 248 });
     if (texture) {
       three.parkingSlotNumberTextures.push(texture);
       parkingSlotNumberTextureCache.set(key, texture);
@@ -8991,9 +9104,12 @@ function rebuildThreeRouteScene() {
             depthWrite: false,
             toneMapped: false,
           });
-          const badgeSize = Math.max(0.56, Math.min(0.92, Math.min(boxL, boxW) * 0.245));
+          const badgeSize = Math.max(0.6, Math.min(0.98, Math.min(boxL, boxW) * 0.265));
           const badge = new THREE.Mesh(new THREE.PlaneGeometry(badgeSize, badgeSize), badgeMaterial);
-          applyGroundAlignedYaw(badge, shape.orientation + Math.PI);
+          const badgeYaw = checkpoint.type === "parking_parallel"
+            ? shape.orientation + Math.PI
+            : shape.orientation;
+          applyGroundAlignedYaw(badge, badgeYaw);
           badge.position.set(shape.center.x, 0.071, -shape.center.y);
           parkingGroup.add(badge);
         }
