@@ -93,6 +93,8 @@ const state = {
       lastDprAdjustAt: 0,
       lastAppliedPixelRatio: 0,
       lastParkingVizUpdateAt: 0,
+      routeCullRefs: [],
+      lastRouteCullUpdateAt: 0,
     },
   },
   mapper: {
@@ -277,6 +279,8 @@ const ADAPTIVE_DPR_FRAME_EMA_ALPHA = 0.1;
 const ADAPTIVE_DPR_DEGRADE_MS = 20.5;
 const ADAPTIVE_DPR_RECOVER_MS = 15.2;
 const PARKING_VIS_UPDATE_INTERVAL_MS = 120;
+const ROUTE_CULL_UPDATE_INTERVAL_MS = 140;
+const ROUTE_CULL_HYSTERESIS = 1.18;
 const CAMERA_MODE_CYCLE = ["first", "third", "right", "front", "left", "top"];
 const EXTERNAL_CAMERA_MODES = new Set(["third", "right", "front", "left", "top"]);
 
@@ -5680,14 +5684,11 @@ function collectTreePlacements(roadPath, quality) {
 
 function addProceduralTreeInstances(THREE, routeGroup, placements, quality) {
   if (!THREE || !routeGroup || !Array.isArray(placements) || !placements.length) {
-    return;
+    return [];
   }
 
   const canopyLayers = Math.max(2, Math.round(quality.treeLayers || 3));
   const radialSegments = Math.max(6, Math.round(quality.treeSegments || 10));
-  const trunkTransforms = [];
-  const topTransforms = [];
-  const layerTransforms = Array.from({ length: canopyLayers }, () => []);
   const leafPalette = [0x2f6c34, 0x3c8244, 0x2c5f2f];
 
   const trunkGeometry = new THREE.CylinderGeometry(0.12, 0.16, 1, Math.max(6, radialSegments - 2));
@@ -5713,79 +5714,126 @@ function addProceduralTreeInstances(THREE, routeGroup, placements, quality) {
       }),
   );
 
-  for (let idx = 0; idx < placements.length; idx += 1) {
-    const placement = placements[idx];
+  const cellSize = 36;
+  const cells = new Map();
+  function ensureCell(x, y) {
+    const cx = Math.floor(x / cellSize);
+    const cy = Math.floor(y / cellSize);
+    const key = `${cx}:${cy}`;
+    let cell = cells.get(key);
+    if (!cell) {
+      cell = {
+        key,
+        points: [],
+      };
+      cells.set(key, cell);
+    }
+    return cell;
+  }
+
+  for (const placement of placements) {
     const x = Number(placement?.x) || 0;
     const y = Number(placement?.y) || 0;
-    const sizeRaw = Number(placement?.size ?? 1);
-    const size = Math.max(0.58, Math.min(2.8, sizeRaw));
-    const seed = proceduralTreeSeed(x, y, Number(placement?.seedOffset) || 0);
-    const trunkHeight = (1.5 + seed * 0.75) * size;
-    const trunkTop = (0.14 + seed * 0.05) * size;
-    const trunkBottom = trunkTop * 1.3;
-    const trunkRadius = (trunkTop + trunkBottom) * 0.5;
+    ensureCell(x, y).points.push(placement);
+  }
 
-    trunkTransforms.push({
-      x,
-      y: trunkHeight * 0.5,
-      z: -y,
-      yaw: 0,
-      sx: Math.max(0.12, trunkRadius) / 0.14,
-      sy: trunkHeight,
-      sz: Math.max(0.12, trunkRadius) / 0.14,
-    });
+  const treeCullClusters = [];
 
-    for (let layer = 0; layer < canopyLayers; layer += 1) {
-      const t = layer / Math.max(1, canopyLayers - 1);
-      const crownRadius = (1.05 - t * 0.27) * size * (0.9 + proceduralTreeSeed(x, y, layer + 5) * 0.18);
-      const crownHeight = (1.15 - t * 0.12) * size;
-      const layerY = trunkHeight + crownHeight * 0.45 + layer * (crownHeight * 0.45);
-      const yaw = proceduralTreeSeed(x, y, layer + 11) * Math.PI * 2;
-      layerTransforms[layer].push({
+  for (const cell of cells.values()) {
+    const trunkTransforms = [];
+    const topTransforms = [];
+    const layerTransforms = Array.from({ length: canopyLayers }, () => []);
+    let sumX = 0;
+    let sumY = 0;
+
+    for (let idx = 0; idx < cell.points.length; idx += 1) {
+      const placement = cell.points[idx];
+      const x = Number(placement?.x) || 0;
+      const y = Number(placement?.y) || 0;
+      sumX += x;
+      sumY += y;
+      const sizeRaw = Number(placement?.size ?? 1);
+      const size = Math.max(0.58, Math.min(2.8, sizeRaw));
+      const seed = proceduralTreeSeed(x, y, Number(placement?.seedOffset) || 0);
+      const trunkHeight = (1.5 + seed * 0.75) * size;
+      const trunkTop = (0.14 + seed * 0.05) * size;
+      const trunkBottom = trunkTop * 1.3;
+      const trunkRadius = (trunkTop + trunkBottom) * 0.5;
+
+      trunkTransforms.push({
         x,
-        y: layerY,
+        y: trunkHeight * 0.5,
         z: -y,
-        yaw,
-        sx: crownRadius,
-        sy: crownHeight,
-        sz: crownRadius,
+        yaw: 0,
+        sx: Math.max(0.12, trunkRadius) / 0.14,
+        sy: trunkHeight,
+        sz: Math.max(0.12, trunkRadius) / 0.14,
+      });
+
+      for (let layer = 0; layer < canopyLayers; layer += 1) {
+        const t = layer / Math.max(1, canopyLayers - 1);
+        const crownRadius = (1.05 - t * 0.27) * size * (0.9 + proceduralTreeSeed(x, y, layer + 5) * 0.18);
+        const crownHeight = (1.15 - t * 0.12) * size;
+        const layerY = trunkHeight + crownHeight * 0.45 + layer * (crownHeight * 0.45);
+        const yaw = proceduralTreeSeed(x, y, layer + 11) * Math.PI * 2;
+        layerTransforms[layer].push({
+          x,
+          y: layerY,
+          z: -y,
+          yaw,
+          sx: crownRadius,
+          sy: crownHeight,
+          sz: crownRadius,
+        });
+      }
+
+      const topRadius = 0.42 * size;
+      const topY = trunkHeight + canopyLayers * (0.48 * size);
+      topTransforms.push({
+        x,
+        y: topY,
+        z: -y,
+        yaw: 0,
+        sx: topRadius,
+        sy: topRadius,
+        sz: topRadius,
       });
     }
 
-    const topRadius = 0.42 * size;
-    const topY = trunkHeight + canopyLayers * (0.48 * size);
-    topTransforms.push({
-      x,
-      y: topY,
-      z: -y,
-      yaw: 0,
-      sx: topRadius,
-      sy: topRadius,
-      sz: topRadius,
-    });
-  }
-
-  addStaticInstances(THREE, routeGroup, trunkGeometry, trunkMat, trunkTransforms, {
-    castShadow: Boolean(quality.shadows),
-    receiveShadow: Boolean(quality.shadows),
-  });
-
-  for (let layer = 0; layer < canopyLayers; layer += 1) {
-    const transforms = layerTransforms[layer];
-    if (!transforms.length) {
-      continue;
-    }
-    const mat = layerMats[layer % layerMats.length];
-    addStaticInstances(THREE, routeGroup, coneGeometry, mat, transforms, {
+    const clusterGroup = new THREE.Group();
+    routeGroup.add(clusterGroup);
+    addStaticInstances(THREE, clusterGroup, trunkGeometry, trunkMat, trunkTransforms, {
       castShadow: Boolean(quality.shadows),
       receiveShadow: Boolean(quality.shadows),
     });
+
+    for (let layer = 0; layer < canopyLayers; layer += 1) {
+      const transforms = layerTransforms[layer];
+      if (!transforms.length) {
+        continue;
+      }
+      const mat = layerMats[layer % layerMats.length];
+      addStaticInstances(THREE, clusterGroup, coneGeometry, mat, transforms, {
+        castShadow: Boolean(quality.shadows),
+        receiveShadow: Boolean(quality.shadows),
+      });
+    }
+
+    addStaticInstances(THREE, clusterGroup, topGeometry, topMat, topTransforms, {
+      castShadow: Boolean(quality.shadows),
+      receiveShadow: Boolean(quality.shadows),
+    });
+
+    const count = Math.max(1, cell.points.length);
+    treeCullClusters.push({
+      object: clusterGroup,
+      x: sumX / count,
+      y: sumY / count,
+      size: count,
+    });
   }
 
-  addStaticInstances(THREE, routeGroup, topGeometry, topMat, topTransforms, {
-    castShadow: Boolean(quality.shadows),
-    receiveShadow: Boolean(quality.shadows),
-  });
+  return treeCullClusters;
 }
 
 function createCanopyLabelTexture(THREE, text, options = {}) {
@@ -5886,6 +5934,62 @@ function addStaticInstances(THREE, group, geometry, material, transforms, option
 
 function addStaticBoxInstances(THREE, group, geometry, material, transforms, options = {}) {
   return addStaticInstances(THREE, group, geometry, material, transforms, options);
+}
+
+function registerRouteCullRef(three, object, centerX, centerY, maxDistanceM = 120) {
+  if (!three || !object || !Number.isFinite(centerX) || !Number.isFinite(centerY) || !Number.isFinite(maxDistanceM)) {
+    return;
+  }
+  if (!Array.isArray(three.routeCullRefs)) {
+    three.routeCullRefs = [];
+  }
+  const base = Math.max(8, Number(maxDistanceM));
+  three.routeCullRefs.push({
+    object,
+    x: centerX,
+    y: centerY,
+    showSq: base * base,
+    hideSq: (base * ROUTE_CULL_HYSTERESIS) * (base * ROUTE_CULL_HYSTERESIS),
+  });
+}
+
+function updateRouteCullVisibility(nowMs = Date.now()) {
+  const three = state.sim.three;
+  if (!three?.ready || !Array.isArray(three.routeCullRefs) || !three.routeCullRefs.length) {
+    return;
+  }
+  if (nowMs - (Number(three.lastRouteCullUpdateAt) || 0) < ROUTE_CULL_UPDATE_INTERVAL_MS) {
+    return;
+  }
+  three.lastRouteCullUpdateAt = nowMs;
+
+  const car = state.sim.car;
+  if (!car) {
+    for (const ref of three.routeCullRefs) {
+      if (ref?.object) {
+        ref.object.visible = true;
+      }
+    }
+    return;
+  }
+
+  // Slightly larger culling radius in non-first cameras where users inspect more scene.
+  const modeBoost = state.sim.camera === "first" ? 1 : 1.22;
+  const modeBoostSq = modeBoost * modeBoost;
+  for (const ref of three.routeCullRefs) {
+    if (!ref?.object) {
+      continue;
+    }
+    const dx = ref.x - car.x;
+    const dy = ref.y - car.y;
+    const d2 = dx * dx + dy * dy;
+    const currentlyVisible = ref.object.visible !== false;
+    if (currentlyVisible) {
+      ref.object.visible = d2 <= (ref.hideSq || Number.POSITIVE_INFINITY) * modeBoostSq;
+    } else {
+      ref.object.visible = d2 <= (ref.showSq || Number.POSITIVE_INFINITY) * modeBoostSq;
+    }
+  }
 }
 
 function applyGroundAlignedYaw(object3d, yawRad) {
@@ -7437,6 +7541,8 @@ function rebuildThreeRouteScene() {
   clearThreeGroup(routeGroup);
   three.trafficLightRefs = [];
   three.parkingSlotRefs = [];
+  three.routeCullRefs = [];
+  three.lastRouteCullUpdateAt = 0;
   const quality = currentRenderQualityPreset();
   const env = ensureThreeEnvironmentAssets(THREE);
 
@@ -7972,6 +8078,8 @@ function rebuildThreeRouteScene() {
       const connector = parkingConnectorShape(checkpoint, baseShape);
       const boxL = Number(checkpoint.meta.boxL || 6.0);
       const boxW = Number(checkpoint.meta.boxW || 2.5);
+      const parkingGroup = new THREE.Group();
+      routeGroup.add(parkingGroup);
 
       if (connector) {
         const connectorFill = new THREE.Mesh(
@@ -7991,7 +8099,7 @@ function rebuildThreeRouteScene() {
           applyGroundAlignedYaw(connectorFill, connector.orientation);
           connectorFill.position.set(connector.center.x, 0.048, -connector.center.y);
         }
-        routeGroup.add(connectorFill);
+        parkingGroup.add(connectorFill);
       }
 
       for (const shape of slotShapes) {
@@ -8010,7 +8118,7 @@ function rebuildThreeRouteScene() {
           applyGroundAlignedYaw(bayFill, shape.orientation);
           bayFill.position.set(shape.center.x, 0.055, -shape.center.y);
         }
-        routeGroup.add(bayFill);
+        parkingGroup.add(bayFill);
 
         const frameMaterial = new THREE.LineBasicMaterial({ color: 0xeff4f8 });
         const frame = checkpoint.type === "parking_diagonal"
@@ -8022,7 +8130,7 @@ function rebuildThreeRouteScene() {
           applyGroundAlignedYaw(frame, shape.orientation);
           frame.position.set(shape.center.x, 0.065, -shape.center.y);
         }
-        routeGroup.add(frame);
+        parkingGroup.add(frame);
 
         three.parkingSlotRefs.push({
           checkpointId: checkpoint.id,
@@ -8030,9 +8138,11 @@ function rebuildThreeRouteScene() {
           shape,
           bayMaterial,
           frameMaterial,
+          group: parkingGroup,
         });
 
       }
+      registerRouteCullRef(three, parkingGroup, baseShape.center.x, baseShape.center.y, 98);
     }
   }
 
@@ -8050,6 +8160,7 @@ function rebuildThreeRouteScene() {
     bump.position.set(centerX, 0.055 + bumpHeight * 0.5, -centerY);
     bump.rotation.y = heading;
     routeGroup.add(bump);
+    registerRouteCullRef(three, bump, centerX, centerY, 105);
   }
 
   const stopLineCps = routeStopLines();
@@ -8066,12 +8177,14 @@ function rebuildThreeRouteScene() {
     );
     lineMesh.position.y = 0.063;
     routeGroup.add(lineMesh);
+    registerRouteCullRef(three, lineMesh, segment.center.x, segment.center.y, 120);
   }
 
   const startCanopyCheckpoints = routeCheckpoints("start_canopy");
   for (const checkpoint of startCanopyCheckpoints) {
     const canopyGroup = buildStartCanopyGroup(THREE, checkpoint);
     routeGroup.add(canopyGroup);
+    registerRouteCullRef(three, canopyGroup, checkpoint.x, checkpoint.y, 170);
   }
 
   const trafficCps = routeCheckpoints("traffic_light");
@@ -8113,17 +8226,22 @@ function rebuildThreeRouteScene() {
 
     routeGroup.add(tlGroup);
     three.trafficLightRefs.push({ redMat, greenMat });
+    registerRouteCullRef(three, tlGroup, trafficCp.x, trafficCp.y, 145);
   }
 
   const guardTowerCheckpoints = routeCheckpoints("guard_tower");
   for (const checkpoint of guardTowerCheckpoints) {
     const towerGroup = buildGuardTowerGroup(THREE, checkpoint);
     routeGroup.add(towerGroup);
+    registerRouteCullRef(three, towerGroup, checkpoint.x, checkpoint.y, 140);
   }
 
   const treePlacements = collectTreePlacements(roadPath, quality);
   if (treePlacements.length) {
-    addProceduralTreeInstances(THREE, routeGroup, treePlacements, quality);
+    const treeClusters = addProceduralTreeInstances(THREE, routeGroup, treePlacements, quality);
+    for (const cluster of treeClusters) {
+      registerRouteCullRef(three, cluster.object, cluster.x, cluster.y, 155);
+    }
   }
 
   if (quality.shadows) {
@@ -9697,6 +9815,8 @@ async function initThreeEngine() {
     three.lastDprAdjustAt = 0;
     three.lastAppliedPixelRatio = 0;
     three.lastParkingVizUpdateAt = 0;
+    three.routeCullRefs = [];
+    three.lastRouteCullUpdateAt = 0;
     three.lights = { hemi, sun };
     three.ready = true;
     three.failed = false;
@@ -10260,12 +10380,16 @@ function updateThreeScene(dt = 1 / 60) {
       refs.greenMat.emissive.setHex(redOn ? 0x041009 : 0x26ba82);
     }
   }
+  updateRouteCullVisibility(nowMs);
   if (Array.isArray(three.parkingSlotRefs) && three.parkingSlotRefs.length) {
     if (
       nowMs - (Number(three.lastParkingVizUpdateAt) || 0) >= PARKING_VIS_UPDATE_INTERVAL_MS ||
       !Number.isFinite(Number(three.lastParkingVizUpdateAt))
     ) {
       for (const ref of three.parkingSlotRefs) {
+        if (ref?.group && ref.group.visible === false) {
+          continue;
+        }
         const checkpoint = routeCheckpoint(ref.checkpointType || "parking_parallel");
         const occupied = checkpoint?.id === ref.checkpointId && isParkingSlotOccupied(checkpoint, ref.shape);
         ref.bayMaterial.color.setHex(occupied ? 0x2f9f5e : 0x2a3036);
