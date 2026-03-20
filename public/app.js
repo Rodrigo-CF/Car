@@ -2552,7 +2552,13 @@ function parkingAssignmentHudText(nowMs = Date.now()) {
   if (active) {
     const remainingMs = Math.max(0, Number(active.deadlineMs || 0) - nowMs);
     const remainingSec = Math.max(0, Math.ceil(remainingMs / 1000));
-    const slotNumber = Math.max(1, Math.round(Number(active.slotNumber) || Number(active.slotIndex) + 1 || 1));
+    const slotNumber = Math.max(
+      1,
+      Math.round(
+        Number(active.slotNumber) ||
+        parkingSlotDisplayNumber(Number(active.slotCount) || 1, Number(active.slotIndex) || 0),
+      ),
+    );
     const kind = active.parkingType === "parking_diagonal" ? "Diagonal" : "Parallel";
     return `Assignment: ${kind} #${slotNumber} (${remainingSec}s)`;
   }
@@ -6062,6 +6068,12 @@ function parkingTypeDisplayName(type) {
   return type === "parking_diagonal" ? "diagonal" : "paralelo";
 }
 
+function parkingSlotDisplayNumber(slotCount, slotIndex) {
+  const total = Math.max(1, Math.round(Number(slotCount) || 1));
+  const index = Math.max(0, Math.min(total - 1, Math.round(Number(slotIndex) || 0)));
+  return total - index;
+}
+
 function issueParkingAssignmentFromBox(contact, nowMs = Date.now()) {
   const assignmentState = state.sim.parkingAssignment;
   if (!contact?.checkpoint) {
@@ -6090,7 +6102,7 @@ function issueParkingAssignmentFromBox(contact, nowMs = Date.now()) {
   }
 
   const slotIndex = Math.floor(Math.random() * slots.length);
-  const slotNumber = slotIndex + 1;
+  const slotNumber = parkingSlotDisplayNumber(slots.length, slotIndex);
   const timeoutSec = Math.max(10, Math.min(180, Number(contact.shape?.timeoutSec) || 60));
   assignmentState.active = {
     boxId: boxCheckpoint.id || "",
@@ -6098,6 +6110,7 @@ function issueParkingAssignmentFromBox(contact, nowMs = Date.now()) {
     towerId: nearestTower?.checkpoint?.id || "",
     parkingCheckpointId: nearestParking.checkpoint.id,
     parkingType: nearestParking.checkpoint.type,
+    slotCount: slots.length,
     slotIndex,
     slotNumber,
     assignedAtMs: nowMs,
@@ -6185,7 +6198,7 @@ function updateParkingAssignmentRule(nowMs = Date.now()) {
       return;
     }
     if (occupied && occupied.index !== active.slotIndex) {
-      const wrongSlot = Math.max(1, Number(occupied.index) + 1);
+      const wrongSlot = parkingSlotDisplayNumber(occupied.slotCount, occupied.index);
       const wrongMessage = `Parqueado incorrectamente (se parqueo en otro numero).`;
       dom.simState.textContent = wrongMessage;
       dom.simOutput.textContent = `${wrongMessage} Asignado: #${active.slotNumber}, actual: #${wrongSlot}.`;
@@ -9095,7 +9108,7 @@ function rebuildThreeRouteScene() {
         }
         parkingGroup.add(frame);
 
-        const slotTexture = textureForParkingSlot(slotIndex + 1);
+        const slotTexture = textureForParkingSlot(parkingSlotDisplayNumber(slotShapes.length, slotIndex));
         if (slotTexture) {
           const badgeMaterial = new THREE.MeshBasicMaterial({
             map: slotTexture,
@@ -9106,9 +9119,7 @@ function rebuildThreeRouteScene() {
           });
           const badgeSize = Math.max(0.6, Math.min(0.98, Math.min(boxL, boxW) * 0.265));
           const badge = new THREE.Mesh(new THREE.PlaneGeometry(badgeSize, badgeSize), badgeMaterial);
-          const badgeYaw = checkpoint.type === "parking_parallel"
-            ? shape.orientation + Math.PI
-            : shape.orientation;
+          const badgeYaw = shape.orientation + Math.PI;
           applyGroundAlignedYaw(badge, badgeYaw);
           badge.position.set(shape.center.x, 0.071, -shape.center.y);
           parkingGroup.add(badge);
@@ -13013,7 +13024,7 @@ function validateParallelParking() {
       sendSimEvent("parallel_parking_outside_box", { checkpoint: checkpoint.id, distance: nearestCenterDist });
       dom.simState.textContent = "Parallel parking: not inside a valid slot yet.";
     } else {
-      dom.simState.textContent = `Parallel parking OK: slot ${occupied.index + 1}/${occupied.slotCount}.`;
+      dom.simState.textContent = `Parallel parking OK: slot ${parkingSlotDisplayNumber(occupied.slotCount, occupied.index)}/${occupied.slotCount}.`;
     }
   } else if (state.sim.route.routeId === "B") {
     if (!occupied) {
@@ -13027,7 +13038,7 @@ function validateParallelParking() {
         corrections: state.sim.correctionCount,
       });
     } else {
-      dom.simState.textContent = `Parallel parking OK: slot ${occupied.index + 1}/${occupied.slotCount}.`;
+      dom.simState.textContent = `Parallel parking OK: slot ${parkingSlotDisplayNumber(occupied.slotCount, occupied.index)}/${occupied.slotCount}.`;
     }
   }
 }
@@ -13063,14 +13074,14 @@ function validateDiagonalParking() {
       sendSimEvent("diagonal_parking_bad_angle", { checkpoint: checkpoint.id, delta: nearestDelta });
       dom.simState.textContent = "Diagonal parking: adjust position/angle inside a diagonal slot.";
     } else {
-      dom.simState.textContent = `Diagonal parking OK: slot ${occupied.index + 1}/${occupied.slotCount}.`;
+      dom.simState.textContent = `Diagonal parking OK: slot ${parkingSlotDisplayNumber(occupied.slotCount, occupied.index)}/${occupied.slotCount}.`;
     }
   } else if (state.sim.route.routeId === "B") {
     const elapsedSec = (Date.now() - state.sim.startedAt) / 1000;
     if (elapsedSec > 45) {
       sendSimEvent("diagonal_parking_time_exceeded", { checkpoint: checkpoint.id, elapsedSec });
     } else if (occupied) {
-      dom.simState.textContent = `Diagonal parking OK: slot ${occupied.index + 1}/${occupied.slotCount}.`;
+      dom.simState.textContent = `Diagonal parking OK: slot ${parkingSlotDisplayNumber(occupied.slotCount, occupied.index)}/${occupied.slotCount}.`;
     }
   }
 }
