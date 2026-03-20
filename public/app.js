@@ -9119,7 +9119,12 @@ function rebuildThreeRouteScene() {
           });
           const badgeSize = Math.max(0.6, Math.min(0.98, Math.min(boxL, boxW) * 0.265));
           const badge = new THREE.Mesh(new THREE.PlaneGeometry(badgeSize, badgeSize), badgeMaterial);
-          const badgeYaw = shape.orientation + Math.PI;
+          const checkpointSideSign = Math.sign(Number(checkpoint.meta?.sideSign) || 0) || -1;
+          const badgeYaw = checkpoint.type === "parking_diagonal"
+            // Keep the label facing toward the road, but flip its along-road direction
+            // so it reads from the driving direction.
+            ? (2 * (shape.arrangementHeading + checkpointSideSign * Math.PI * 0.5) - shape.orientation)
+            : (shape.orientation + Math.PI);
           applyGroundAlignedYaw(badge, badgeYaw);
           badge.position.set(shape.center.x, 0.071, -shape.center.y);
           parkingGroup.add(badge);
