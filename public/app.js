@@ -497,7 +497,7 @@ function formatClockCountdown(totalSec) {
 
 async function speakVeedorAssignment(text) {
   if (!text || typeof window === "undefined") {
-    return;
+    return false;
   }
   parkingAssignmentSpeechSeq += 1;
   const seq = parkingAssignmentSpeechSeq;
@@ -517,27 +517,17 @@ async function speakVeedorAssignment(text) {
       body: JSON.stringify({ text }),
     });
     if (seq !== parkingAssignmentSpeechSeq) {
-      return;
+      return false;
     }
     const audioUrl = String(payload?.audio_url || "").trim();
     if (!audioUrl) {
-      return;
+      return false;
     }
-    const audio = new Audio(audioUrl);
-    parkingAssignmentAudio = audio;
-    audio.preload = "auto";
-    audio.volume = 1;
-    audio.onended = () => {
-      if (parkingAssignmentAudio === audio) {
-        parkingAssignmentAudio = null;
-      }
-    };
-    audio.onerror = () => {
-      if (parkingAssignmentAudio === audio) {
-        parkingAssignmentAudio = null;
-      }
-    };
-    await audio.play().catch(() => {});
+    const started = await playVeedorAssignmentAudioUrl(audioUrl, seq);
+    if (!started) {
+      return false;
+    }
+    return true;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : "No se pudo reproducir voz de veedor.";
     if (dom.simOutput) {
@@ -557,7 +547,101 @@ async function speakVeedorAssignment(text) {
     } catch {
       // ignore fallback failures
     }
+    return false;
   }
+}
+
+async function playVeedorAssignmentAudioUrl(audioUrl, seq = parkingAssignmentSpeechSeq) {
+  const url = String(audioUrl || "").trim();
+  if (!url || typeof window === "undefined") {
+    return false;
+  }
+  if (seq !== parkingAssignmentSpeechSeq) {
+    return false;
+  }
+  try {
+    if (parkingAssignmentAudio) {
+      try {
+        parkingAssignmentAudio.pause();
+        parkingAssignmentAudio.currentTime = 0;
+      } catch {
+        // ignore
+      }
+      parkingAssignmentAudio = null;
+    }
+    const audio = new Audio(url);
+    parkingAssignmentAudio = audio;
+    audio.preload = "auto";
+    audio.volume = 1;
+    audio.onended = () => {
+      if (parkingAssignmentAudio === audio) {
+        parkingAssignmentAudio = null;
+      }
+    };
+    audio.onerror = () => {
+      if (parkingAssignmentAudio === audio) {
+        parkingAssignmentAudio = null;
+      }
+    };
+    await audio.play();
+    return true;
+  } catch {
+    if (parkingAssignmentAudio) {
+      try {
+        parkingAssignmentAudio.pause();
+      } catch {
+        // ignore
+      }
+      parkingAssignmentAudio = null;
+    }
+    return false;
+  }
+}
+
+function primeVeedorAssignmentSpeech(activeAssignment) {
+  if (!activeAssignment || activeAssignment.speechStatus === "loading" || !activeAssignment.speechMessage) {
+    return;
+  }
+  activeAssignment.speechStatus = "loading";
+  activeAssignment.speechAudioUrl = "";
+  activeAssignment.speechError = "";
+  activeAssignment.speechReadyAtMs = 0;
+
+  const expectedSeq = Number(activeAssignment.speechSeq) || 0;
+  api("/v1/speech/veedor", {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify({ text: activeAssignment.speechMessage }),
+  })
+    .then((payload) => {
+      const currentActive = state.sim?.parkingAssignment?.active;
+      if (!currentActive || currentActive !== activeAssignment) {
+        return;
+      }
+      if ((Number(currentActive.speechSeq) || 0) !== expectedSeq) {
+        return;
+      }
+      const audioUrl = String(payload?.audio_url || "").trim();
+      if (!audioUrl) {
+        currentActive.speechStatus = "error";
+        currentActive.speechError = "empty_audio_url";
+        return;
+      }
+      currentActive.speechAudioUrl = audioUrl;
+      currentActive.speechStatus = "ready";
+      currentActive.speechReadyAtMs = Date.now();
+    })
+    .catch((error) => {
+      const currentActive = state.sim?.parkingAssignment?.active;
+      if (!currentActive || currentActive !== activeAssignment) {
+        return;
+      }
+      if ((Number(currentActive.speechSeq) || 0) !== expectedSeq) {
+        return;
+      }
+      currentActive.speechStatus = "error";
+      currentActive.speechError = error instanceof Error ? error.message : "speech_request_failed";
+    });
 }
 
 function resetPenaltyPoints() {
@@ -2564,7 +2648,13 @@ function parkingAssignmentHudText(nowMs = Date.now()) {
     if (!active.announced) {
       const waitMs = Math.max(0, Number(active.startAtMs || 0) - nowMs);
       const waitSec = Math.max(0, Math.ceil(waitMs / 1000));
-      return `Assignment: preparing (${waitSec}s)`;
+      if (waitSec > 0) {
+        return `Assignment: preparing (${waitSec}s)`;
+      }
+      if (active.speechStatus === "loading") {
+        return "Assignment: preparing audio...";
+      }
+      return "Assignment: preparing...";
     }
     const remainingMs = Math.max(0, Number(active.deadlineMs || 0) - nowMs);
     const remainingSec = Math.max(0, Math.ceil(remainingMs / 1000));
@@ -6122,6 +6212,8 @@ function issueParkingAssignmentFromBox(contact, nowMs = Date.now()) {
   const timeoutSec = Math.max(10, Math.min(180, Number(contact.shape?.timeoutSec) || 60));
   const announceDelayMs = PARKING_ASSIGNMENT_ANNOUNCE_DELAY_MS;
   const startAtMs = nowMs + announceDelayMs;
+  parkingAssignmentSpeechSeq += 1;
+  const speechSeq = parkingAssignmentSpeechSeq;
   const username = assignmentDisplayUsername();
   const veedorLabel = nearestTower?.checkpoint?.id ? `Veedor ${nearestTower.checkpoint.id}` : "Veedor";
   const parkingKind = parkingTypeDisplayName(nearestParking.checkpoint.type);
@@ -6153,10 +6245,16 @@ function issueParkingAssignmentFromBox(contact, nowMs = Date.now()) {
     deadlineMs: startAtMs + timeoutSec * 1000,
     timeoutSec,
     announced: false,
+    announcing: false,
     assignmentMessage,
     speechMessage,
     bubbleText,
     bubbleAnchor,
+    speechSeq,
+    speechStatus: "idle",
+    speechAudioUrl: "",
+    speechError: "",
+    speechReadyAtMs: 0,
   };
   assignmentState.pendingBoxId = "";
   assignmentState.pendingSinceMs = 0;
@@ -6164,6 +6262,7 @@ function issueParkingAssignmentFromBox(contact, nowMs = Date.now()) {
   assignmentState.lastHudTickSec = -1;
   dom.simState.textContent = "Veedor evaluando asignacion...";
   dom.simOutput.textContent = "Veedor evaluando asignacion...";
+  primeVeedorAssignmentSpeech(assignmentState.active);
   sendSimEvent(
     "parking_assignment_issued",
     {
@@ -6190,18 +6289,70 @@ function updateParkingAssignmentRule(nowMs = Date.now()) {
   const active = assignmentState.active;
   if (active) {
     if (!active.announced && nowMs >= Number(active.startAtMs || nowMs)) {
-      if (active.assignmentMessage) {
-        dom.simState.textContent = active.assignmentMessage;
-        dom.simOutput.textContent = active.assignmentMessage;
+      if (!active.speechMessage) {
+        if (active.assignmentMessage) {
+          dom.simState.textContent = active.assignmentMessage;
+          dom.simOutput.textContent = active.assignmentMessage;
+        }
+        if (active.bubbleText) {
+          setParkingAssignmentBubble(active.bubbleText, active.bubbleAnchor || null, 5200);
+        }
+        active.announced = true;
+        assignmentState.lastHudTickSec = -1;
+      } else {
+        if (active.speechStatus === "idle") {
+          primeVeedorAssignmentSpeech(active);
+        }
+        if (active.speechStatus === "ready" && !active.announcing) {
+          active.announcing = true;
+          playVeedorAssignmentAudioUrl(active.speechAudioUrl, Number(active.speechSeq) || 0)
+            .then((started) => {
+              if (state.sim?.parkingAssignment?.active !== active) {
+                return;
+              }
+              if (!started) {
+                active.speechStatus = "error";
+                return;
+              }
+              if (active.assignmentMessage) {
+                dom.simState.textContent = active.assignmentMessage;
+                dom.simOutput.textContent = active.assignmentMessage;
+              }
+              if (active.bubbleText) {
+                setParkingAssignmentBubble(active.bubbleText, active.bubbleAnchor || null, 5200);
+              }
+              active.announced = true;
+              assignmentState.lastHudTickSec = -1;
+            })
+            .catch(() => {
+              if (state.sim?.parkingAssignment?.active !== active) {
+                return;
+              }
+              active.speechStatus = "error";
+            })
+            .finally(() => {
+              if (state.sim?.parkingAssignment?.active === active) {
+                active.announcing = false;
+              }
+            });
+        } else if (active.speechStatus === "error" && !active.announcing) {
+          if (active.assignmentMessage) {
+            dom.simState.textContent = active.assignmentMessage;
+            dom.simOutput.textContent = active.assignmentMessage;
+          }
+          if (active.bubbleText) {
+            setParkingAssignmentBubble(active.bubbleText, active.bubbleAnchor || null, 5200);
+          }
+          if (active.speechMessage) {
+            speakVeedorAssignment(active.speechMessage).catch(() => {});
+          }
+          active.announced = true;
+          assignmentState.lastHudTickSec = -1;
+        } else {
+          dom.simState.textContent = "Veedor evaluando asignacion...";
+          dom.simOutput.textContent = "Veedor evaluando asignacion...";
+        }
       }
-      if (active.bubbleText) {
-        setParkingAssignmentBubble(active.bubbleText, active.bubbleAnchor || null, 5200);
-      }
-      if (active.speechMessage) {
-        speakVeedorAssignment(active.speechMessage);
-      }
-      active.announced = true;
-      assignmentState.lastHudTickSec = -1;
     }
 
     if (!active.announced) {
