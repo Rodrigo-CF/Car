@@ -537,8 +537,25 @@ async function speakVeedorAssignment(text) {
       }
     };
     await audio.play().catch(() => {});
-  } catch {
-    // Voice is optional. Ignore errors when TTS provider is unavailable.
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : "No se pudo reproducir voz de veedor.";
+    if (dom.simOutput) {
+      dom.simOutput.textContent = `TTS Murf error: ${errorMessage}`;
+    }
+    try {
+      if ("speechSynthesis" in window) {
+        const synth = window.speechSynthesis;
+        synth.cancel();
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = "es-419";
+        utterance.rate = 0.95;
+        utterance.pitch = 1;
+        utterance.volume = 1;
+        synth.speak(utterance);
+      }
+    } catch {
+      // ignore fallback failures
+    }
   }
 }
 

@@ -58,10 +58,31 @@ function murfAudioUrlFromPayload(payload) {
   return "";
 }
 
+async function murfGenerateOnce(endpoint, apiKey, body) {
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "api-key": apiKey,
+    },
+    body: JSON.stringify(body),
+  });
+  const raw = await response.text();
+  let payload = {};
+  try {
+    payload = JSON.parse(raw);
+  } catch {
+    payload = {};
+  }
+  return { response, payload, raw };
+}
+
 async function generateMurfVeedorSpeech(text) {
   const apiKey = String(process.env.MURF_API_KEY || "").trim();
   if (!apiKey) {
-    throw new Error("Murf TTS is not configured.");
+    const err = new Error("Murf TTS is not configured.");
+    err.details = { status: 0, providerResponse: "MURF_API_KEY missing" };
+    throw err;
   }
   const endpoint = String(process.env.MURF_TTS_URL || "https://api.murf.ai/v1/speech/generate").trim();
   const voiceId = String(process.env.MURF_VOICE_ID || "Freddie").trim() || "Freddie";
@@ -70,47 +91,53 @@ async function generateMurfVeedorSpeech(text) {
   const multiNativeLocale = String(process.env.MURF_MULTI_NATIVE_LOCALE || "es-MX").trim() || "es-MX";
   const locale = String(process.env.MURF_LOCALE || multiNativeLocale).trim() || "es-MX";
 
-  const body = {
-    voice_id: voiceId,
-    style,
-    model,
-    multiNativeLocale,
-    locale,
+  const bodyPrimary = {
     text,
+    voiceId,
+    style,
+    modelVersion: model,
+    locale,
+    multiNativeLocale,
   };
-
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "api-key": apiKey,
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(body),
-  });
-
-  const raw = await response.text();
-  let payload = {};
-  try {
-    payload = JSON.parse(raw);
-  } catch {
-    payload = {};
+  const bodyFallback = {
+    text,
+    voiceId,
+    style,
+    modelVersion: model,
+  };
+  const attempts = [bodyPrimary, bodyFallback];
+  let lastDetails = {
+    status: 0,
+    providerResponse: "No response from Murf.",
+    attemptKeys: [],
+  };
+  for (const body of attempts) {
+    const { response, payload, raw } = await murfGenerateOnce(endpoint, apiKey, body);
+    if (response.ok) {
+      const audioUrl = murfAudioUrlFromPayload(payload);
+      if (audioUrl) {
+        return audioUrl;
+      }
+      lastDetails = {
+        status: response.status,
+        providerResponse: `Murf response missing audio URL. Raw: ${(raw || "").slice(0, 260)}`,
+        attemptKeys: Object.keys(body),
+      };
+      continue;
+    }
+    lastDetails = {
+      status: response.status,
+      providerResponse:
+        payload?.error?.message ||
+        payload?.error ||
+        payload?.message ||
+        (raw ? raw.slice(0, 260) : `HTTP ${response.status}`),
+      attemptKeys: Object.keys(body),
+    };
   }
-
-  if (!response.ok) {
-    const providerError =
-      payload?.error?.message ||
-      payload?.error ||
-      payload?.message ||
-      (raw ? raw.slice(0, 220) : `HTTP ${response.status}`);
-    throw new Error(`Murf TTS request failed: ${providerError}`);
-  }
-
-  const audioUrl = murfAudioUrlFromPayload(payload);
-  if (!audioUrl) {
-    throw new Error("Murf TTS response missing audio URL.");
-  }
-  return audioUrl;
+  const err = new Error(`Murf TTS request failed: ${lastDetails.providerResponse}`);
+  err.details = lastDetails;
+  throw err;
 }
 
 async function serveStatic(req, res, pathname) {
@@ -345,7 +372,13 @@ export function createAppServer(store = createStore()) {
           return;
         } catch (error) {
           const message = error instanceof Error ? error.message : "murf tts failed";
-          sendJson(res, 502, { error: message });
+          const details = error?.details || {};
+          sendJson(res, 502, {
+            error: message,
+            provider_status: Number(details.status) || 0,
+            provider_response: String(details.providerResponse || "").slice(0, 320),
+            attempt_keys: Array.isArray(details.attemptKeys) ? details.attemptKeys : [],
+          });
           return;
         }
       }
