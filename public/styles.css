@@ -563,6 +563,12 @@ pre {
   backdrop-filter: blur(4px);
 }
 
+.sim-penalty-card.success {
+  border: 1px solid rgba(129, 238, 167, 0.72);
+  background: linear-gradient(120deg, rgba(14, 99, 49, 0.95), rgba(18, 124, 66, 0.93));
+  color: #eafff2;
+}
+
 .sim-veedor-bubble {
   position: absolute;
   left: 50%;

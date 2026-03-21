@@ -401,6 +401,7 @@ const miniCtx = dom.miniMapCanvas.getContext("2d");
 const mapperCtx = dom.mapperCanvas.getContext("2d");
 let simPenaltyCardTimer = null;
 let parkingAssignmentSpeechSeq = 0;
+let parkingAssignmentAudio = null;
 
 function clampRenderQuality(value) {
   return Object.prototype.hasOwnProperty.call(RENDER_QUALITY_PRESETS, value) ? value : "medium";
@@ -440,14 +441,16 @@ function hidePenaltyCard() {
     return;
   }
   dom.simPenaltyCard.classList.add("hidden");
+  dom.simPenaltyCard.classList.remove("success");
   dom.simPenaltyCard.textContent = "";
 }
 
-function showPenaltyCard(message, durationMs = 2600) {
+function showPenaltyCard(message, durationMs = 2600, tone = "danger") {
   if (!dom.simPenaltyCard) {
     return;
   }
   dom.simPenaltyCard.textContent = message;
+  dom.simPenaltyCard.classList.toggle("success", tone === "success");
   dom.simPenaltyCard.classList.remove("hidden");
   if (simPenaltyCardTimer) {
     clearTimeout(simPenaltyCardTimer);
@@ -491,61 +494,51 @@ function formatClockCountdown(totalSec) {
   return `${String(minutes).padStart(1, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
-function speakVeedorAssignment(text) {
-  if (!text || typeof window === "undefined" || !("speechSynthesis" in window)) {
+async function speakVeedorAssignment(text) {
+  if (!text || typeof window === "undefined") {
     return;
   }
-  try {
-    parkingAssignmentSpeechSeq += 1;
-    const seq = parkingAssignmentSpeechSeq;
-    const synth = window.speechSynthesis;
-    synth.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = "es-419";
-    utterance.rate = 0.95;
-    utterance.pitch = 1;
-    utterance.volume = 1;
-    const voices = synth.getVoices ? synth.getVoices() : [];
-    const voiceScore = (voice) => {
-      const lang = String(voice?.lang || "").toLowerCase();
-      const name = String(voice?.name || "").toLowerCase();
-      let score = 0;
-      if (/^es(-|_)(419|pe|mx|co|ar|cl|uy)\b/.test(lang)) {
-        score += 120;
-      } else if (/^es(-|_)/.test(lang)) {
-        score += 80;
-      }
-      if (/\b(latam|latino|mex|peru|argen|colom|chile)\b/.test(name)) {
-        score += 45;
-      }
-      if (/\b(natural|premium|enhanced|neural)\b/.test(name)) {
-        score += 25;
-      }
-      if (/\b(spain|castellano|espa[nñ]a)\b/.test(name) || /^es(-|_)es\b/.test(lang)) {
-        score -= 25;
-      }
-      return score;
-    };
-    const voice = voices.length
-      ? voices
-          .slice()
-          .sort((a, b) => voiceScore(b) - voiceScore(a))[0]
-      : null;
-    if (voice) {
-      utterance.voice = voice;
-      if (voice.lang) {
-        utterance.lang = voice.lang;
-      }
+  parkingAssignmentSpeechSeq += 1;
+  const seq = parkingAssignmentSpeechSeq;
+  if (parkingAssignmentAudio) {
+    try {
+      parkingAssignmentAudio.pause();
+      parkingAssignmentAudio.currentTime = 0;
+    } catch {
+      // ignore
     }
-    // Guard against queued stale utterances if assignment changes quickly.
-    utterance.onstart = () => {
-      if (seq !== parkingAssignmentSpeechSeq) {
-        synth.cancel();
+    parkingAssignmentAudio = null;
+  }
+  try {
+    const payload = await api("/v1/speech/veedor", {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ text }),
+    });
+    if (seq !== parkingAssignmentSpeechSeq) {
+      return;
+    }
+    const audioUrl = String(payload?.audio_url || "").trim();
+    if (!audioUrl) {
+      return;
+    }
+    const audio = new Audio(audioUrl);
+    parkingAssignmentAudio = audio;
+    audio.preload = "auto";
+    audio.volume = 1;
+    audio.onended = () => {
+      if (parkingAssignmentAudio === audio) {
+        parkingAssignmentAudio = null;
       }
     };
-    synth.speak(utterance);
+    audio.onerror = () => {
+      if (parkingAssignmentAudio === audio) {
+        parkingAssignmentAudio = null;
+      }
+    };
+    await audio.play().catch(() => {});
   } catch {
-    // Voice is optional; ignore environments where synthesis is restricted.
+    // Voice is optional. Ignore errors when TTS provider is unavailable.
   }
 }
 
@@ -6181,7 +6174,7 @@ function updateParkingAssignmentRule(nowMs = Date.now()) {
       const doneMessage = "Parqueado correctamente.";
       dom.simState.textContent = doneMessage;
       dom.simOutput.textContent = doneMessage;
-      showPenaltyCard(doneMessage, 2800);
+      showPenaltyCard(doneMessage, 2800, "success");
       sendSimEvent(
         "parking_assignment_completed",
         {

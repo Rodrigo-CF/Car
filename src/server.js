@@ -33,6 +33,86 @@ function wantsJson(req) {
   return accept.includes("application/json");
 }
 
+function murfAudioUrlFromPayload(payload) {
+  const candidates = [
+    payload?.audio_file,
+    payload?.audioFile,
+    payload?.audio_url,
+    payload?.audioUrl,
+    payload?.data?.audio_file,
+    payload?.data?.audioFile,
+    payload?.data?.audio_url,
+    payload?.result?.audio_file,
+    payload?.result?.audioFile,
+    payload?.result?.audio_url,
+    payload?.results?.[0]?.audio_file,
+    payload?.results?.[0]?.audioFile,
+    payload?.outputs?.[0]?.audio_file,
+    payload?.outputs?.[0]?.audio_url,
+  ];
+  for (const value of candidates) {
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return "";
+}
+
+async function generateMurfVeedorSpeech(text) {
+  const apiKey = String(process.env.MURF_API_KEY || "").trim();
+  if (!apiKey) {
+    throw new Error("Murf TTS is not configured.");
+  }
+  const endpoint = String(process.env.MURF_TTS_URL || "https://api.murf.ai/v1/speech/generate").trim();
+  const voiceId = String(process.env.MURF_VOICE_ID || "Freddie").trim() || "Freddie";
+  const style = String(process.env.MURF_STYLE || "Narration").trim() || "Narration";
+  const model = String(process.env.MURF_MODEL || "Gen2").trim() || "Gen2";
+  const multiNativeLocale = String(process.env.MURF_MULTI_NATIVE_LOCALE || "es-MX").trim() || "es-MX";
+  const locale = String(process.env.MURF_LOCALE || multiNativeLocale).trim() || "es-MX";
+
+  const body = {
+    voice_id: voiceId,
+    style,
+    model,
+    multiNativeLocale,
+    locale,
+    text,
+  };
+
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "api-key": apiKey,
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  const raw = await response.text();
+  let payload = {};
+  try {
+    payload = JSON.parse(raw);
+  } catch {
+    payload = {};
+  }
+
+  if (!response.ok) {
+    const providerError =
+      payload?.error?.message ||
+      payload?.error ||
+      payload?.message ||
+      (raw ? raw.slice(0, 220) : `HTTP ${response.status}`);
+    throw new Error(`Murf TTS request failed: ${providerError}`);
+  }
+
+  const audioUrl = murfAudioUrlFromPayload(payload);
+  if (!audioUrl) {
+    throw new Error("Murf TTS response missing audio URL.");
+  }
+  return audioUrl;
+}
+
 async function serveStatic(req, res, pathname) {
   const target = pathname === "/" ? "/index.html" : pathname;
   const filePath = path.resolve(PUBLIC_DIR, `.${target}`);
@@ -246,6 +326,28 @@ export function createAppServer(store = createStore()) {
           ...profile,
         });
         return;
+      }
+
+      if (req.method === "POST" && reqUrl.pathname === "/v1/speech/veedor") {
+        const payload = await readJsonBody(req);
+        const text = String(payload?.text || "").trim();
+        if (!text) {
+          sendJson(res, 400, { error: "text is required" });
+          return;
+        }
+        if (!process.env.MURF_API_KEY) {
+          sendJson(res, 503, { error: "murf tts not configured" });
+          return;
+        }
+        try {
+          const audioUrl = await generateMurfVeedorSpeech(text.slice(0, 260));
+          sendJson(res, 200, { audio_url: audioUrl });
+          return;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "murf tts failed";
+          sendJson(res, 502, { error: message });
+          return;
+        }
       }
 
       if (req.method === "POST" && reqUrl.pathname === "/v1/admin/cleanup/sim-active") {
