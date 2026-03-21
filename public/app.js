@@ -402,6 +402,7 @@ const mapperCtx = dom.mapperCanvas.getContext("2d");
 let simPenaltyCardTimer = null;
 let parkingAssignmentSpeechSeq = 0;
 let parkingAssignmentAudio = null;
+const PARKING_ASSIGNMENT_ANNOUNCE_DELAY_MS = 2000;
 
 function clampRenderQuality(value) {
   return Object.prototype.hasOwnProperty.call(RENDER_QUALITY_PRESETS, value) ? value : "medium";
@@ -2560,6 +2561,11 @@ function parkingAssignmentHudText(nowMs = Date.now()) {
   }
   const active = assignmentState.active;
   if (active) {
+    if (!active.announced) {
+      const waitMs = Math.max(0, Number(active.startAtMs || 0) - nowMs);
+      const waitSec = Math.max(0, Math.ceil(waitMs / 1000));
+      return `Assignment: preparing (${waitSec}s)`;
+    }
     const remainingMs = Math.max(0, Number(active.deadlineMs || 0) - nowMs);
     const remainingSec = Math.max(0, Math.ceil(remainingMs / 1000));
     const slotNumber = Math.max(
@@ -2632,7 +2638,7 @@ function updateParkingAssignmentOverlays(nowMs = Date.now()) {
   const assignmentState = state.sim.parkingAssignment;
   const active = assignmentState?.active;
   if (dom.simAssignmentBanner) {
-    if (active) {
+    if (active && active.announced) {
       const username = assignmentDisplayUsername();
       const remainingMs = Math.max(0, Number(active.deadlineMs || 0) - nowMs);
       const remainingSec = Math.max(0, Math.ceil(remainingMs / 1000));
@@ -6114,30 +6120,14 @@ function issueParkingAssignmentFromBox(contact, nowMs = Date.now()) {
   const slotIndex = Math.floor(Math.random() * slots.length);
   const slotNumber = parkingSlotDisplayNumber(slots.length, slotIndex);
   const timeoutSec = Math.max(10, Math.min(180, Number(contact.shape?.timeoutSec) || 60));
-  assignmentState.active = {
-    boxId: boxCheckpoint.id || "",
-    boxCenter: { x: contact.shape.center.x, y: contact.shape.center.y },
-    towerId: nearestTower?.checkpoint?.id || "",
-    parkingCheckpointId: nearestParking.checkpoint.id,
-    parkingType: nearestParking.checkpoint.type,
-    slotCount: slots.length,
-    slotIndex,
-    slotNumber,
-    assignedAtMs: nowMs,
-    deadlineMs: nowMs + timeoutSec * 1000,
-    timeoutSec,
-  };
-  assignmentState.pendingBoxId = "";
-  assignmentState.pendingSinceMs = 0;
-  assignmentState.blockedBoxId = boxCheckpoint.id || "";
-  assignmentState.lastHudTickSec = -1;
-
+  const announceDelayMs = PARKING_ASSIGNMENT_ANNOUNCE_DELAY_MS;
+  const startAtMs = nowMs + announceDelayMs;
   const username = assignmentDisplayUsername();
   const veedorLabel = nearestTower?.checkpoint?.id ? `Veedor ${nearestTower.checkpoint.id}` : "Veedor";
   const parkingKind = parkingTypeDisplayName(nearestParking.checkpoint.type);
-  const message = `${veedorLabel}: ${username} a parqueo ${parkingKind} numero ${slotNumber}.`;
-  dom.simState.textContent = message;
-  dom.simOutput.textContent = message;
+  const assignmentMessage = `${veedorLabel}: ${username} a parqueo ${parkingKind} numero ${slotNumber}.`;
+  const speechMessage = `${username}, a parqueo ${parkingKind} numero ${slotNumber}.`;
+  const bubbleText = `${username} a parqueo ${parkingKind} numero ${slotNumber}.`;
   const bubbleAnchor = nearestTower?.placement
     ? {
         x: nearestTower.placement.center.x + Math.cos(nearestTower.placement.faceHeading || 0) * 0.5,
@@ -6149,8 +6139,31 @@ function issueParkingAssignmentFromBox(contact, nowMs = Date.now()) {
         y: assignmentOrigin.y,
         h: 2.35,
       };
-  setParkingAssignmentBubble(`${username} a parqueo ${parkingKind} numero ${slotNumber}.`, bubbleAnchor, 5200);
-  speakVeedorAssignment(`${username}, a parqueo ${parkingKind} numero ${slotNumber}.`);
+  assignmentState.active = {
+    boxId: boxCheckpoint.id || "",
+    boxCenter: { x: contact.shape.center.x, y: contact.shape.center.y },
+    towerId: nearestTower?.checkpoint?.id || "",
+    parkingCheckpointId: nearestParking.checkpoint.id,
+    parkingType: nearestParking.checkpoint.type,
+    slotCount: slots.length,
+    slotIndex,
+    slotNumber,
+    assignedAtMs: startAtMs,
+    startAtMs,
+    deadlineMs: startAtMs + timeoutSec * 1000,
+    timeoutSec,
+    announced: false,
+    assignmentMessage,
+    speechMessage,
+    bubbleText,
+    bubbleAnchor,
+  };
+  assignmentState.pendingBoxId = "";
+  assignmentState.pendingSinceMs = 0;
+  assignmentState.blockedBoxId = boxCheckpoint.id || "";
+  assignmentState.lastHudTickSec = -1;
+  dom.simState.textContent = "Veedor evaluando asignacion...";
+  dom.simOutput.textContent = "Veedor evaluando asignacion...";
   sendSimEvent(
     "parking_assignment_issued",
     {
@@ -6176,6 +6189,25 @@ function updateParkingAssignmentRule(nowMs = Date.now()) {
 
   const active = assignmentState.active;
   if (active) {
+    if (!active.announced && nowMs >= Number(active.startAtMs || nowMs)) {
+      if (active.assignmentMessage) {
+        dom.simState.textContent = active.assignmentMessage;
+        dom.simOutput.textContent = active.assignmentMessage;
+      }
+      if (active.bubbleText) {
+        setParkingAssignmentBubble(active.bubbleText, active.bubbleAnchor || null, 5200);
+      }
+      if (active.speechMessage) {
+        speakVeedorAssignment(active.speechMessage);
+      }
+      active.announced = true;
+      assignmentState.lastHudTickSec = -1;
+    }
+
+    if (!active.announced) {
+      return;
+    }
+
     const assignedCheckpoint = routeCheckpointById(active.parkingCheckpointId, [
       "parking_parallel",
       "parking_diagonal",
