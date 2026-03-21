@@ -8094,7 +8094,7 @@ function renderLaneProfileEntryTrimPatches(THREE, routeGroup) {
   }
 
   const roadPatchMat = new THREE.MeshStandardMaterial({
-    color: 0x4a5460,
+    color: 0x2e343b,
     roughness: 0.95,
     metalness: 0.03,
     side: THREE.DoubleSide,
@@ -8282,7 +8282,7 @@ function renderLaneProfileExitJoinPatches(THREE, routeGroup) {
   }
 
   const roadPatchMat = new THREE.MeshStandardMaterial({
-    color: 0x4a5460,
+    color: 0x2e343b,
     roughness: 0.95,
     metalness: 0.03,
     side: THREE.DoubleSide,
@@ -8429,15 +8429,15 @@ function createRoadAlbedoTexture(THREE, size, anisotropy) {
           const idx = (y * w + x) * 4;
           const grain = seededNoise2D(x * 0.51, y * 0.53);
           const macro = seededNoise2D(x * 0.07, y * 0.08);
-          const value = Math.round(62 + grain * 18 + macro * 10);
-          data[idx] = Math.max(0, value - 4);
-          data[idx + 1] = Math.max(0, value - 1);
-          data[idx + 2] = Math.min(255, value + 4);
+          const value = Math.round(46 + grain * 24 + macro * 16);
+          data[idx] = value;
+          data[idx + 1] = value + 2;
+          data[idx + 2] = value + 4;
           data[idx + 3] = 255;
         }
       }
       ctx2d.putImageData(imageData, 0, 0);
-      ctx2d.strokeStyle = "rgba(168,178,190,0.05)";
+      ctx2d.strokeStyle = "rgba(175,185,196,0.06)";
       ctx2d.lineWidth = Math.max(1, Math.round(size / 320));
       for (let i = 0; i < 18; i += 1) {
         const y = (i / 18) * h + seededNoise2D(i, 17.4) * 10 - 5;
@@ -8770,7 +8770,7 @@ function rebuildThreeRouteScene() {
   const env = ensureThreeEnvironmentAssets(THREE);
 
   const roadMat = new THREE.MeshStandardMaterial({
-    color: 0xe2e8ee,
+    color: 0xffffff,
     map: env?.roadAlbedo || null,
     roughnessMap: env?.roadRoughness || null,
     normalMap: env?.roadNormal || null,
@@ -11076,7 +11076,7 @@ async function initThreeEngine() {
     hemi.position.set(0, 60, 0);
     scene.add(hemi);
 
-    const sun = new THREE.DirectionalLight(0xfff9f0, 0.95);
+    const sun = new THREE.DirectionalLight(0xfff2d6, 0.95);
     sun.position.set(42, 56, 18);
     sun.castShadow = true;
     sun.shadow.mapSize.set(1024, 1024);
