@@ -2912,20 +2912,6 @@ function smoothTowards(current, target, lambda, dt) {
   return current + (target - current) * alpha;
 }
 
-function syncCameraClipPlanes(camera, near, far) {
-  if (!camera || !Number.isFinite(near) || !Number.isFinite(far)) {
-    return false;
-  }
-  const safeNear = Math.max(0.02, near);
-  const safeFar = Math.max(safeNear + 1, far);
-  if (Math.abs((camera.near || 0) - safeNear) < 0.0005 && Math.abs((camera.far || 0) - safeFar) < 0.01) {
-    return false;
-  }
-  camera.near = safeNear;
-  camera.far = safeFar;
-  return true;
-}
-
 function nextCameraMode(currentMode) {
   const idx = CAMERA_MODE_CYCLE.indexOf(currentMode);
   if (idx < 0) {
@@ -2994,8 +2980,6 @@ function buildExternalCameraRig(mode, heading, car, bumpLift) {
     const height = Math.max(28, fitHeightY, fitHeightX) + 6;
     return {
       fov,
-      near: Math.max(0.9, height * 0.012),
-      far: Math.max(320, height + Math.max(spanX, spanY) * 1.55 + 90),
       posLag: 4.8,
       lookLag: 5.2,
       targetPos: {
@@ -3076,8 +3060,6 @@ function buildExternalCameraRig(mode, heading, car, bumpLift) {
 
   return {
     fov: cfg.fov,
-    near: externalMode === "top" ? 0.35 : 0.12,
-    far: 420,
     posLag: cfg.posLag,
     lookLag: cfg.lookLag,
     targetPos: {
@@ -8098,9 +8080,6 @@ function renderLaneProfileEntryTrimPatches(THREE, routeGroup) {
     roughness: 0.95,
     metalness: 0.03,
     side: THREE.DoubleSide,
-    polygonOffset: true,
-    polygonOffsetFactor: -0.7,
-    polygonOffsetUnits: -1,
   });
   const shoulderPatchMat = new THREE.MeshStandardMaterial({
     color: 0x4f3f33,
@@ -8286,9 +8265,6 @@ function renderLaneProfileExitJoinPatches(THREE, routeGroup) {
     roughness: 0.95,
     metalness: 0.03,
     side: THREE.DoubleSide,
-    polygonOffset: true,
-    polygonOffsetFactor: -0.7,
-    polygonOffsetUnits: -1,
   });
   const shoulderPatchMat = new THREE.MeshStandardMaterial({
     color: 0x4f3f33,
@@ -8777,9 +8753,6 @@ function rebuildThreeRouteScene() {
     normalScale: env?.roadNormal ? new THREE.Vector2(0.28, 0.28) : null,
     roughness: 0.93,
     metalness: 0.03,
-    polygonOffset: true,
-    polygonOffsetFactor: -0.7,
-    polygonOffsetUnits: -1,
   });
   const shoulderMat = new THREE.MeshStandardMaterial({
     color: 0xffffff,
@@ -8787,14 +8760,7 @@ function rebuildThreeRouteScene() {
     roughness: 0.98,
     metalness: 0,
   });
-  const lineMat = new THREE.MeshStandardMaterial({
-    color: 0xf0f5f8,
-    roughness: 0.58,
-    metalness: 0,
-    polygonOffset: true,
-    polygonOffsetFactor: -1.4,
-    polygonOffsetUnits: -2,
-  });
+  const lineMat = new THREE.MeshStandardMaterial({ color: 0xf0f5f8, roughness: 0.58, metalness: 0 });
   const grassMat = new THREE.MeshStandardMaterial({
     color: 0xffffff,
     map: env?.grassAlbedo || null,
@@ -11556,7 +11522,6 @@ function updateThreeScene(dt = 1 / 60) {
     if (state.sim.camera === "first") {
       // Ensure first-person never inherits top-down camera roll/up vector.
       camera.up.set(0, 1, 0);
-      let projectionChanged = syncCameraClipPlanes(camera, 0.05, 420);
       if (vehicleModelRoot && carMarker && three.driverSeatLocal && three.lib) {
         const eyeWorld = carMarker.localToWorld(three.driverSeatLocal.clone());
         eyeWorld.y += bumpLift * 0.72;
@@ -11572,7 +11537,7 @@ function updateThreeScene(dt = 1 / 60) {
 
         if (camera.fov !== 74) {
           camera.fov = 74;
-          projectionChanged = true;
+          camera.updateProjectionMatrix();
         }
         camera.up.set(Math.sin(bumpRoll * 0.8), 1, 0);
         camera.position.copy(eyeWorld);
@@ -11594,9 +11559,6 @@ function updateThreeScene(dt = 1 / 60) {
           1.5 + bumpLift * 0.58 + bumpPitch * 2.2,
           camZ + forwardZ * 13,
         );
-      }
-      if (projectionChanged) {
-        camera.updateProjectionMatrix();
       }
       if (cockpitRoot) {
         cockpitRoot.visible = !vehicleModelRoot && !cockpitModelRoot;
@@ -11623,12 +11585,8 @@ function updateThreeScene(dt = 1 / 60) {
     } else {
       const mode = externalCameraMode(state.sim.camera);
       const rig = buildExternalCameraRig(mode, heading, car, bumpLift);
-      let projectionChanged = syncCameraClipPlanes(camera, rig.near ?? 0.12, rig.far ?? 420);
       if (camera.fov !== rig.fov) {
         camera.fov = rig.fov;
-        projectionChanged = true;
-      }
-      if (projectionChanged) {
         camera.updateProjectionMatrix();
       }
       if (mode === "top" || mode === "overview") {
