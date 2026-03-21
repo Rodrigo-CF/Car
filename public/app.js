@@ -2912,6 +2912,20 @@ function smoothTowards(current, target, lambda, dt) {
   return current + (target - current) * alpha;
 }
 
+function syncCameraClipPlanes(camera, near, far) {
+  if (!camera || !Number.isFinite(near) || !Number.isFinite(far)) {
+    return false;
+  }
+  const safeNear = Math.max(0.02, near);
+  const safeFar = Math.max(safeNear + 1, far);
+  if (Math.abs((camera.near || 0) - safeNear) < 0.0005 && Math.abs((camera.far || 0) - safeFar) < 0.01) {
+    return false;
+  }
+  camera.near = safeNear;
+  camera.far = safeFar;
+  return true;
+}
+
 function nextCameraMode(currentMode) {
   const idx = CAMERA_MODE_CYCLE.indexOf(currentMode);
   if (idx < 0) {
@@ -2980,6 +2994,8 @@ function buildExternalCameraRig(mode, heading, car, bumpLift) {
     const height = Math.max(28, fitHeightY, fitHeightX) + 6;
     return {
       fov,
+      near: Math.max(0.9, height * 0.012),
+      far: Math.max(320, height + Math.max(spanX, spanY) * 1.55 + 90),
       posLag: 4.8,
       lookLag: 5.2,
       targetPos: {
@@ -3060,6 +3076,8 @@ function buildExternalCameraRig(mode, heading, car, bumpLift) {
 
   return {
     fov: cfg.fov,
+    near: externalMode === "top" ? 0.35 : 0.12,
+    far: 420,
     posLag: cfg.posLag,
     lookLag: cfg.lookLag,
     targetPos: {
@@ -11585,8 +11603,12 @@ function updateThreeScene(dt = 1 / 60) {
     } else {
       const mode = externalCameraMode(state.sim.camera);
       const rig = buildExternalCameraRig(mode, heading, car, bumpLift);
+      let projectionChanged = syncCameraClipPlanes(camera, rig.near ?? 0.12, rig.far ?? 420);
       if (camera.fov !== rig.fov) {
         camera.fov = rig.fov;
+        projectionChanged = true;
+      }
+      if (projectionChanged) {
         camera.updateProjectionMatrix();
       }
       if (mode === "top" || mode === "overview") {
