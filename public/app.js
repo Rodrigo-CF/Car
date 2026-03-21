@@ -203,6 +203,8 @@ const OVERVIEW_ZOOM_STORAGE_KEY = "sim_overview_zoom_v1";
 const OVERVIEW_ZOOM_MIN = 0.45;
 const OVERVIEW_ZOOM_MAX = 2.35;
 const OVERVIEW_ZOOM_WHEEL_SENSITIVITY = 0.18;
+const OVERVIEW_ZOOM_UI_MIN_PCT = Math.round(100 / OVERVIEW_ZOOM_MAX);
+const OVERVIEW_ZOOM_UI_MAX_PCT = Math.round(100 / OVERVIEW_ZOOM_MIN);
 const RENDER_QUALITY_PRESETS = {
   low: {
     label: "Low",
@@ -336,6 +338,8 @@ const dom = {
   routeSelect: document.querySelector("#route-select"),
   globalOverviewBtn: document.querySelector("#global-overview"),
   toggleOverlaysBtn: document.querySelector("#toggle-overlays"),
+  overviewZoomRange: document.querySelector("#overview-zoom-range"),
+  overviewZoomValue: document.querySelector("#overview-zoom-value"),
   renderQuality: document.querySelector("#render-quality"),
   multiplayerRoom: document.querySelector("#multiplayer-room"),
   multiplayerJoinBtn: document.querySelector("#multiplayer-join"),
@@ -424,6 +428,20 @@ function clampOverviewZoom(value) {
     return 1;
   }
   return Math.max(OVERVIEW_ZOOM_MIN, Math.min(OVERVIEW_ZOOM_MAX, numeric));
+}
+
+function overviewScaleToPercent(scale = 1) {
+  const pct = Math.round(100 / clampOverviewZoom(scale));
+  return Math.max(OVERVIEW_ZOOM_UI_MIN_PCT, Math.min(OVERVIEW_ZOOM_UI_MAX_PCT, pct));
+}
+
+function overviewPercentToScale(percent = 100) {
+  const numeric = Number(percent);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return 1;
+  }
+  const bounded = Math.max(OVERVIEW_ZOOM_UI_MIN_PCT, Math.min(OVERVIEW_ZOOM_UI_MAX_PCT, numeric));
+  return clampOverviewZoom(100 / bounded);
 }
 
 function readPersistedRenderQuality() {
@@ -3166,6 +3184,20 @@ function refreshOverlayToggleButtonLabel() {
   dom.toggleOverlaysBtn.textContent = hidden ? "Show HUD + Map" : "Hide HUD + Map";
 }
 
+function refreshOverviewZoomUi() {
+  const percent = overviewScaleToPercent(state.sim.overviewZoom || 1);
+  if (dom.overviewZoomRange) {
+    dom.overviewZoomRange.min = String(OVERVIEW_ZOOM_UI_MIN_PCT);
+    dom.overviewZoomRange.max = String(OVERVIEW_ZOOM_UI_MAX_PCT);
+    if (dom.overviewZoomRange.value !== String(percent)) {
+      dom.overviewZoomRange.value = String(percent);
+    }
+  }
+  if (dom.overviewZoomValue) {
+    dom.overviewZoomValue.textContent = `${percent}%`;
+  }
+}
+
 function applySimOverlayVisibility() {
   const hidden = Boolean(state.sim.uiOverlaysHidden);
   if (dom.simHud) {
@@ -3205,7 +3237,8 @@ function handleOverviewWheelZoom(deltaY) {
   }
   state.sim.overviewZoom = nextZoom;
   persistOverviewZoom(nextZoom);
-  const zoomPct = Math.round((1 / nextZoom) * 100);
+  const zoomPct = overviewScaleToPercent(nextZoom);
+  refreshOverviewZoomUi();
   dom.simState.textContent = `Global view zoom: ${zoomPct}%`;
   return true;
 }
@@ -11647,6 +11680,14 @@ function updateThreeScene(dt = 1 / 60) {
     if (state.sim.camera === "first") {
       // Ensure first-person never inherits top-down camera roll/up vector.
       camera.up.set(0, 1, 0);
+      let firstProjectionChanged = syncCameraClipPlanes(camera, 0.06, 420);
+      if (camera.fov !== 74) {
+        camera.fov = 74;
+        firstProjectionChanged = true;
+      }
+      if (firstProjectionChanged) {
+        camera.updateProjectionMatrix();
+      }
       if (vehicleModelRoot && carMarker && three.driverSeatLocal && three.lib) {
         const eyeWorld = carMarker.localToWorld(three.driverSeatLocal.clone());
         eyeWorld.y += bumpLift * 0.72;
@@ -11660,10 +11701,6 @@ function updateThreeScene(dt = 1 / 60) {
           eyeWorld.z + forwardZ * 13,
         );
 
-        if (camera.fov !== 74) {
-          camera.fov = 74;
-          camera.updateProjectionMatrix();
-        }
         camera.up.set(Math.sin(bumpRoll * 0.8), 1, 0);
         camera.position.copy(eyeWorld);
         camera.lookAt(lookWorld);
@@ -14618,6 +14655,7 @@ function bindUi() {
   state.sim.overviewZoom = readPersistedOverviewZoom();
   state.sim.uiOverlaysHidden = readPersistedSimOverlaysHidden();
   applySimOverlayVisibility();
+  refreshOverviewZoomUi();
 
   document.querySelector("#register-btn").addEventListener("click", () => {
     register().catch((error) => {
@@ -14666,6 +14704,17 @@ function bindUi() {
       },
       { passive: false },
     );
+  }
+  if (dom.overviewZoomRange) {
+    dom.overviewZoomRange.addEventListener("input", () => {
+      const scale = overviewPercentToScale(dom.overviewZoomRange.value);
+      state.sim.overviewZoom = scale;
+      persistOverviewZoom(scale);
+      refreshOverviewZoomUi();
+      if (state.sim.camera === "overview") {
+        dom.simState.textContent = `Global view zoom: ${overviewScaleToPercent(scale)}%`;
+      }
+    });
   }
   dom.resetPenaltyBtn.addEventListener("click", () => {
     resetPenaltyPoints();

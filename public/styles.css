@@ -303,6 +303,31 @@ button:disabled {
   grid-template-columns: 1fr 1fr;
 }
 
+.sim-overview-zoom {
+  margin-top: 2px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(132, 188, 210, 0.24);
+  background: rgba(9, 28, 39, 0.48);
+}
+
+.sim-overview-zoom label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  color: #d7ecf8;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.sim-overview-zoom input[type="range"] {
+  margin: 8px 0 0;
+  width: 100%;
+  accent-color: #ff9f3d;
+}
+
 .btn-tight {
   padding: 8px 10px;
   font-size: 12px;
