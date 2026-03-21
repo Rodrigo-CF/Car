@@ -17,6 +17,7 @@ const state = {
     idleAbandoning: false,
     inactivityAlertPending: false,
     inactivityAlertShown: false,
+    cameraBeforeOverview: "first",
     lastKeepAliveAt: 0,
     keepAliveTimer: null,
     camera: "first",
@@ -300,7 +301,7 @@ const PARKING_VIS_UPDATE_INTERVAL_MS = 120;
 const ROUTE_CULL_UPDATE_INTERVAL_MS = 140;
 const ROUTE_CULL_HYSTERESIS = 1.18;
 const CAMERA_MODE_CYCLE = ["first", "third", "right", "front", "left", "top"];
-const EXTERNAL_CAMERA_MODES = new Set(["third", "right", "front", "left", "top"]);
+const EXTERNAL_CAMERA_MODES = new Set(["third", "right", "front", "left", "top", "overview"]);
 
 const CONTROL_KEYS = new Set(["w", "a", "s", "d", " ", "q", "e", "c", "r", "p", "o"]);
 const CONTINUOUS_KEYS = new Set(["w", "a", "s", "d", " "]);
@@ -326,6 +327,7 @@ const dom = {
   theoryTableBody: document.querySelector("#theory-table tbody"),
   simTableBody: document.querySelector("#sim-table tbody"),
   routeSelect: document.querySelector("#route-select"),
+  globalOverviewBtn: document.querySelector("#global-overview"),
   renderQuality: document.querySelector("#render-quality"),
   multiplayerRoom: document.querySelector("#multiplayer-room"),
   multiplayerJoinBtn: document.querySelector("#multiplayer-join"),
@@ -2779,6 +2781,7 @@ function updateHudOverlay() {
     dom.simSignalRight.classList.toggle("active", state.sim.lastSignal === "right");
   }
   dom.hudCam.textContent = `Cam: ${state.sim.camera}`;
+  refreshOverviewButtonLabel();
   const penaltyTotal = Math.max(0, Math.round(state.sim.penaltyPoints || 0));
   if (dom.hudPenalty) {
     dom.hudPenalty.textContent = `Penalties: -${penaltyTotal} pts`;
@@ -2917,6 +2920,29 @@ function nextCameraMode(currentMode) {
   return CAMERA_MODE_CYCLE[(idx + 1) % CAMERA_MODE_CYCLE.length];
 }
 
+function toggleGlobalOverviewCamera() {
+  if (!state.sim.sessionId || !state.sim.car) {
+    alert("Start a simulation session first.");
+    return;
+  }
+  if (state.sim.camera === "overview") {
+    const restoreMode = CAMERA_MODE_CYCLE.includes(state.sim.cameraBeforeOverview)
+      ? state.sim.cameraBeforeOverview
+      : "first";
+    state.sim.camera = restoreMode;
+    dom.simState.textContent = `Camera switched to ${cameraModeLabel(state.sim.camera)} view.`;
+  } else {
+    if (CAMERA_MODE_CYCLE.includes(state.sim.camera)) {
+      state.sim.cameraBeforeOverview = state.sim.camera;
+    } else {
+      state.sim.cameraBeforeOverview = "first";
+    }
+    state.sim.camera = "overview";
+    dom.simState.textContent = "Camera switched to global-overview view.";
+  }
+  updateHudOverlay();
+}
+
 function externalCameraMode(mode = state.sim.camera) {
   return EXTERNAL_CAMERA_MODES.has(mode) ? mode : "third";
 }
@@ -2929,11 +2955,46 @@ function cameraModeLabel(mode) {
     front: "front-side",
     left: "left-side",
     top: "top-down",
+    overview: "global-overview",
   };
   return labels[mode] || mode;
 }
 
 function buildExternalCameraRig(mode, heading, car, bumpLift) {
+  const externalMode = externalCameraMode(mode);
+  if (externalMode === "overview") {
+    const boundsSource = state.sim.routeDensePath?.length ? state.sim.routeDensePath : state.sim.routePath;
+    const bounds = state.sim.routeBounds ?? computeRouteBounds(Array.isArray(boundsSource) ? boundsSource : []);
+    const centerX = (bounds.minX + bounds.maxX) / 2;
+    const centerY = (bounds.minY + bounds.maxY) / 2;
+    const spanX = Math.max(80, bounds.maxX - bounds.minX + 40);
+    const spanY = Math.max(80, bounds.maxY - bounds.minY + 40);
+    const canvasW = dom.glCanvas?.clientWidth || dom.glCanvas?.width || 960;
+    const canvasH = dom.glCanvas?.clientHeight || dom.glCanvas?.height || 540;
+    const aspect = Math.max(0.65, canvasW / Math.max(1, canvasH));
+    const fov = 44;
+    const fovRad = toRadians(fov);
+    const tanHalf = Math.tan(fovRad / 2);
+    const fitHeightY = (spanY * 0.5) / Math.max(0.01, tanHalf);
+    const fitHeightX = (spanX * 0.5) / Math.max(0.01, tanHalf * aspect);
+    const height = Math.max(28, fitHeightY, fitHeightX) + 6;
+    return {
+      fov,
+      posLag: 4.8,
+      lookLag: 5.2,
+      targetPos: {
+        x: centerX,
+        y: height,
+        z: -centerY,
+      },
+      targetLook: {
+        x: centerX,
+        y: 0.1,
+        z: -centerY,
+      },
+    };
+  }
+
   const configByMode = {
     third: {
       fov: 68,
@@ -2991,7 +3052,7 @@ function buildExternalCameraRig(mode, heading, car, bumpLift) {
       lookLag: 7.5,
     },
   };
-  const cfg = configByMode[externalCameraMode(mode)] || configByMode.third;
+  const cfg = configByMode[externalMode] || configByMode.third;
   const forwardX = Math.cos(heading);
   const forwardZ = -Math.sin(heading);
   const rightX = Math.sin(heading);
@@ -3012,6 +3073,18 @@ function buildExternalCameraRig(mode, heading, car, bumpLift) {
       z: -car.y + forwardZ * cfg.lookForward + rightZ * cfg.lookRight,
     },
   };
+}
+
+function refreshOverviewButtonLabel() {
+  if (!dom.globalOverviewBtn) {
+    return;
+  }
+  const modeTag = state.sim.camera === "overview" ? "active" : "idle";
+  if (dom.globalOverviewBtn.dataset.mode === modeTag) {
+    return;
+  }
+  dom.globalOverviewBtn.dataset.mode = modeTag;
+  dom.globalOverviewBtn.textContent = modeTag === "active" ? "Exit Global View" : "Global View";
 }
 
 function showAuthFeedback(message, type = "success") {
@@ -11516,7 +11589,7 @@ function updateThreeScene(dt = 1 / 60) {
         camera.fov = rig.fov;
         camera.updateProjectionMatrix();
       }
-      if (mode === "top") {
+      if (mode === "top" || mode === "overview") {
         // Keep map-like orientation in strict top-down view.
         camera.up.set(0, 0, -1);
       } else {
@@ -12434,7 +12507,7 @@ function drawFirstPersonScene() {
 }
 
 function externalCameraYawFor2D(mode, headingRad) {
-  if (mode === "top") {
+  if (mode === "top" || mode === "overview") {
     return 0;
   }
   if (mode === "right") {
@@ -12452,14 +12525,14 @@ function externalCameraYawFor2D(mode, headingRad) {
 function worldToThirdPersonCanvas(x, y) {
   const car = state.sim.car;
   const mode = externalCameraMode(state.sim.camera);
-  const zoom = mode === "top" ? 8 : 6;
+  const zoom = mode === "top" || mode === "overview" ? 8 : 6;
   if (mode === "third") {
     return {
       x: dom.canvas.width / 2 + (x - car.x) * zoom,
       y: dom.canvas.height * 0.72 - (y - car.y) * zoom,
     };
   }
-  if (mode === "top") {
+  if (mode === "top" || mode === "overview") {
     return {
       x: dom.canvas.width / 2 + (x - car.x) * zoom,
       y: dom.canvas.height / 2 - (y - car.y) * zoom,
@@ -13727,6 +13800,7 @@ async function startSimulation() {
   state.sim.inactivityAlertPending = false;
   state.sim.inactivityAlertShown = false;
   state.sim.camera = "first";
+  state.sim.cameraBeforeOverview = "first";
   state.sim.trafficLightRed = true;
   state.sim.trafficLightManual = null;
   state.sim.correctionCount = 0;
@@ -14439,6 +14513,11 @@ function bindUi() {
   document
     .querySelector("#finish-sim")
     .addEventListener("click", () => finishSimulation().catch((error) => alert(error.message)));
+  if (dom.globalOverviewBtn) {
+    dom.globalOverviewBtn.addEventListener("click", () => {
+      toggleGlobalOverviewCamera();
+    });
+  }
   dom.resetPenaltyBtn.addEventListener("click", () => {
     resetPenaltyPoints();
     dom.simState.textContent = "Penalidad acumulada reiniciada.";
