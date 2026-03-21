@@ -17,6 +17,8 @@ const state = {
     idleAbandoning: false,
     inactivityAlertPending: false,
     inactivityAlertShown: false,
+    uiOverlaysHidden: false,
+    overviewZoom: 1,
     cameraBeforeOverview: "first",
     lastKeepAliveAt: 0,
     keepAliveTimer: null,
@@ -196,6 +198,11 @@ const MAX_RENDER_PIXEL_RATIO = 1.25;
 const PARKING_ASSIGN_DWELL_MS_DEFAULT = 3000;
 const PARKING_ASSIGN_TIMEOUT_MS_DEFAULT = 60 * 1000;
 const RENDER_QUALITY_STORAGE_KEY = "sim_render_quality_v1";
+const SIM_OVERLAYS_HIDDEN_STORAGE_KEY = "sim_overlays_hidden_v1";
+const OVERVIEW_ZOOM_STORAGE_KEY = "sim_overview_zoom_v1";
+const OVERVIEW_ZOOM_MIN = 0.45;
+const OVERVIEW_ZOOM_MAX = 2.35;
+const OVERVIEW_ZOOM_WHEEL_SENSITIVITY = 0.18;
 const RENDER_QUALITY_PRESETS = {
   low: {
     label: "Low",
@@ -328,6 +335,7 @@ const dom = {
   simTableBody: document.querySelector("#sim-table tbody"),
   routeSelect: document.querySelector("#route-select"),
   globalOverviewBtn: document.querySelector("#global-overview"),
+  toggleOverlaysBtn: document.querySelector("#toggle-overlays"),
   renderQuality: document.querySelector("#render-quality"),
   multiplayerRoom: document.querySelector("#multiplayer-room"),
   multiplayerJoinBtn: document.querySelector("#multiplayer-join"),
@@ -410,12 +418,54 @@ function clampRenderQuality(value) {
   return Object.prototype.hasOwnProperty.call(RENDER_QUALITY_PRESETS, value) ? value : "medium";
 }
 
+function clampOverviewZoom(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return 1;
+  }
+  return Math.max(OVERVIEW_ZOOM_MIN, Math.min(OVERVIEW_ZOOM_MAX, numeric));
+}
+
 function readPersistedRenderQuality() {
   try {
     const stored = localStorage.getItem(RENDER_QUALITY_STORAGE_KEY);
     return clampRenderQuality(stored || state.sim.renderQuality || "medium");
   } catch {
     return clampRenderQuality(state.sim.renderQuality || "medium");
+  }
+}
+
+function readPersistedOverviewZoom() {
+  try {
+    const stored = localStorage.getItem(OVERVIEW_ZOOM_STORAGE_KEY);
+    return clampOverviewZoom(stored || state.sim.overviewZoom || 1);
+  } catch {
+    return clampOverviewZoom(state.sim.overviewZoom || 1);
+  }
+}
+
+function persistOverviewZoom(value) {
+  try {
+    localStorage.setItem(OVERVIEW_ZOOM_STORAGE_KEY, String(clampOverviewZoom(value)));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function readPersistedSimOverlaysHidden() {
+  try {
+    const stored = localStorage.getItem(SIM_OVERLAYS_HIDDEN_STORAGE_KEY);
+    return stored === "1" || stored === "true";
+  } catch {
+    return false;
+  }
+}
+
+function persistSimOverlaysHidden(value) {
+  try {
+    localStorage.setItem(SIM_OVERLAYS_HIDDEN_STORAGE_KEY, value ? "1" : "0");
+  } catch {
+    // ignore storage errors
   }
 }
 
@@ -2991,7 +3041,9 @@ function buildExternalCameraRig(mode, heading, car, bumpLift) {
     const tanHalf = Math.tan(fovRad / 2);
     const fitHeightY = (spanY * 0.5) / Math.max(0.01, tanHalf);
     const fitHeightX = (spanX * 0.5) / Math.max(0.01, tanHalf * aspect);
-    const height = Math.max(28, fitHeightY, fitHeightX) + 6;
+    const baseHeight = Math.max(28, fitHeightY, fitHeightX) + 6;
+    const zoomScale = clampOverviewZoom(state.sim.overviewZoom || 1);
+    const height = baseHeight * zoomScale;
     return {
       fov,
       near: Math.max(0.9, height * 0.012),
@@ -3103,6 +3155,59 @@ function refreshOverviewButtonLabel() {
   }
   dom.globalOverviewBtn.dataset.mode = modeTag;
   dom.globalOverviewBtn.textContent = modeTag === "active" ? "Exit Global View" : "Global View";
+}
+
+function refreshOverlayToggleButtonLabel() {
+  if (!dom.toggleOverlaysBtn) {
+    return;
+  }
+  const hidden = Boolean(state.sim.uiOverlaysHidden);
+  dom.toggleOverlaysBtn.dataset.mode = hidden ? "hidden" : "visible";
+  dom.toggleOverlaysBtn.textContent = hidden ? "Show HUD + Map" : "Hide HUD + Map";
+}
+
+function applySimOverlayVisibility() {
+  const hidden = Boolean(state.sim.uiOverlaysHidden);
+  if (dom.simHud) {
+    dom.simHud.classList.toggle("hidden", hidden);
+  }
+  if (dom.miniMapCanvas) {
+    dom.miniMapCanvas.classList.toggle("hidden", hidden);
+  }
+  refreshOverlayToggleButtonLabel();
+}
+
+function toggleSimOverlays() {
+  state.sim.uiOverlaysHidden = !state.sim.uiOverlaysHidden;
+  applySimOverlayVisibility();
+  persistSimOverlaysHidden(state.sim.uiOverlaysHidden);
+  if (!state.sim.uiOverlaysHidden) {
+    lastHudOverlayMs = 0;
+    lastMiniMapOverlayMs = 0;
+    updateHudOverlay();
+    drawMiniMapOverlay();
+  }
+}
+
+function handleOverviewWheelZoom(deltaY) {
+  if (state.sim.camera !== "overview") {
+    return false;
+  }
+  const delta = Number(deltaY);
+  if (!Number.isFinite(delta) || Math.abs(delta) < 0.001) {
+    return false;
+  }
+  const boundedDelta = Math.max(-180, Math.min(180, delta));
+  const factor = Math.exp((boundedDelta / 120) * OVERVIEW_ZOOM_WHEEL_SENSITIVITY);
+  const nextZoom = clampOverviewZoom((state.sim.overviewZoom || 1) * factor);
+  if (Math.abs(nextZoom - (state.sim.overviewZoom || 1)) < 0.0005) {
+    return true;
+  }
+  state.sim.overviewZoom = nextZoom;
+  persistOverviewZoom(nextZoom);
+  const zoomPct = Math.round((1 / nextZoom) * 100);
+  dom.simState.textContent = `Global view zoom: ${zoomPct}%`;
+  return true;
 }
 
 function showAuthFeedback(message, type = "success") {
@@ -9717,16 +9822,18 @@ function maybeSyncCanvas(nowMs) {
 }
 
 function maybeUpdateOverlays(nowMs) {
-  const hudInterval = state.sim.sessionId ? HUD_UPDATE_INTERVAL_ACTIVE_MS : HUD_UPDATE_INTERVAL_IDLE_MS;
-  if (nowMs - lastHudOverlayMs >= hudInterval) {
-    updateHudOverlay();
-    lastHudOverlayMs = nowMs;
-  }
+  if (!state.sim.uiOverlaysHidden) {
+    const hudInterval = state.sim.sessionId ? HUD_UPDATE_INTERVAL_ACTIVE_MS : HUD_UPDATE_INTERVAL_IDLE_MS;
+    if (nowMs - lastHudOverlayMs >= hudInterval) {
+      updateHudOverlay();
+      lastHudOverlayMs = nowMs;
+    }
 
-  const mapInterval = state.sim.sessionId ? MINIMAP_UPDATE_INTERVAL_ACTIVE_MS : MINIMAP_UPDATE_INTERVAL_IDLE_MS;
-  if (nowMs - lastMiniMapOverlayMs >= mapInterval) {
-    drawMiniMapOverlay();
-    lastMiniMapOverlayMs = nowMs;
+    const mapInterval = state.sim.sessionId ? MINIMAP_UPDATE_INTERVAL_ACTIVE_MS : MINIMAP_UPDATE_INTERVAL_IDLE_MS;
+    if (nowMs - lastMiniMapOverlayMs >= mapInterval) {
+      drawMiniMapOverlay();
+      lastMiniMapOverlayMs = nowMs;
+    }
   }
 
   if (state.multiplayer.connected && state.multiplayer.roomId) {
@@ -14508,6 +14615,9 @@ function bindRouteMapperUi() {
 
 function bindUi() {
   setRenderQuality(readPersistedRenderQuality(), { rebuildRoute: false });
+  state.sim.overviewZoom = readPersistedOverviewZoom();
+  state.sim.uiOverlaysHidden = readPersistedSimOverlaysHidden();
+  applySimOverlayVisibility();
 
   document.querySelector("#register-btn").addEventListener("click", () => {
     register().catch((error) => {
@@ -14539,6 +14649,23 @@ function bindUi() {
     dom.globalOverviewBtn.addEventListener("click", () => {
       toggleGlobalOverviewCamera();
     });
+  }
+  if (dom.toggleOverlaysBtn) {
+    dom.toggleOverlaysBtn.addEventListener("click", () => {
+      toggleSimOverlays();
+    });
+  }
+  if (dom.glCanvas) {
+    dom.glCanvas.addEventListener(
+      "wheel",
+      (event) => {
+        if (!handleOverviewWheelZoom(event.deltaY)) {
+          return;
+        }
+        event.preventDefault();
+      },
+      { passive: false },
+    );
   }
   dom.resetPenaltyBtn.addEventListener("click", () => {
     resetPenaltyPoints();
