@@ -233,6 +233,7 @@ const ASSISTED_OVERLAP_ARROW_SPACING_M = 0.3;
 const ASSISTED_ARROW_HEIGHT_M = 1.3;
 const ASSISTED_ARROW_HIDE_BEHIND_M = 1.35;
 const ASSISTED_ARROW_SHOW_AHEAD_M = 58;
+const ASSISTED_PROGRESS_MAX_PATH_DIST_M = 2.0;
 const ASSISTED_ARROW_OVERLAP_OPACITY = 0.5;
 const ASSISTED_ARROW_BODY_RADIUS_M = 0.082;
 const ASSISTED_ARROW_BODY_LENGTH_M = 1.32;
@@ -1305,6 +1306,10 @@ function updateAssistedProgressFromCar() {
     assisted.progressSegmentIndex,
   );
   if (!frame) {
+    return assisted.progressArcM || 0;
+  }
+  const pathDistSq = Number(frame.distSq);
+  if (!Number.isFinite(pathDistSq) || pathDistSq > ASSISTED_PROGRESS_MAX_PATH_DIST_M ** 2) {
     return assisted.progressArcM || 0;
   }
   let arcM = assistedPathArcAtFrame(assisted.cumulativeArc, frame);
