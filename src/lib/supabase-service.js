@@ -1,5 +1,6 @@
 import { hashPassword, makeToken, generateId } from "./store.js";
 import { selectExamQuestions } from "../data/mock-questions.js";
+import { normalizeSupportedRouteId, normalizeAssistedRoutePayload } from "./assisted.js";
 
 const SUPPORTED_ROUTE_IDS = new Set(["A", "B"]);
 
@@ -63,6 +64,16 @@ function mapMetadata(record) {
     created_by: record.created_by,
     created_at: record.created_at,
     published_at: record.published_at,
+  };
+}
+
+function assistedMapMetadata(record) {
+  return {
+    assist_id: record.assist_id,
+    user_id: record.user_id,
+    route_id: record.route_id,
+    created_at: record.created_at,
+    updated_at: record.updated_at,
   };
 }
 
@@ -907,6 +918,95 @@ export function createSupabaseService(store) {
       try {
         const result = await cleanupStaleSimActiveSessions(ttlSec, { force: true, ...options });
         return { status: 200, data: result };
+      } catch (error) {
+        return { status: Number(error.status) || 500, error: error.message || "internal server error" };
+      }
+    },
+
+    async getAssistedRouteMap(user, routeIdRaw) {
+      try {
+        const routeId = normalizeSupportedRouteId(routeIdRaw);
+        if (!routeId) {
+          return { status: 400, error: "invalid route_id" };
+        }
+        const rows = await selectRows(
+          "assisted_route_maps",
+          {
+            user_id: `eq.${user.user_id}`,
+            route_id: `eq.${routeId}`,
+          },
+          { select: "*", limit: 1 },
+        );
+        if (!rows.length) {
+          return { status: 404, error: "assisted route map not found" };
+        }
+        const record = rows[0];
+        return {
+          status: 200,
+          data: {
+            map: assistedMapMetadata(record),
+            assisted_route: cloneJson(record.assisted_route),
+          },
+        };
+      } catch (error) {
+        return { status: Number(error.status) || 500, error: error.message || "internal server error" };
+      }
+    },
+
+    async saveAssistedRouteMap(user, routeIdRaw, payload = {}) {
+      try {
+        const normalized = normalizeAssistedRoutePayload(routeIdRaw, payload?.assisted_route ?? payload);
+        if (normalized.error) {
+          return { status: 400, error: normalized.error };
+        }
+        const routeId = normalized.data.route_id;
+        const nowIso = new Date().toISOString();
+        const currentRows = await selectRows(
+          "assisted_route_maps",
+          {
+            user_id: `eq.${user.user_id}`,
+            route_id: `eq.${routeId}`,
+          },
+          { select: "*", limit: 1 },
+        );
+
+        let record = null;
+        if (currentRows.length) {
+          const existing = currentRows[0];
+          const patchedRows = await patchRows(
+            "assisted_route_maps",
+            { assist_id: `eq.${existing.assist_id}` },
+            {
+              assisted_route: normalized.data,
+              updated_at: nowIso,
+            },
+          );
+          record = patchedRows[0] || {
+            ...existing,
+            assisted_route: normalized.data,
+            updated_at: nowIso,
+          };
+        } else {
+          const insertPayload = {
+            assist_id: generateId("assist_map"),
+            user_id: user.user_id,
+            route_id: routeId,
+            assisted_route: normalized.data,
+            created_at: nowIso,
+            updated_at: nowIso,
+          };
+          const insertedRows = await insertRows("assisted_route_maps", [insertPayload], { returning: true });
+          record = insertedRows[0] || insertPayload;
+        }
+
+        return {
+          status: currentRows.length ? 200 : 201,
+          data: {
+            map: assistedMapMetadata(record),
+            assisted_route: cloneJson(record.assisted_route),
+            saved: true,
+          },
+        };
       } catch (error) {
         return { status: Number(error.status) || 500, error: error.message || "internal server error" };
       }

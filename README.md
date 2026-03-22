@@ -7,6 +7,9 @@ Runnable mock implementation of the requested MVP update with independent scorin
 - Two separate leaderboards:
   - `GET /v1/leaderboard/theory`
   - `GET /v1/leaderboard/simulation`
+- Assisted driving route-map persistence (per user + route) via:
+  - `PUT /v1/assist/routes/:route_id`
+  - `GET /v1/assist/routes/:route_id`
 - Profile fields:
   - `bestTheoryScore`
   - `bestSimulationScore`

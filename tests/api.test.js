@@ -6,6 +6,7 @@ import { registerUser } from "../src/lib/auth.js";
 import { createExamAttempt, submitExamAttempt } from "../src/lib/exam.js";
 import { startSimSession, appendSimEvents, finishSimSession, cleanupSimActiveSessions } from "../src/lib/sim.js";
 import { publishRouteMap, saveRouteMap, activateRouteMap, listRouteMaps } from "../src/lib/maps.js";
+import { saveAssistedRouteMap, getAssistedRouteMap } from "../src/lib/assisted.js";
 import {
   buildTheoryLeaderboard,
   buildSimulationLeaderboard,
@@ -323,4 +324,48 @@ test("stale sim active sessions are cleanup-able", () => {
   assert.equal(cleanup.status, 200);
   assert.equal(cleanup.data.removed, 1);
   assert.equal(store.simActiveSessions.size, 0);
+});
+
+test("assisted route maps can be saved and loaded per user + route", () => {
+  const store = createStore();
+  const userA = createAuthedUser(store, "assist_a", "assist_a@test.com");
+  const userB = createAuthedUser(store, "assist_b", "assist_b@test.com");
+
+  const payload = {
+    assisted_route: {
+      version: 1,
+      route_id: "A",
+      total_arc_m: 42.5,
+      path: [
+        { x: 1, y: 1, move: true },
+        { x: 4, y: 1, move: false },
+        { x: 7, y: 2, move: false },
+      ],
+      arrows: [
+        { x: 4, y: 1, arc_m: 3, heading_deg: 0, pass_index: 1, lane_key: "0:1", overlap_key: "0:1|5:1", lateral_offset_m: 0 },
+        { x: 7, y: 2, arc_m: 6.3, heading_deg: 15, pass_index: 2, lane_key: "1:1", overlap_key: "1:1|10:3", lateral_offset_m: 0.34 },
+      ],
+    },
+  };
+
+  const savedA = saveAssistedRouteMap(store, userA, "A", payload);
+  assert.equal(savedA.status, 201);
+  assert.equal(savedA.data.assisted_route.route_id, "A");
+  assert.equal(savedA.data.assisted_route.arrows.length, 2);
+
+  const loadedA = getAssistedRouteMap(store, userA, "A");
+  assert.equal(loadedA.status, 200);
+  assert.equal(loadedA.data.assisted_route.total_arc_m, 42.5);
+
+  const notFoundOtherUser = getAssistedRouteMap(store, userB, "A");
+  assert.equal(notFoundOtherUser.status, 404);
+
+  const updated = saveAssistedRouteMap(store, userA, "A", {
+    assisted_route: {
+      ...payload.assisted_route,
+      total_arc_m: 55.2,
+    },
+  });
+  assert.equal(updated.status, 200);
+  assert.equal(updated.data.assisted_route.total_arc_m, 55.2);
 });

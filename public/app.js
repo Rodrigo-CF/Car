@@ -57,6 +57,7 @@ const state = {
     },
     assisted: {
       enabled: false,
+      showAllPending: false,
       recording: false,
       routeId: "",
       lastSampleAtMs: 0,
@@ -216,6 +217,7 @@ const PARKING_ASSIGN_TIMEOUT_MS_DEFAULT = 60 * 1000;
 const RENDER_QUALITY_STORAGE_KEY = "sim_render_quality_v1";
 const SIM_OVERLAYS_HIDDEN_STORAGE_KEY = "sim_overlays_hidden_v1";
 const OVERVIEW_ZOOM_STORAGE_KEY = "sim_overview_zoom_v1";
+const ASSISTED_ROUTE_STORAGE_KEY_PREFIX = "assisted_route_map_v1";
 const OVERVIEW_ZOOM_MIN = 0.45;
 const OVERVIEW_ZOOM_MAX = 2.35;
 const OVERVIEW_ZOOM_WHEEL_SENSITIVITY = 0.18;
@@ -224,18 +226,22 @@ const OVERVIEW_ZOOM_UI_MAX_PCT = Math.round(100 / OVERVIEW_ZOOM_MIN);
 const ASSISTED_RECORD_SAMPLE_MIN_MS = 120;
 const ASSISTED_RECORD_SAMPLE_MIN_DIST_M = 0.38;
 const ASSISTED_RECORD_KEEP_DIST_M = 0.9;
-const ASSISTED_PASS_REVISIT_GAP_M = 9.5;
+const ASSISTED_PASS_REVISIT_GAP_M = 6.5;
 const ASSISTED_ARROW_SPACING_M = 4.8;
 const ASSISTED_ARROW_HEIGHT_M = 1.3;
 const ASSISTED_ARROW_HIDE_BEHIND_M = 1.35;
 const ASSISTED_ARROW_SHOW_AHEAD_M = 58;
 const ASSISTED_ARROW_OVERLAP_OPACITY = 0.5;
+const ASSISTED_ARROW_BODY_RADIUS_M = 0.082;
+const ASSISTED_ARROW_BODY_LENGTH_M = 1.04;
+const ASSISTED_ARROW_HEAD_RADIUS_M = 0.28;
+const ASSISTED_ARROW_HEAD_LENGTH_M = 0.74;
 const ASSISTED_ARROW_COLORS = [
-  0x33a6ff,
-  0x28d9ff,
-  0xffa24b,
-  0xb08cff,
-  0x8df4a8,
+  0x2f9dff,
+  0xff2f72,
+  0x45f57a,
+  0xffb021,
+  0xb884ff,
 ];
 const RENDER_QUALITY_PRESETS = {
   low: {
@@ -367,6 +373,7 @@ const dom = {
   startAssistedRecordingBtn: document.querySelector("#start-assisted-recording"),
   stopAssistedRecordingBtn: document.querySelector("#stop-assisted-recording"),
   toggleAssistedModeBtn: document.querySelector("#toggle-assisted-mode"),
+  toggleAssistedVisibilityBtn: document.querySelector("#toggle-assisted-visibility"),
   toggleLightBtn: document.querySelector("#toggle-light"),
   profileOutput: document.querySelector("#profile-output"),
   theoryTableBody: document.querySelector("#theory-table tbody"),
@@ -549,7 +556,8 @@ function assistedStatusSummary() {
     for (const arrow of assisted.arrowRefs) {
       maxPass = Math.max(maxPass, Math.max(1, Math.round(Number(arrow.passIndex) || 1)));
     }
-    return `Assist: ${assisted.enabled ? "ON" : "ready"} · ${assisted.arrowRefs.length} arrows · ${maxPass} pass(es)`;
+    const visibilityMode = assisted.showAllPending ? "all pending" : "forward window";
+    return `Assist: ${assisted.enabled ? "ON" : "ready"} · ${assisted.arrowRefs.length} arrows · ${maxPass} pass(es) · ${visibilityMode}`;
   }
   return "Assist: idle";
 }
@@ -567,6 +575,10 @@ function refreshAssistedControls(statusMessage = "") {
     dom.toggleAssistedModeBtn.disabled = assisted.arrowRefs.length < 1;
     dom.toggleAssistedModeBtn.textContent = assisted.enabled ? "Assist ON" : "Assist OFF";
   }
+  if (dom.toggleAssistedVisibilityBtn) {
+    dom.toggleAssistedVisibilityBtn.disabled = assisted.arrowRefs.length < 1 || !assisted.enabled;
+    dom.toggleAssistedVisibilityBtn.textContent = assisted.showAllPending ? "Show Ahead Only" : "Show All Pending";
+  }
   if (dom.assistedStatus) {
     dom.assistedStatus.textContent = statusMessage || assistedStatusSummary();
   }
@@ -582,6 +594,7 @@ function clearAssistedArrowVisuals() {
 function clearAssistedRouteData({ resetEnabled = true } = {}) {
   const assisted = state.sim.assisted;
   assisted.recording = false;
+  assisted.showAllPending = false;
   assisted.lastSampleAtMs = 0;
   assisted.lastSamplePos = null;
   assisted.samplesRaw = [];
@@ -599,6 +612,242 @@ function clearAssistedRouteData({ resetEnabled = true } = {}) {
   refreshAssistedControls();
 }
 
+function assistedRouteStorageKey(routeId = state.sim.assisted.routeId || dom.routeSelect?.value || "A") {
+  const userPart = String(state.user?.user_id || "anon").trim() || "anon";
+  const routePart = String(routeId || "A").trim().toUpperCase() || "A";
+  return `${ASSISTED_ROUTE_STORAGE_KEY_PREFIX}:${userPart}:${routePart}`;
+}
+
+function buildAssistedPathCumulativeArc(path = []) {
+  if (!Array.isArray(path) || !path.length) {
+    return [];
+  }
+  const cumulativeArc = [0];
+  let arc = 0;
+  for (let i = 1; i < path.length; i += 1) {
+    const prev = path[i - 1];
+    const curr = path[i];
+    if (curr?.move) {
+      cumulativeArc.push(arc);
+      continue;
+    }
+    arc += Math.hypot(Number(curr?.x || 0) - Number(prev?.x || 0), Number(curr?.y || 0) - Number(prev?.y || 0));
+    cumulativeArc.push(arc);
+  }
+  return cumulativeArc;
+}
+
+function serializeCurrentAssistedRoute(routeId = state.sim.assisted.routeId || dom.routeSelect?.value || "A") {
+  const assisted = state.sim.assisted;
+  const normalizedRouteId = String(routeId || "").trim().toUpperCase();
+  if (!normalizedRouteId || !assisted.path.length || !assisted.arrowRefs.length) {
+    return null;
+  }
+  return {
+    version: 1,
+    route_id: normalizedRouteId,
+    total_arc_m: Number(assisted.totalArcM) || 0,
+    recorded_at: new Date().toISOString(),
+    path: assisted.path.map((point, index) => ({
+      x: Number(point?.x || 0),
+      y: Number(point?.y || 0),
+      move: index === 0 ? true : Boolean(point?.move),
+    })),
+    arrows: assisted.arrowRefs.map((arrow, index) => ({
+      id: String(arrow?.id || `arr_${index + 1}`),
+      x: Number(arrow?.x || 0),
+      y: Number(arrow?.y || 0),
+      arc_m: Number(arrow?.arcM || 0),
+      heading_deg: normalizeHeading((Number(arrow?.headingRad || 0) * 180) / Math.PI),
+      pass_index: Math.max(1, Math.round(Number(arrow?.passIndex) || 1)),
+      lane_key: String(arrow?.laneKey || "free"),
+      overlap_key: String(arrow?.overlapKey || arrow?.laneKey || "free"),
+      lateral_offset_m: Number(arrow?.lateralOffsetM || 0),
+    })),
+  };
+}
+
+function persistAssistedRouteToLocalStorage(routeId = state.sim.assisted.routeId || dom.routeSelect?.value || "A") {
+  const payload = serializeCurrentAssistedRoute(routeId);
+  if (!payload) {
+    return false;
+  }
+  try {
+    localStorage.setItem(assistedRouteStorageKey(routeId), JSON.stringify(payload));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function loadAssistedRouteFromLocalStorage(routeId = state.sim.assisted.routeId || dom.routeSelect?.value || "A") {
+  try {
+    const raw = localStorage.getItem(assistedRouteStorageKey(routeId));
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function hydrateAssistedRoutePayload(payload, routeId = state.sim.assisted.routeId || dom.routeSelect?.value || "A") {
+  if (!payload || typeof payload !== "object") {
+    throw new Error("invalid assisted route payload");
+  }
+  const normalizedRouteId = String(payload.route_id || payload.routeId || routeId || "").trim().toUpperCase();
+  if (!normalizedRouteId) {
+    throw new Error("invalid assisted route route_id");
+  }
+
+  const pathRaw = Array.isArray(payload.path) ? payload.path : [];
+  if (pathRaw.length < 2) {
+    throw new Error("assisted route path is empty");
+  }
+  const path = pathRaw
+    .map((point, index) => ({
+      x: Number(point?.x),
+      y: Number(point?.y),
+      move: index === 0 ? true : Boolean(point?.move),
+    }))
+    .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+  if (path.length < 2) {
+    throw new Error("assisted route path is invalid");
+  }
+
+  const arrowsRaw = Array.isArray(payload.arrows) ? payload.arrows : [];
+  const arrows = arrowsRaw
+    .map((arrow, index) => {
+      const x = Number(arrow?.x);
+      const y = Number(arrow?.y);
+      const arcM = Number(arrow?.arc_m ?? arrow?.arcM);
+      const headingDeg = Number(arrow?.heading_deg ?? arrow?.headingDeg);
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(arcM)) {
+        return null;
+      }
+      return {
+        id: String(arrow?.id || `arr_${index + 1}`),
+        x,
+        y,
+        arcM,
+        headingRad: toRadians(Number.isFinite(headingDeg) ? headingDeg : 0),
+        passIndex: Math.max(1, Math.round(Number(arrow?.pass_index ?? arrow?.passIndex) || 1)),
+        laneKey: String(arrow?.lane_key ?? arrow?.laneKey ?? "free"),
+        overlapKey: String(arrow?.overlap_key ?? arrow?.overlapKey ?? arrow?.lane_key ?? arrow?.laneKey ?? "free"),
+        lateralOffsetM: Number(arrow?.lateral_offset_m ?? arrow?.lateralOffsetM) || 0,
+        node: null,
+        bodyMat: null,
+        headMat: null,
+      };
+    })
+    .filter(Boolean);
+  if (arrows.length < 1) {
+    throw new Error("assisted route arrows are empty");
+  }
+  arrows.sort((a, b) => a.arcM - b.arcM);
+
+  const cumulativeArc = buildAssistedPathCumulativeArc(path);
+  const totalFromPayload = Number(payload.total_arc_m ?? payload.totalArcM);
+  const totalArcM = Number.isFinite(totalFromPayload) && totalFromPayload > 0
+    ? totalFromPayload
+    : Math.max(cumulativeArc[cumulativeArc.length - 1] || 0, arrows[arrows.length - 1].arcM || 0);
+
+  const assisted = state.sim.assisted;
+  assisted.routeId = normalizedRouteId;
+  assisted.recording = false;
+  assisted.lastSampleAtMs = 0;
+  assisted.lastSamplePos = null;
+  assisted.samplesRaw = [];
+  assisted.samples = [];
+  assisted.path = path;
+  assisted.cumulativeArc = cumulativeArc;
+  assisted.totalArcM = Math.max(0, totalArcM);
+  assisted.arrowRefs = arrows;
+  assisted.progressArcM = 0;
+  assisted.progressSegmentIndex = 0;
+}
+
+async function persistCurrentAssistedRouteMap(routeId = state.sim.assisted.routeId || dom.routeSelect?.value || "A") {
+  const payload = serializeCurrentAssistedRoute(routeId);
+  if (!payload) {
+    throw new Error("no assisted route to save");
+  }
+  const hasLocal = persistAssistedRouteToLocalStorage(routeId);
+  if (!state.token) {
+    return { via: hasLocal ? "local" : "memory", saved: hasLocal };
+  }
+  try {
+    const response = await api(`/v1/assist/routes/${encodeURIComponent(routeId)}`, {
+      method: "PUT",
+      headers: authHeaders(),
+      body: JSON.stringify({ assisted_route: payload }),
+    });
+    return {
+      via: "server",
+      saved: true,
+      map: response?.map || null,
+    };
+  } catch (error) {
+    return {
+      via: hasLocal ? "local" : "memory",
+      saved: hasLocal,
+      error: error instanceof Error ? error.message : "save failed",
+    };
+  }
+}
+
+async function loadPersistedAssistedRouteMap(routeId = state.sim.assisted.routeId || dom.routeSelect?.value || "A") {
+  const normalizedRouteId = String(routeId || "").trim().toUpperCase();
+  if (!normalizedRouteId) {
+    return { loaded: false, source: "none" };
+  }
+
+  if (state.token) {
+    try {
+      const response = await api(`/v1/assist/routes/${encodeURIComponent(normalizedRouteId)}`, {
+        headers: authHeaders(),
+      });
+      hydrateAssistedRoutePayload(response?.assisted_route, normalizedRouteId);
+      state.sim.assisted.enabled = true;
+      if (state.sim.three.ready) {
+        rebuildAssistedArrowMeshes();
+        updateAssistedGuidanceArrows(Date.now());
+      }
+      persistAssistedRouteToLocalStorage(normalizedRouteId);
+      return { loaded: true, source: "server" };
+    } catch (error) {
+      const message = String(error?.message || "").toLowerCase();
+      if (!message.includes("404")) {
+        const localPayload = loadAssistedRouteFromLocalStorage(normalizedRouteId);
+        if (localPayload) {
+          hydrateAssistedRoutePayload(localPayload, normalizedRouteId);
+          state.sim.assisted.enabled = true;
+          if (state.sim.three.ready) {
+            rebuildAssistedArrowMeshes();
+            updateAssistedGuidanceArrows(Date.now());
+          }
+          return { loaded: true, source: "local", warning: error?.message || "server load failed" };
+        }
+      }
+    }
+  }
+
+  const localPayload = loadAssistedRouteFromLocalStorage(normalizedRouteId);
+  if (localPayload) {
+    hydrateAssistedRoutePayload(localPayload, normalizedRouteId);
+    state.sim.assisted.enabled = true;
+    if (state.sim.three.ready) {
+      rebuildAssistedArrowMeshes();
+      updateAssistedGuidanceArrows(Date.now());
+    }
+    return { loaded: true, source: "local" };
+  }
+
+  return { loaded: false, source: "none" };
+}
+
 function assistedPassColorHex(passIndex = 1) {
   const idx = Math.max(0, (Math.max(1, Math.round(Number(passIndex) || 1)) - 1) % ASSISTED_ARROW_COLORS.length);
   return ASSISTED_ARROW_COLORS[idx];
@@ -613,14 +862,6 @@ function assistedPassOffsetMeters(passIndex = 1) {
   const band = Math.floor(rank / 2) + 1;
   const sign = rank % 2 === 0 ? 1 : -1;
   return sign * band * 0.34;
-}
-
-function assistedDirectionBucket(headingDeg, segmentHeadingRad) {
-  if (!Number.isFinite(headingDeg) || !Number.isFinite(segmentHeadingRad)) {
-    return "f";
-  }
-  const segmentHeadingDeg = (segmentHeadingRad * 180) / Math.PI;
-  return normalizeHeadingDeltaDeg(headingDeg, segmentHeadingDeg) <= 90 ? "f" : "r";
 }
 
 function assistedLaneKeyForSample(sample) {
@@ -646,8 +887,7 @@ function assistedLaneKeyForSample(sample) {
     const lateral = Number(frame?.lateral) || 0;
     const laneFloat = (lateral + leftHalf) / laneWidth;
     const laneIndex = Math.max(1, Math.min(laneCount, Math.floor(laneFloat) + 1));
-    const dirBucket = assistedDirectionBucket(sample.headingDeg, frame.heading);
-    const laneKey = `${segmentIndex}:${laneIndex}:${dirBucket}`;
+    const laneKey = `${segmentIndex}:${laneIndex}`;
     const overlapKey = `${laneKey}|${Math.round(sample.x / 0.7)}:${Math.round(sample.y / 0.7)}`;
     return {
       laneKey,
@@ -840,7 +1080,7 @@ function rebuildAssistedArrowMeshes() {
       roughness: 0.22,
       metalness: 0.08,
       transparent: true,
-      opacity: 0.85,
+      opacity: 0.9,
       toneMapped: false,
     });
     const headMat = new THREE.MeshStandardMaterial({
@@ -850,14 +1090,20 @@ function rebuildAssistedArrowMeshes() {
       roughness: 0.18,
       metalness: 0.12,
       transparent: true,
-      opacity: 0.94,
+      opacity: 0.98,
       toneMapped: false,
     });
     const node = new THREE.Group();
-    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.66, 12), bodyMat);
-    const head = new THREE.Mesh(new THREE.ConeGeometry(0.17, 0.44, 16), headMat);
-    body.position.y = -0.07;
-    head.position.y = 0.39;
+    const body = new THREE.Mesh(
+      new THREE.CylinderGeometry(ASSISTED_ARROW_BODY_RADIUS_M, ASSISTED_ARROW_BODY_RADIUS_M, ASSISTED_ARROW_BODY_LENGTH_M, 12),
+      bodyMat,
+    );
+    const head = new THREE.Mesh(
+      new THREE.ConeGeometry(ASSISTED_ARROW_HEAD_RADIUS_M, ASSISTED_ARROW_HEAD_LENGTH_M, 16),
+      headMat,
+    );
+    body.position.y = -0.08;
+    head.position.y = ASSISTED_ARROW_BODY_LENGTH_M * 0.46 + ASSISTED_ARROW_HEAD_LENGTH_M * 0.44;
     node.add(body);
     node.add(head);
 
@@ -994,6 +1240,7 @@ function updateAssistedGuidanceArrows(nowMs = Date.now()) {
   }
   const enabled = Boolean(assisted.enabled && state.sim.sessionId && state.sim.car);
   const progressArc = enabled ? updateAssistedProgressFromCar() : 0;
+  const forwardLimitM = assisted.showAllPending ? Number.POSITIVE_INFINITY : ASSISTED_ARROW_SHOW_AHEAD_M;
   const activeOverlapKeys = new Set();
   const baseVisibility = new Map();
 
@@ -1002,7 +1249,7 @@ function updateAssistedGuidanceArrows(nowMs = Date.now()) {
     const visibleBase =
       enabled &&
       deltaArc >= -ASSISTED_ARROW_HIDE_BEHIND_M &&
-      deltaArc <= ASSISTED_ARROW_SHOW_AHEAD_M;
+      deltaArc <= forwardLimitM;
     baseVisibility.set(arrow, visibleBase);
     if (visibleBase && arrow.overlapKey) {
       activeOverlapKeys.add(arrow.overlapKey);
@@ -1017,6 +1264,7 @@ function updateAssistedGuidanceArrows(nowMs = Date.now()) {
     const baseVisible = baseVisibility.get(arrow) === true;
     const previewVisible =
       enabled &&
+      !assisted.showAllPending &&
       !baseVisible &&
       deltaArc > -ASSISTED_ARROW_HIDE_BEHIND_M &&
       activeOverlapKeys.has(arrow.overlapKey);
@@ -1027,7 +1275,7 @@ function updateAssistedGuidanceArrows(nowMs = Date.now()) {
     }
 
     const nearFade = clamp01((deltaArc + ASSISTED_ARROW_HIDE_BEHIND_M) / (ASSISTED_ARROW_HIDE_BEHIND_M + 0.6));
-    const farFade = clamp01((ASSISTED_ARROW_SHOW_AHEAD_M - deltaArc) / 12);
+    const farFade = assisted.showAllPending ? 1 : clamp01((ASSISTED_ARROW_SHOW_AHEAD_M - deltaArc) / 12);
     const alphaBase = previewVisible ? ASSISTED_ARROW_OVERLAP_OPACITY : 0.96;
     const alpha = Math.max(0.12, alphaBase * Math.min(nearFade, farFade));
     const pulse = 0.55 + 0.45 * Math.sin(nowMs * 0.009 - arrow.arcM * 0.22);
@@ -1075,7 +1323,7 @@ function startAssistedRouteRecording() {
   refreshAssistedControls("Assist: recording route...");
 }
 
-function stopAssistedRouteRecording() {
+async function stopAssistedRouteRecording() {
   const assisted = state.sim.assisted;
   if (!assisted.recording) {
     throw new Error("Route recording is not active.");
@@ -1103,6 +1351,10 @@ function stopAssistedRouteRecording() {
   assisted.cumulativeArc = samples.map((sample) => Number(sample.arcM) || 0);
   assisted.totalArcM = assisted.cumulativeArc[assisted.cumulativeArc.length - 1] || 0;
   assisted.arrowRefs = arrows;
+  const maxPass = assisted.arrowRefs.reduce(
+    (best, arrow) => Math.max(best, Math.max(1, Math.round(Number(arrow.passIndex) || 1))),
+    1,
+  );
   assisted.progressArcM = 0;
   assisted.progressSegmentIndex = 0;
   assisted.enabled = true;
@@ -1110,8 +1362,14 @@ function stopAssistedRouteRecording() {
     rebuildAssistedArrowMeshes();
     updateAssistedGuidanceArrows(Date.now());
   }
+  const saveResult = await persistCurrentAssistedRouteMap(assisted.routeId);
+  const saveLabel =
+    saveResult.via === "server" ? "saved on server"
+      : saveResult.via === "local" ? "saved locally"
+      : "ready (not saved)";
+  const warningLabel = saveResult.error ? ` · warning: ${saveResult.error}` : "";
   refreshAssistedControls(
-    `Assist: route ready (${assisted.arrowRefs.length} arrows, ${(assisted.totalArcM || 0).toFixed(0)}m).`,
+    `Assist: route ready (${assisted.arrowRefs.length} arrows, ${(assisted.totalArcM || 0).toFixed(0)}m, ${maxPass} pass(es), ${saveLabel})${warningLabel}.`,
   );
 }
 
@@ -1125,6 +1383,19 @@ function toggleAssistedMode() {
     assisted.progressSegmentIndex = 0;
   }
   assisted.enabled = !assisted.enabled;
+  updateAssistedGuidanceArrows(Date.now());
+  refreshAssistedControls();
+}
+
+function toggleAssistedVisibilityMode() {
+  const assisted = state.sim.assisted;
+  if (!assisted.arrowRefs.length) {
+    throw new Error("Record a route first.");
+  }
+  if (!assisted.enabled) {
+    throw new Error("Turn Assist ON first.");
+  }
+  assisted.showAllPending = !assisted.showAllPending;
   updateAssistedGuidanceArrows(Date.now());
   refreshAssistedControls();
 }
@@ -14590,6 +14861,12 @@ async function startSimulation() {
   state.sim.assisted.lastSamplePos = null;
   state.sim.assisted.progressArcM = 0;
   state.sim.assisted.progressSegmentIndex = 0;
+  let assistedLoad = { loaded: false, source: "none" };
+  try {
+    assistedLoad = await loadPersistedAssistedRouteMap(routeId);
+  } catch {
+    assistedLoad = { loaded: false, source: "none" };
+  }
 
   try {
     await ensureMultiplayerRoomForRoute(routeId);
@@ -14671,7 +14948,14 @@ async function startSimulation() {
   hidePenaltyCard();
   updateHudOverlay();
   drawMiniMapOverlay();
-  refreshAssistedControls();
+  if (assistedLoad.loaded) {
+    const sourceLabel = assistedLoad.source === "server" ? "server" : "local backup";
+    refreshAssistedControls(`Assist: loaded saved route map (${sourceLabel}).`);
+  } else if (state.sim.assisted.arrowRefs.length) {
+    refreshAssistedControls();
+  } else {
+    refreshAssistedControls("Assist: no saved route map for this route yet.");
+  }
 }
 
 async function finishSimulation() {
@@ -14681,7 +14965,7 @@ async function finishSimulation() {
 
   if (state.sim.assisted.recording) {
     try {
-      stopAssistedRouteRecording();
+      await stopAssistedRouteRecording();
     } catch (error) {
       dom.simOutput.textContent = `Assist recording warning: ${error.message}`;
     }
@@ -15362,9 +15646,9 @@ function bindUi() {
     });
   }
   if (dom.stopAssistedRecordingBtn) {
-    dom.stopAssistedRecordingBtn.addEventListener("click", () => {
+    dom.stopAssistedRecordingBtn.addEventListener("click", async () => {
       try {
-        stopAssistedRouteRecording();
+        await stopAssistedRouteRecording();
       } catch (error) {
         alert(error.message);
       }
@@ -15374,6 +15658,15 @@ function bindUi() {
     dom.toggleAssistedModeBtn.addEventListener("click", () => {
       try {
         toggleAssistedMode();
+      } catch (error) {
+        alert(error.message);
+      }
+    });
+  }
+  if (dom.toggleAssistedVisibilityBtn) {
+    dom.toggleAssistedVisibilityBtn.addEventListener("click", () => {
+      try {
+        toggleAssistedVisibilityMode();
       } catch (error) {
         alert(error.message);
       }

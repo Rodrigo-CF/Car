@@ -172,3 +172,15 @@ create table if not exists active_route_maps (
   map_id text not null references maps(map_id) on delete cascade,
   updated_at timestamptz not null default now()
 );
+
+create table if not exists assisted_route_maps (
+  assist_id text primary key,
+  user_id text not null references app_users(user_id) on delete cascade,
+  route_id text not null check (route_id in ('A','B')),
+  assisted_route jsonb not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (user_id, route_id)
+);
+
+create index if not exists idx_assisted_route_maps_user_route on assisted_route_maps(user_id, route_id);

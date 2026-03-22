@@ -16,6 +16,7 @@ export function createStore() {
     simSessions: [],
     routes: ROUTES,
     maps: [],
+    assistedRouteMaps: new Map(),
     activeRouteMaps: {
       A: null,
       B: null,
