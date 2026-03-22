@@ -70,6 +70,9 @@ const state = {
       arrowRefs: [],
       progressArcM: 0,
       progressSegmentIndex: 0,
+      activePassIndex: 1,
+      maxPassIndex: 1,
+      passArcRanges: new Map(),
     },
     three: {
       ready: false,
@@ -234,6 +237,7 @@ const ASSISTED_ARROW_HEIGHT_M = 1.3;
 const ASSISTED_ARROW_HIDE_BEHIND_M = 1.35;
 const ASSISTED_ARROW_SHOW_AHEAD_M = 58;
 const ASSISTED_PROGRESS_MAX_PATH_DIST_M = 2.0;
+const ASSISTED_PASS_SWITCH_MARGIN_M = 1.2;
 const ASSISTED_ARROW_OVERLAP_OPACITY = 0.5;
 const ASSISTED_ARROW_BODY_RADIUS_M = 0.082;
 const ASSISTED_ARROW_BODY_LENGTH_M = 1.32;
@@ -594,6 +598,39 @@ function clearAssistedArrowVisuals() {
   }
 }
 
+function rebuildAssistedPassRanges() {
+  const assisted = state.sim.assisted;
+  const ranges = new Map();
+  let maxPass = 1;
+
+  for (const arrow of assisted.arrowRefs) {
+    const passIndex = Math.max(1, Math.round(Number(arrow?.passIndex) || 1));
+    const arcM = Number(arrow?.arcM);
+    if (!Number.isFinite(arcM)) {
+      continue;
+    }
+    const existing = ranges.get(passIndex) || { minArcM: Number.POSITIVE_INFINITY, maxArcM: Number.NEGATIVE_INFINITY };
+    existing.minArcM = Math.min(existing.minArcM, arcM);
+    existing.maxArcM = Math.max(existing.maxArcM, arcM);
+    ranges.set(passIndex, existing);
+    maxPass = Math.max(maxPass, passIndex);
+  }
+
+  assisted.passArcRanges = ranges;
+  assisted.maxPassIndex = ranges.size ? maxPass : 1;
+  if (!ranges.size) {
+    assisted.activePassIndex = 1;
+    return;
+  }
+  const activePass = Math.max(1, Math.round(Number(assisted.activePassIndex) || 1));
+  if (ranges.has(activePass)) {
+    assisted.activePassIndex = activePass;
+    return;
+  }
+  const orderedPasses = [...ranges.keys()].sort((a, b) => a - b);
+  assisted.activePassIndex = orderedPasses[0] || 1;
+}
+
 function clearAssistedRouteData({ resetEnabled = true } = {}) {
   const assisted = state.sim.assisted;
   assisted.recording = false;
@@ -608,6 +645,9 @@ function clearAssistedRouteData({ resetEnabled = true } = {}) {
   assisted.arrowRefs = [];
   assisted.progressArcM = 0;
   assisted.progressSegmentIndex = 0;
+  assisted.activePassIndex = 1;
+  assisted.maxPassIndex = 1;
+  assisted.passArcRanges = new Map();
   if (resetEnabled) {
     assisted.enabled = false;
   }
@@ -772,6 +812,8 @@ function hydrateAssistedRoutePayload(payload, routeId = state.sim.assisted.route
   assisted.arrowRefs = arrows;
   assisted.progressArcM = 0;
   assisted.progressSegmentIndex = 0;
+  assisted.activePassIndex = 1;
+  rebuildAssistedPassRanges();
 }
 
 async function persistCurrentAssistedRouteMap(routeId = state.sim.assisted.routeId || dom.routeSelect?.value || "A") {
@@ -1217,10 +1259,15 @@ function rebuildAssistedArrowMeshes() {
   }
 }
 
-function assistedPathFrameAt(path, x, y, preferredSegmentIndex = null) {
+function assistedPathFrameAt(path, x, y, preferredSegmentIndex = null, options = {}) {
   if (!Array.isArray(path) || path.length < 2) {
     return null;
   }
+  const cumulativeArc = Array.isArray(options?.cumulativeArc) ? options.cumulativeArc : null;
+  const arcMinM = Number(options?.arcMinM);
+  const arcMaxM = Number(options?.arcMaxM);
+  const useArcMin = Number.isFinite(arcMinM);
+  const useArcMax = Number.isFinite(arcMaxM);
   let best = null;
   let bestScore = Number.POSITIVE_INFINITY;
 
@@ -1235,6 +1282,19 @@ function assistedPathFrameAt(path, x, y, preferredSegmentIndex = null) {
     const lenSq = abx * abx + aby * aby;
     if (lenSq < 1e-6) {
       return null;
+    }
+    if (cumulativeArc && (useArcMin || useArcMax)) {
+      const segStartArc = Number(cumulativeArc[i]) || 0;
+      const segEndArcRaw = Number(cumulativeArc[i + 1]);
+      const segEndArc = Number.isFinite(segEndArcRaw) ? segEndArcRaw : segStartArc;
+      const segMinArc = Math.min(segStartArc, segEndArc);
+      const segMaxArc = Math.max(segStartArc, segEndArc);
+      if (useArcMin && segMaxArc < arcMinM) {
+        return null;
+      }
+      if (useArcMax && segMinArc > arcMaxM) {
+        return null;
+      }
     }
     const apx = x - Number(a.x);
     const apy = y - Number(a.y);
@@ -1299,11 +1359,24 @@ function updateAssistedProgressFromCar() {
   if (!state.sim.car || assisted.path.length < 2 || assisted.cumulativeArc.length < 2) {
     return assisted.progressArcM || 0;
   }
+  const activePass = Math.max(1, Math.round(Number(assisted.activePassIndex) || 1));
+  const activeRange =
+    assisted.passArcRanges instanceof Map
+      ? assisted.passArcRanges.get(activePass)
+      : null;
+  const activePassMinArcM = Number(activeRange?.minArcM);
+  const activePassMaxArcM = Number(activeRange?.maxArcM);
+
   const frame = assistedPathFrameAt(
     assisted.path,
     state.sim.car.x,
     state.sim.car.y,
     assisted.progressSegmentIndex,
+    {
+      cumulativeArc: assisted.cumulativeArc,
+      arcMinM: Number.isFinite(activePassMinArcM) ? activePassMinArcM - ASSISTED_PASS_SWITCH_MARGIN_M : undefined,
+      arcMaxM: Number.isFinite(activePassMaxArcM) ? activePassMaxArcM + ASSISTED_PASS_SWITCH_MARGIN_M : undefined,
+    },
   );
   if (!frame) {
     return assisted.progressArcM || 0;
@@ -1321,8 +1394,21 @@ function updateAssistedProgressFromCar() {
       arcM = prev + 24;
     }
   }
-  assisted.progressArcM = Math.max(0, Math.min(assisted.totalArcM || arcM, arcM));
+  let nextArcM = Math.max(0, Math.min(assisted.totalArcM || arcM, arcM));
+  if (Number.isFinite(activePassMaxArcM)) {
+    nextArcM = Math.min(nextArcM, activePassMaxArcM);
+  }
+  assisted.progressArcM = nextArcM;
   assisted.progressSegmentIndex = Math.max(0, Math.round(frame.segmentIndex));
+
+  if (
+    Number.isFinite(activePassMaxArcM) &&
+    activePass < Math.max(1, Math.round(Number(assisted.maxPassIndex) || 1)) &&
+    assisted.progressArcM >= activePassMaxArcM - ASSISTED_PASS_SWITCH_MARGIN_M
+  ) {
+    assisted.activePassIndex = activePass + 1;
+  }
+
   return assisted.progressArcM;
 }
 
@@ -1444,6 +1530,8 @@ async function stopAssistedRouteRecording() {
   assisted.cumulativeArc = samples.map((sample) => Number(sample.arcM) || 0);
   assisted.totalArcM = assisted.cumulativeArc[assisted.cumulativeArc.length - 1] || 0;
   assisted.arrowRefs = arrows;
+  assisted.activePassIndex = 1;
+  rebuildAssistedPassRanges();
   const maxPass = assisted.arrowRefs.reduce(
     (best, arrow) => Math.max(best, Math.max(1, Math.round(Number(arrow.passIndex) || 1))),
     1,
@@ -1473,6 +1561,7 @@ function toggleAssistedMode() {
   }
   assisted.progressArcM = 0;
   assisted.progressSegmentIndex = 0;
+  assisted.activePassIndex = 1;
   assisted.enabled = !assisted.enabled;
   updateAssistedGuidanceArrows(Date.now());
   if (assisted.enabled) {
@@ -14956,6 +15045,7 @@ async function startSimulation() {
   state.sim.assisted.lastSamplePos = null;
   state.sim.assisted.progressArcM = 0;
   state.sim.assisted.progressSegmentIndex = 0;
+  state.sim.assisted.activePassIndex = 1;
   let assistedLoad = { loaded: false, source: "none" };
   try {
     assistedLoad = await loadPersistedAssistedRouteMap(routeId);
