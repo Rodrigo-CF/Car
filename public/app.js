@@ -228,12 +228,13 @@ const ASSISTED_RECORD_SAMPLE_MIN_DIST_M = 0.38;
 const ASSISTED_RECORD_KEEP_DIST_M = 0.9;
 const ASSISTED_PASS_REVISIT_GAP_M = 6.5;
 const ASSISTED_ARROW_SPACING_M = 4.8;
+const ASSISTED_OVERLAP_ARROW_SPACING_M = 0.3;
 const ASSISTED_ARROW_HEIGHT_M = 1.3;
 const ASSISTED_ARROW_HIDE_BEHIND_M = 1.35;
 const ASSISTED_ARROW_SHOW_AHEAD_M = 58;
 const ASSISTED_ARROW_OVERLAP_OPACITY = 0.5;
 const ASSISTED_ARROW_BODY_RADIUS_M = 0.082;
-const ASSISTED_ARROW_BODY_LENGTH_M = 1.04;
+const ASSISTED_ARROW_BODY_LENGTH_M = 1.32;
 const ASSISTED_ARROW_HEAD_RADIUS_M = 0.28;
 const ASSISTED_ARROW_HEAD_LENGTH_M = 0.74;
 const ASSISTED_ARROW_COLORS = [
@@ -747,6 +748,8 @@ function hydrateAssistedRoutePayload(payload, routeId = state.sim.assisted.route
     throw new Error("assisted route arrows are empty");
   }
   arrows.sort((a, b) => a.arcM - b.arcM);
+  normalizeAssistedArrowPassSequence(arrows);
+  applyAssistedOverlapOffsets(arrows);
 
   const cumulativeArc = buildAssistedPathCumulativeArc(path);
   const totalFromPayload = Number(payload.total_arc_m ?? payload.totalArcM);
@@ -853,15 +856,61 @@ function assistedPassColorHex(passIndex = 1) {
   return ASSISTED_ARROW_COLORS[idx];
 }
 
-function assistedPassOffsetMeters(passIndex = 1) {
-  const pass = Math.max(1, Math.round(Number(passIndex) || 1));
-  if (pass <= 1) {
-    return 0;
+function normalizeAssistedArrowPassSequence(arrows = []) {
+  if (!Array.isArray(arrows) || !arrows.length) {
+    return arrows;
   }
-  const rank = pass - 2;
-  const band = Math.floor(rank / 2) + 1;
-  const sign = rank % 2 === 0 ? 1 : -1;
-  return sign * band * 0.34;
+  let runningPass = 1;
+  for (const arrow of arrows) {
+    const passIndex = Math.max(1, Math.round(Number(arrow?.passIndex) || 1));
+    runningPass = Math.max(runningPass, passIndex);
+    arrow.passIndex = runningPass;
+  }
+  return arrows;
+}
+
+function applyAssistedOverlapOffsets(arrows = []) {
+  if (!Array.isArray(arrows) || !arrows.length) {
+    return arrows;
+  }
+
+  const groupedByOverlapKey = new Map();
+  for (const arrow of arrows) {
+    if (!arrow || typeof arrow !== "object") {
+      continue;
+    }
+    arrow.lateralOffsetM = 0;
+    const overlapKey = String(arrow.overlapKey || arrow.laneKey || "free");
+    if (!groupedByOverlapKey.has(overlapKey)) {
+      groupedByOverlapKey.set(overlapKey, []);
+    }
+    groupedByOverlapKey.get(overlapKey).push(arrow);
+  }
+
+  for (const group of groupedByOverlapKey.values()) {
+    if (!Array.isArray(group) || group.length < 2) {
+      continue;
+    }
+    group.sort((a, b) => {
+      const passDiff =
+        Math.max(1, Math.round(Number(a?.passIndex) || 1)) -
+        Math.max(1, Math.round(Number(b?.passIndex) || 1));
+      if (passDiff) {
+        return passDiff;
+      }
+      const arcDiff = (Number(a?.arcM) || 0) - (Number(b?.arcM) || 0);
+      if (Math.abs(arcDiff) > 1e-6) {
+        return arcDiff;
+      }
+      return String(a?.id || "").localeCompare(String(b?.id || ""));
+    });
+    const middle = (group.length - 1) * 0.5;
+    for (let i = 0; i < group.length; i += 1) {
+      group[i].lateralOffsetM = (i - middle) * ASSISTED_OVERLAP_ARROW_SPACING_M;
+    }
+  }
+
+  return arrows;
 }
 
 function assistedLaneKeyForSample(sample) {
@@ -1015,6 +1064,15 @@ function assignAssistedPassIndices(samples = []) {
     prevArc = arcM;
   }
 
+  // Keep pass color progression monotonic: once a new pass color starts,
+  // following arrows keep that pass index until another pass is detected.
+  let runningPass = 1;
+  for (const sample of samples) {
+    const samplePass = Math.max(1, Math.round(Number(sample?.passIndex) || 1));
+    runningPass = Math.max(runningPass, samplePass);
+    sample.passIndex = runningPass;
+  }
+
   return maxPassByLane;
 }
 
@@ -1033,21 +1091,25 @@ function buildAssistedArrowData(samples = []) {
       continue;
     }
     const passIndex = Math.max(1, Math.round(Number(sample.passIndex) || 1));
+    const overlapKey = String(sample.overlapKey || sample.laneKey || `free_${i}`);
     arrows.push({
+      id: `arr_${arrows.length + 1}`,
       x: Number(sample.x),
       y: Number(sample.y),
       arcM: Number(sample.arcM),
       headingRad: toRadians(Number(sample.headingDeg) || 0),
       passIndex,
       laneKey: String(sample.laneKey || "free"),
-      overlapKey: String(sample.overlapKey || sample.laneKey || `free_${i}`),
-      lateralOffsetM: assistedPassOffsetMeters(passIndex),
+      overlapKey,
+      lateralOffsetM: 0,
       node: null,
       bodyMat: null,
       headMat: null,
     });
     lastPlacedArc = sample.arcM;
   }
+  normalizeAssistedArrowPassSequence(arrows);
+  applyAssistedOverlapOffsets(arrows);
   return arrows;
 }
 
@@ -1378,13 +1440,15 @@ function toggleAssistedMode() {
   if (!assisted.arrowRefs.length) {
     throw new Error("Record a route first.");
   }
-  if (!assisted.enabled && assisted.totalArcM > 1 && assisted.progressArcM >= assisted.totalArcM - 2) {
-    assisted.progressArcM = 0;
-    assisted.progressSegmentIndex = 0;
-  }
+  assisted.progressArcM = 0;
+  assisted.progressSegmentIndex = 0;
   assisted.enabled = !assisted.enabled;
   updateAssistedGuidanceArrows(Date.now());
-  refreshAssistedControls();
+  if (assisted.enabled) {
+    refreshAssistedControls("Assist: restarted from route beginning.");
+    return;
+  }
+  refreshAssistedControls("Assist: OFF (progress reset).");
 }
 
 function toggleAssistedVisibilityMode() {
