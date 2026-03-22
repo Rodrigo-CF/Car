@@ -226,7 +226,8 @@ const OVERVIEW_ZOOM_UI_MAX_PCT = Math.round(100 / OVERVIEW_ZOOM_MIN);
 const ASSISTED_RECORD_SAMPLE_MIN_MS = 120;
 const ASSISTED_RECORD_SAMPLE_MIN_DIST_M = 0.38;
 const ASSISTED_RECORD_KEEP_DIST_M = 0.9;
-const ASSISTED_PASS_REVISIT_GAP_M = 6.5;
+const ASSISTED_PASS_REVISIT_GAP_M = 11;
+const ASSISTED_LANE_HYSTERESIS_M = 0.4;
 const ASSISTED_ARROW_SPACING_M = 4.8;
 const ASSISTED_OVERLAP_ARROW_SPACING_M = 0.3;
 const ASSISTED_ARROW_HEIGHT_M = 1.3;
@@ -913,7 +914,7 @@ function applyAssistedOverlapOffsets(arrows = []) {
   return arrows;
 }
 
-function assistedLaneKeyForSample(sample) {
+function assistedLaneKeyForSample(sample, prevLaneInfo = null) {
   if (!sample || !Number.isFinite(sample.x) || !Number.isFinite(sample.y)) {
     return {
       laneKey: "free",
@@ -935,7 +936,30 @@ function assistedLaneKeyForSample(sample) {
     const laneWidth = Math.max(0.35, roadWidth / laneCount);
     const lateral = Number(frame?.lateral) || 0;
     const laneFloat = (lateral + leftHalf) / laneWidth;
-    const laneIndex = Math.max(1, Math.min(laneCount, Math.floor(laneFloat) + 1));
+    const laneIndexRaw = Math.max(1, Math.min(laneCount, Math.floor(laneFloat) + 1));
+    let laneIndex = laneIndexRaw;
+
+    const prevLaneIndex = Number(prevLaneInfo?.laneIndex);
+    const prevLaneCount = Number(prevLaneInfo?.laneCount);
+    const prevSegmentIndex = Number(prevLaneInfo?.segmentIndex);
+    const canApplyHysteresis =
+      Number.isFinite(prevLaneIndex) &&
+      prevLaneIndex >= 1 &&
+      prevLaneIndex <= laneCount &&
+      Number.isFinite(prevLaneCount) &&
+      prevLaneCount === laneCount &&
+      Number.isFinite(prevSegmentIndex) &&
+      Math.abs(segmentIndex - prevSegmentIndex) <= 4;
+    if (canApplyHysteresis) {
+      const prevStart = -leftHalf + (prevLaneIndex - 1) * laneWidth;
+      const prevEnd = prevStart + laneWidth;
+      const keepStart = prevStart - ASSISTED_LANE_HYSTERESIS_M;
+      const keepEnd = prevEnd + ASSISTED_LANE_HYSTERESIS_M;
+      if (lateral >= keepStart && lateral <= keepEnd) {
+        laneIndex = Math.round(prevLaneIndex);
+      }
+    }
+
     const laneKey = `${segmentIndex}:${laneIndex}`;
     const overlapKey = `${laneKey}|${Math.round(sample.x / 0.7)}:${Math.round(sample.y / 0.7)}`;
     return {
@@ -1007,6 +1031,7 @@ function normalizeAssistedRecordedSamples(rawSamples = []) {
   }
 
   let arc = 0;
+  let prevLaneInfo = null;
   for (let i = 0; i < normalized.length; i += 1) {
     const prev = normalized[i - 1];
     const curr = normalized[i];
@@ -1024,42 +1049,43 @@ function normalizeAssistedRecordedSamples(rawSamples = []) {
       headingDeg = (Math.atan2(curr.y - prev.y, curr.x - prev.x) * 180) / Math.PI;
     }
     curr.headingDeg = normalizeHeading(headingDeg);
-    const laneInfo = assistedLaneKeyForSample(curr);
+    const laneInfo = assistedLaneKeyForSample(curr, prevLaneInfo);
     curr.laneKey = laneInfo.laneKey;
     curr.overlapKey = laneInfo.overlapKey;
     curr.segmentIndex = laneInfo.segmentIndex;
     curr.laneIndex = laneInfo.laneIndex;
     curr.laneCount = laneInfo.laneCount;
     curr.passIndex = 1;
+    prevLaneInfo = laneInfo;
   }
 
   return normalized;
 }
 
 function assignAssistedPassIndices(samples = []) {
-  const maxPassByLane = new Map();
-  const lastArcByLane = new Map();
-  let prevLaneKey = "";
+  const maxPassByOverlap = new Map();
+  const lastArcByOverlap = new Map();
+  let prevOverlapKey = "";
   let prevPass = 1;
   let prevArc = 0;
 
   for (const sample of samples) {
-    const laneKey = String(sample?.laneKey || "free");
+    const overlapKey = String(sample?.overlapKey || sample?.laneKey || "free");
     const arcM = Number(sample?.arcM) || 0;
-    let passIndex = maxPassByLane.get(laneKey) || 1;
+    let passIndex = maxPassByOverlap.get(overlapKey) || 1;
 
-    const laneLastArc = lastArcByLane.get(laneKey);
-    const sameLaneRun = laneKey === prevLaneKey && Math.abs(arcM - prevArc) <= ASSISTED_RECORD_KEEP_DIST_M * 2.8;
-    if (!sameLaneRun && Number.isFinite(laneLastArc) && arcM - laneLastArc > ASSISTED_PASS_REVISIT_GAP_M) {
+    const overlapLastArc = lastArcByOverlap.get(overlapKey);
+    const sameOverlapRun = overlapKey === prevOverlapKey && Math.abs(arcM - prevArc) <= ASSISTED_RECORD_KEEP_DIST_M * 2.8;
+    if (!sameOverlapRun && Number.isFinite(overlapLastArc) && arcM - overlapLastArc > ASSISTED_PASS_REVISIT_GAP_M) {
       passIndex += 1;
-    } else if (sameLaneRun) {
+    } else if (sameOverlapRun) {
       passIndex = prevPass;
     }
 
     sample.passIndex = Math.max(1, passIndex);
-    maxPassByLane.set(laneKey, Math.max(sample.passIndex, maxPassByLane.get(laneKey) || 1));
-    lastArcByLane.set(laneKey, arcM);
-    prevLaneKey = laneKey;
+    maxPassByOverlap.set(overlapKey, Math.max(sample.passIndex, maxPassByOverlap.get(overlapKey) || 1));
+    lastArcByOverlap.set(overlapKey, arcM);
+    prevOverlapKey = overlapKey;
     prevPass = sample.passIndex;
     prevArc = arcM;
   }
@@ -1073,7 +1099,7 @@ function assignAssistedPassIndices(samples = []) {
     sample.passIndex = runningPass;
   }
 
-  return maxPassByLane;
+  return maxPassByOverlap;
 }
 
 function buildAssistedArrowData(samples = []) {
