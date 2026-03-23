@@ -73,6 +73,9 @@ const state = {
       activePassIndex: 1,
       maxPassIndex: 1,
       passArcRanges: new Map(),
+      demoActive: false,
+      demoArcM: 0,
+      demoSegmentIndex: 0,
     },
     three: {
       ready: false,
@@ -238,6 +241,7 @@ const ASSISTED_ARROW_HIDE_BEHIND_M = 1.35;
 const ASSISTED_ARROW_SHOW_AHEAD_M = 58;
 const ASSISTED_PROGRESS_MAX_PATH_DIST_M = 2.0;
 const ASSISTED_PASS_SWITCH_MARGIN_M = 1.2;
+const ASSISTED_DEMO_SPEED_MPS = 6.4;
 const ASSISTED_ARROW_OVERLAP_OPACITY = 0.5;
 const ASSISTED_ARROW_BODY_RADIUS_M = 0.082;
 const ASSISTED_ARROW_BODY_LENGTH_M = 1.32;
@@ -376,11 +380,14 @@ const dom = {
   simState: document.querySelector("#sim-state"),
   carState: document.querySelector("#car-state"),
   simOutput: document.querySelector("#sim-output"),
+  startSimBtn: document.querySelector("#start-sim"),
+  finishSimBtn: document.querySelector("#finish-sim"),
   assistedStatus: document.querySelector("#assisted-status"),
   startAssistedRecordingBtn: document.querySelector("#start-assisted-recording"),
   stopAssistedRecordingBtn: document.querySelector("#stop-assisted-recording"),
   toggleAssistedModeBtn: document.querySelector("#toggle-assisted-mode"),
   toggleAssistedVisibilityBtn: document.querySelector("#toggle-assisted-visibility"),
+  startAssistedDemoBtn: document.querySelector("#start-assisted-demo"),
   toggleLightBtn: document.querySelector("#toggle-light"),
   profileOutput: document.querySelector("#profile-output"),
   theoryTableBody: document.querySelector("#theory-table tbody"),
@@ -555,6 +562,9 @@ function formatJson(value) {
 
 function assistedStatusSummary() {
   const assisted = state.sim.assisted;
+  if (assisted.demoActive) {
+    return "Assist: demo driving route...";
+  }
   if (assisted.recording) {
     return `Assist: recording route... ${assisted.samplesRaw.length} pts`;
   }
@@ -572,19 +582,32 @@ function assistedStatusSummary() {
 function refreshAssistedControls(statusMessage = "") {
   const assisted = state.sim.assisted;
   const hasSession = Boolean(state.sim.sessionId && state.sim.car);
+  const demoActive = Boolean(assisted.demoActive);
   if (dom.startAssistedRecordingBtn) {
-    dom.startAssistedRecordingBtn.disabled = !hasSession || assisted.recording;
+    dom.startAssistedRecordingBtn.disabled = !hasSession || assisted.recording || demoActive;
   }
   if (dom.stopAssistedRecordingBtn) {
-    dom.stopAssistedRecordingBtn.disabled = !hasSession || !assisted.recording;
+    dom.stopAssistedRecordingBtn.disabled = !hasSession || !assisted.recording || demoActive;
   }
   if (dom.toggleAssistedModeBtn) {
-    dom.toggleAssistedModeBtn.disabled = assisted.arrowRefs.length < 1;
+    dom.toggleAssistedModeBtn.disabled = assisted.arrowRefs.length < 1 || demoActive;
     dom.toggleAssistedModeBtn.textContent = assisted.enabled ? "Assist ON" : "Assist OFF";
   }
   if (dom.toggleAssistedVisibilityBtn) {
-    dom.toggleAssistedVisibilityBtn.disabled = assisted.arrowRefs.length < 1 || !assisted.enabled;
+    dom.toggleAssistedVisibilityBtn.disabled = assisted.arrowRefs.length < 1 || !assisted.enabled || demoActive;
     dom.toggleAssistedVisibilityBtn.textContent = assisted.showAllPending ? "Show Ahead Only" : "Show All Pending";
+  }
+  if (dom.startAssistedDemoBtn) {
+    dom.startAssistedDemoBtn.disabled =
+      !hasSession ||
+      demoActive ||
+      assisted.recording ||
+      assisted.path.length < 2 ||
+      assisted.arrowRefs.length < 1;
+    dom.startAssistedDemoBtn.textContent = demoActive ? "Demo Running..." : "Assist Demo";
+  }
+  if (dom.finishSimBtn) {
+    dom.finishSimBtn.disabled = demoActive;
   }
   if (dom.assistedStatus) {
     dom.assistedStatus.textContent = statusMessage || assistedStatusSummary();
@@ -648,6 +671,9 @@ function clearAssistedRouteData({ resetEnabled = true } = {}) {
   assisted.activePassIndex = 1;
   assisted.maxPassIndex = 1;
   assisted.passArcRanges = new Map();
+  assisted.demoActive = false;
+  assisted.demoArcM = 0;
+  assisted.demoSegmentIndex = 0;
   if (resetEnabled) {
     assisted.enabled = false;
   }
@@ -813,6 +839,9 @@ function hydrateAssistedRoutePayload(payload, routeId = state.sim.assisted.route
   assisted.progressArcM = 0;
   assisted.progressSegmentIndex = 0;
   assisted.activePassIndex = 1;
+  assisted.demoActive = false;
+  assisted.demoArcM = 0;
+  assisted.demoSegmentIndex = 0;
   rebuildAssistedPassRanges();
 }
 
@@ -1468,6 +1497,163 @@ function updateAssistedGuidanceArrows(nowMs = Date.now()) {
   }
 }
 
+function assistedPoseAtArc(path, cumulativeArc, targetArcM) {
+  if (!Array.isArray(path) || path.length < 2 || !Array.isArray(cumulativeArc) || cumulativeArc.length < 2) {
+    return null;
+  }
+  const targetArc = Math.max(0, Number(targetArcM) || 0);
+  let lastSegment = null;
+
+  for (let i = 0; i < path.length - 1; i += 1) {
+    const a = path[i];
+    const b = path[i + 1];
+    if (!a || !b || b.move) {
+      continue;
+    }
+    const startArc = Number(cumulativeArc[i]) || 0;
+    const fallbackEndArc = startArc + Math.hypot(Number(b.x) - Number(a.x), Number(b.y) - Number(a.y));
+    const endArcRaw = Number(cumulativeArc[i + 1]);
+    const endArc = Number.isFinite(endArcRaw) ? endArcRaw : fallbackEndArc;
+    const segMinArc = Math.min(startArc, endArc);
+    const segMaxArc = Math.max(startArc, endArc);
+    const dx = Number(b.x) - Number(a.x);
+    const dy = Number(b.y) - Number(a.y);
+    const headingRad = Math.atan2(dy, dx);
+    lastSegment = { segmentIndex: i, x: Number(b.x), y: Number(b.y), headingRad };
+
+    if (targetArc > segMaxArc + 1e-6) {
+      continue;
+    }
+    const denom = Math.abs(endArc - startArc);
+    const t = denom > 1e-6 ? clamp01((targetArc - startArc) / (endArc - startArc)) : 0;
+    return {
+      segmentIndex: i,
+      x: Number(a.x) + dx * t,
+      y: Number(a.y) + dy * t,
+      headingRad,
+    };
+  }
+
+  return lastSegment;
+}
+
+function stopAssistedDemoMode({ completed = false, silent = false } = {}) {
+  const assisted = state.sim.assisted;
+  if (!assisted.demoActive && !completed) {
+    return;
+  }
+  assisted.demoActive = false;
+  assisted.demoArcM = 0;
+  assisted.demoSegmentIndex = 0;
+  if (state.sim.car) {
+    state.sim.car.speedKmh = 0;
+  }
+  state.keys.clear();
+  if (!silent) {
+    const message = completed
+      ? "Assist: demo finished. Manual control restored."
+      : "Assist: demo stopped.";
+    refreshAssistedControls(message);
+  } else {
+    refreshAssistedControls();
+  }
+}
+
+function stepAssistedDemoMode(dt, nowMs = Date.now()) {
+  const assisted = state.sim.assisted;
+  const car = state.sim.car;
+  if (!assisted.demoActive || !car || assisted.path.length < 2 || assisted.cumulativeArc.length < 2) {
+    return false;
+  }
+
+  const totalArc = Math.max(
+    Number(assisted.totalArcM) || 0,
+    Number(assisted.cumulativeArc[assisted.cumulativeArc.length - 1]) || 0,
+  );
+  if (totalArc <= 0) {
+    stopAssistedDemoMode({ completed: true });
+    return false;
+  }
+
+  const currentArc = Math.max(0, Number(assisted.demoArcM) || 0);
+  const remainingArc = Math.max(0, totalArc - currentArc);
+  const speedFactor = remainingArc < 12 ? 0.4 + 0.6 * clamp01(remainingArc / 12) : 1;
+  const stepArc = Math.max(1.8, ASSISTED_DEMO_SPEED_MPS * speedFactor) * dt;
+  const nextArc = Math.min(totalArc, currentArc + stepArc);
+  assisted.demoArcM = nextArc;
+
+  const pose = assistedPoseAtArc(assisted.path, assisted.cumulativeArc, nextArc);
+  if (pose) {
+    car.x = pose.x;
+    car.y = pose.y;
+    car.headingDeg = normalizeHeading((pose.headingRad * 180) / Math.PI);
+    assisted.demoSegmentIndex = pose.segmentIndex;
+  }
+  car.speedKmh = 0;
+  markSimInput(nowMs);
+
+  if (assisted.passArcRanges instanceof Map && assisted.passArcRanges.size) {
+    let activePass = 1;
+    for (const [pass, range] of [...assisted.passArcRanges.entries()].sort((a, b) => a[0] - b[0])) {
+      const passMaxArc = Number(range?.maxArcM);
+      if (!Number.isFinite(passMaxArc) || nextArc <= passMaxArc + ASSISTED_PASS_SWITCH_MARGIN_M) {
+        activePass = pass;
+        break;
+      }
+      activePass = pass;
+    }
+    assisted.activePassIndex = activePass;
+  }
+
+  assisted.progressArcM = nextArc;
+  if (Number.isFinite(assisted.demoSegmentIndex)) {
+    assisted.progressSegmentIndex = Math.max(0, Math.round(assisted.demoSegmentIndex));
+  }
+
+  if (nextArc >= totalArc - 0.01) {
+    assisted.progressArcM = totalArc;
+    stopAssistedDemoMode({ completed: true });
+  }
+
+  return true;
+}
+
+function startAssistedDemoMode() {
+  const assisted = state.sim.assisted;
+  if (!state.sim.sessionId || !state.sim.car) {
+    throw new Error("Start a simulation session first.");
+  }
+  if (assisted.demoActive) {
+    throw new Error("Assist demo is already running.");
+  }
+  if (assisted.recording) {
+    throw new Error("Stop route recording before starting demo mode.");
+  }
+  if (assisted.path.length < 2 || assisted.arrowRefs.length < 1) {
+    throw new Error("Record or load an assisted route first.");
+  }
+
+  rebuildAssistedPassRanges();
+  assisted.enabled = true;
+  assisted.progressArcM = 0;
+  assisted.progressSegmentIndex = 0;
+  assisted.activePassIndex = 1;
+  assisted.demoActive = true;
+  assisted.demoArcM = 0;
+  assisted.demoSegmentIndex = 0;
+  state.keys.clear();
+
+  const firstPose = assistedPoseAtArc(assisted.path, assisted.cumulativeArc, 0);
+  if (firstPose) {
+    state.sim.car.x = firstPose.x;
+    state.sim.car.y = firstPose.y;
+    state.sim.car.headingDeg = normalizeHeading((firstPose.headingRad * 180) / Math.PI);
+    state.sim.car.speedKmh = 0;
+  }
+  markSimInput(Date.now());
+  refreshAssistedControls("Assist: demo driving route...");
+}
+
 function recordAssistedSample(nowMs = Date.now()) {
   const assisted = state.sim.assisted;
   const car = state.sim.car;
@@ -1531,6 +1717,9 @@ async function stopAssistedRouteRecording() {
   assisted.totalArcM = assisted.cumulativeArc[assisted.cumulativeArc.length - 1] || 0;
   assisted.arrowRefs = arrows;
   assisted.activePassIndex = 1;
+  assisted.demoActive = false;
+  assisted.demoArcM = 0;
+  assisted.demoSegmentIndex = 0;
   rebuildAssistedPassRanges();
   const maxPass = assisted.arrowRefs.reduce(
     (best, arrow) => Math.max(best, Math.max(1, Math.round(Number(arrow.passIndex) || 1))),
@@ -14114,6 +14303,7 @@ async function abandonSimulation(reasonText = "Session ended due to inactivity."
   state.sim.lastInputAt = 0;
   state.sim.idleAbandoning = false;
   state.sim.trafficLightManual = null;
+  stopAssistedDemoMode({ silent: true });
   state.keys.clear();
   state.sim.stopLineContacts = {};
   state.sim.assisted.recording = false;
@@ -14676,6 +14866,10 @@ function frame(now) {
     const prevCarX = state.sim.car.x;
     const prevCarY = state.sim.car.y;
     const prevHeadingRad = toRadians(state.sim.car.headingDeg || 0);
+    const demoDriving = stepAssistedDemoMode(dt, nowMs);
+    if (demoDriving) {
+      state.keys.clear();
+    }
 
     const wantsLeft = state.keys.has("a");
     const wantsRight = state.keys.has("d");
@@ -15046,6 +15240,9 @@ async function startSimulation() {
   state.sim.assisted.progressArcM = 0;
   state.sim.assisted.progressSegmentIndex = 0;
   state.sim.assisted.activePassIndex = 1;
+  state.sim.assisted.demoActive = false;
+  state.sim.assisted.demoArcM = 0;
+  state.sim.assisted.demoSegmentIndex = 0;
   let assistedLoad = { loaded: false, source: "none" };
   try {
     assistedLoad = await loadPersistedAssistedRouteMap(routeId);
@@ -15173,6 +15370,7 @@ async function finishSimulation() {
   state.sim.inactivityAlertPending = false;
   state.sim.inactivityAlertShown = false;
   state.sim.trafficLightManual = null;
+  stopAssistedDemoMode({ silent: true });
   state.keys.clear();
   state.sim.stopLineContacts = {};
   state.sim.assisted.recording = false;
@@ -15219,6 +15417,9 @@ function isEditableTarget(target) {
 
 function handleControlKey(key) {
   if (!state.sim.sessionId || !state.sim.car) {
+    return;
+  }
+  if (state.sim.assisted.demoActive && key !== "c") {
     return;
   }
 
@@ -15852,6 +16053,15 @@ function bindUi() {
     dom.toggleAssistedVisibilityBtn.addEventListener("click", () => {
       try {
         toggleAssistedVisibilityMode();
+      } catch (error) {
+        alert(error.message);
+      }
+    });
+  }
+  if (dom.startAssistedDemoBtn) {
+    dom.startAssistedDemoBtn.addEventListener("click", () => {
+      try {
+        startAssistedDemoMode();
       } catch (error) {
         alert(error.message);
       }
