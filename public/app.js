@@ -76,6 +76,8 @@ const state = {
       demoActive: false,
       demoArcM: 0,
       demoSegmentIndex: 0,
+      libraryMaps: [],
+      selectedLibraryAssistId: "",
     },
     three: {
       ready: false,
@@ -392,6 +394,9 @@ const dom = {
   toggleAssistedModeBtn: document.querySelector("#toggle-assisted-mode"),
   toggleAssistedVisibilityBtn: document.querySelector("#toggle-assisted-visibility"),
   startAssistedDemoBtn: document.querySelector("#start-assisted-demo"),
+  refreshAssistedLibraryBtn: document.querySelector("#refresh-assisted-library"),
+  assistedSavedMaps: document.querySelector("#assisted-saved-maps"),
+  assistedLibraryStatus: document.querySelector("#assisted-library-status"),
   toggleLightBtn: document.querySelector("#toggle-light"),
   profileOutput: document.querySelector("#profile-output"),
   theoryTableBody: document.querySelector("#theory-table tbody"),
@@ -566,6 +571,7 @@ function formatJson(value) {
 
 function assistedStatusSummary() {
   const assisted = state.sim.assisted;
+  const creator = Boolean(state.user?.is_creator);
   if (assisted.demoActive) {
     return "Assist: demo driving route...";
   }
@@ -580,18 +586,112 @@ function assistedStatusSummary() {
     const visibilityMode = assisted.showAllPending ? "all pending" : "forward window";
     return `Assist: ${assisted.enabled ? "ON" : "ready"} · ${assisted.arrowRefs.length} arrows · ${maxPass} pass(es) · ${visibilityMode}`;
   }
+  if (state.token && !creator) {
+    return "Assist: waiting for creator route map.";
+  }
   return "Assist: idle";
+}
+
+function updateAssistedLibraryStatus(message) {
+  if (!dom.assistedLibraryStatus) {
+    return;
+  }
+  dom.assistedLibraryStatus.textContent = message;
+}
+
+function renderAssistedRouteLibrary() {
+  if (!dom.assistedSavedMaps) {
+    return;
+  }
+  const assisted = state.sim.assisted;
+  const canManageLibrary = Boolean(state.token && state.user?.is_creator);
+  const maps = canManageLibrary && Array.isArray(assisted.libraryMaps) ? assisted.libraryMaps : [];
+  const previousSelection = String(assisted.selectedLibraryAssistId || "");
+
+  dom.assistedSavedMaps.innerHTML = "";
+  dom.assistedSavedMaps.disabled = !canManageLibrary;
+  if (dom.refreshAssistedLibraryBtn) {
+    dom.refreshAssistedLibraryBtn.disabled = !canManageLibrary;
+  }
+
+  if (!canManageLibrary) {
+    assisted.selectedLibraryAssistId = "";
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "Creator login required";
+    option.disabled = true;
+    option.selected = true;
+    dom.assistedSavedMaps.appendChild(option);
+    return;
+  }
+
+  for (const map of maps) {
+    const option = document.createElement("option");
+    option.value = String(map.assist_id || "");
+    const routeLabel = String(map.route_id || "?");
+    const arrows = Math.max(0, Math.round(Number(map.arrow_count) || 0));
+    const arcMeters = Math.max(0, Number(map.total_arc_m) || 0).toFixed(0);
+    const updatedLabel = map.updated_at ? new Date(map.updated_at).toLocaleString() : "";
+    option.textContent = `${routeLabel} · ${arrows} arrows · ${arcMeters}m${updatedLabel ? ` · ${updatedLabel}` : ""}`;
+    dom.assistedSavedMaps.appendChild(option);
+  }
+
+  if (!maps.length) {
+    assisted.selectedLibraryAssistId = "";
+    const emptyOption = document.createElement("option");
+    emptyOption.value = "";
+    emptyOption.textContent = "No assisted routes saved.";
+    emptyOption.disabled = true;
+    emptyOption.selected = true;
+    dom.assistedSavedMaps.appendChild(emptyOption);
+    return;
+  }
+
+  if (previousSelection && maps.some((map) => map.assist_id === previousSelection)) {
+    assisted.selectedLibraryAssistId = previousSelection;
+    dom.assistedSavedMaps.value = previousSelection;
+  } else {
+    assisted.selectedLibraryAssistId = String(maps[0].assist_id || "");
+    dom.assistedSavedMaps.value = assisted.selectedLibraryAssistId;
+  }
+}
+
+async function loadAssistedRouteLibrary(options = {}) {
+  const { preserveSelection = true } = options;
+  const assisted = state.sim.assisted;
+  if (!state.token || !state.user?.is_creator) {
+    assisted.libraryMaps = [];
+    assisted.selectedLibraryAssistId = "";
+    renderAssistedRouteLibrary();
+    updateAssistedLibraryStatus("Assist maps: creator login required.");
+    return;
+  }
+
+  const previousSelection = preserveSelection ? assisted.selectedLibraryAssistId : "";
+  updateAssistedLibraryStatus("Assist maps: loading...");
+  const payload = await api("/v1/assist/routes", {
+    headers: authHeaders(),
+  });
+  assisted.libraryMaps = Array.isArray(payload?.maps) ? payload.maps : [];
+  assisted.selectedLibraryAssistId = previousSelection;
+  renderAssistedRouteLibrary();
+  if (!assisted.libraryMaps.length) {
+    updateAssistedLibraryStatus("Assist maps: no assisted routes saved yet.");
+    return;
+  }
+  updateAssistedLibraryStatus(`Assist maps: ${assisted.libraryMaps.length} saved route(s).`);
 }
 
 function refreshAssistedControls(statusMessage = "") {
   const assisted = state.sim.assisted;
   const hasSession = Boolean(state.sim.sessionId && state.sim.car);
   const demoActive = Boolean(assisted.demoActive);
+  const creator = Boolean(state.user?.is_creator);
   if (dom.startAssistedRecordingBtn) {
-    dom.startAssistedRecordingBtn.disabled = !hasSession || assisted.recording || demoActive;
+    dom.startAssistedRecordingBtn.disabled = !hasSession || assisted.recording || demoActive || !creator;
   }
   if (dom.stopAssistedRecordingBtn) {
-    dom.stopAssistedRecordingBtn.disabled = !hasSession || !assisted.recording || demoActive;
+    dom.stopAssistedRecordingBtn.disabled = !hasSession || !assisted.recording || demoActive || !creator;
   }
   if (dom.toggleAssistedModeBtn) {
     dom.toggleAssistedModeBtn.disabled = assisted.arrowRefs.length < 1 || demoActive;
@@ -1717,6 +1817,9 @@ function startAssistedRouteRecording() {
   if (!state.sim.sessionId || !state.sim.car || !state.sim.route) {
     throw new Error("Start a simulation session first.");
   }
+  if (!state.user?.is_creator) {
+    throw new Error("Only the creator account can record assisted routes.");
+  }
   const assisted = state.sim.assisted;
   clearAssistedRouteData({ resetEnabled: true });
   assisted.recording = true;
@@ -1727,6 +1830,9 @@ function startAssistedRouteRecording() {
 
 async function stopAssistedRouteRecording() {
   const assisted = state.sim.assisted;
+  if (!state.user?.is_creator) {
+    throw new Error("Only the creator account can record assisted routes.");
+  }
   if (!assisted.recording) {
     throw new Error("Route recording is not active.");
   }
@@ -1778,6 +1884,11 @@ async function stopAssistedRouteRecording() {
   refreshAssistedControls(
     `Assist: route ready (${assisted.arrowRefs.length} arrows, ${(assisted.totalArcM || 0).toFixed(0)}m, ${maxPass} pass(es), ${saveLabel})${warningLabel}.`,
   );
+  if (state.user?.is_creator) {
+    loadAssistedRouteLibrary().catch((error) => {
+      updateAssistedLibraryStatus(`Assist maps: failed to refresh (${error.message}).`);
+    });
+  }
 }
 
 function toggleAssistedMode() {
@@ -4617,6 +4728,10 @@ function updateAuthState() {
       dom.multiplayerLeaveBtn.disabled = true;
     }
     setMultiplayerStatus("login required.");
+    state.sim.assisted.libraryMaps = [];
+    state.sim.assisted.selectedLibraryAssistId = "";
+    renderAssistedRouteLibrary();
+    updateAssistedLibraryStatus("Assist maps: creator login required.");
     refreshAssistedControls();
     return;
   }
@@ -4668,6 +4783,12 @@ function updateAuthState() {
   } else {
     setMultiplayerStatus("ready.");
   }
+  renderAssistedRouteLibrary();
+  if (state.user?.is_creator) {
+    updateAssistedLibraryStatus("Assist maps: ready.");
+  } else {
+    updateAssistedLibraryStatus("Assist maps: creator-only list.");
+  }
   refreshAssistedControls();
 }
 
@@ -4683,6 +4804,14 @@ function setAuth(authData) {
     loadMapperMapLibrary({ preserveSelection: false }).catch((error) => {
       updateMapperLibraryStatus(`Saved maps: failed (${error.message}).`);
     });
+    loadAssistedRouteLibrary({ preserveSelection: false }).catch((error) => {
+      updateAssistedLibraryStatus(`Assist maps: failed (${error.message}).`);
+    });
+  } else {
+    state.sim.assisted.libraryMaps = [];
+    state.sim.assisted.selectedLibraryAssistId = "";
+    renderAssistedRouteLibrary();
+    updateAssistedLibraryStatus("Assist maps: creator-only list.");
   }
   showAuthFeedback(`Login successful. Welcome, ${state.user.username}.`);
 }
@@ -4723,6 +4852,8 @@ function clearAuth() {
   clearParkingAssignmentState();
   state.mapper.mapLibrary = [];
   state.mapper.selectedMapId = "";
+  state.sim.assisted.libraryMaps = [];
+  state.sim.assisted.selectedLibraryAssistId = "";
   stopSimKeepAliveLoop();
   leaveMultiplayerRoom({ silent: true }).catch(() => {});
   if (state.sim.three.ready) {
@@ -16101,6 +16232,19 @@ function bindUi() {
       } catch (error) {
         alert(error.message);
       }
+    });
+  }
+  if (dom.refreshAssistedLibraryBtn) {
+    dom.refreshAssistedLibraryBtn.addEventListener("click", () => {
+      loadAssistedRouteLibrary().catch((error) => {
+        updateAssistedLibraryStatus(`Assist maps: failed to load (${error.message}).`);
+        alert(error.message);
+      });
+    });
+  }
+  if (dom.assistedSavedMaps) {
+    dom.assistedSavedMaps.addEventListener("change", () => {
+      state.sim.assisted.selectedLibraryAssistId = String(dom.assistedSavedMaps.value || "");
     });
   }
   if (dom.globalOverviewBtn) {

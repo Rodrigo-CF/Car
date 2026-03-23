@@ -17,7 +17,7 @@ import {
   getActiveRoutePayload,
   getAllActiveRoutesPayload,
 } from "./lib/maps.js";
-import { getAssistedRouteMap, saveAssistedRouteMap } from "./lib/assisted.js";
+import { getAssistedRouteMap, saveAssistedRouteMap, listAssistedRouteMaps } from "./lib/assisted.js";
 import { createSupabaseService } from "./lib/supabase-service.js";
 import {
   buildTheoryLeaderboard,
@@ -393,6 +393,24 @@ export function createAppServer(store = createStore()) {
         const result = supabaseService
           ? await supabaseService.cleanupStaleActiveSessions(payload?.ttl_sec)
           : cleanupSimActiveSessions(store, payload?.ttl_sec);
+        if (result.error) {
+          sendJson(res, result.status, { error: result.error });
+          return;
+        }
+        sendJson(res, result.status, result.data);
+        return;
+      }
+
+      if (
+        req.method === "GET" &&
+        parts[1] === "assist" &&
+        parts[2] === "routes" &&
+        !parts[3]
+      ) {
+        const query = Object.fromEntries(reqUrl.searchParams.entries());
+        const result = supabaseService
+          ? await supabaseService.listAssistedRouteMaps(user, query)
+          : listAssistedRouteMaps(store, user, query);
         if (result.error) {
           sendJson(res, result.status, { error: result.error });
           return;

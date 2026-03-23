@@ -130,10 +130,16 @@ export function normalizeAssistedRoutePayload(routeId, payload) {
 }
 
 function assistedMapMetadata(record) {
+  const assistedRoute = record?.assisted_route && typeof record.assisted_route === "object" ? record.assisted_route : {};
+  const arrows = Array.isArray(assistedRoute.arrows) ? assistedRoute.arrows : [];
+  const totalArcRaw = Number(assistedRoute.total_arc_m ?? assistedRoute.totalArcM);
   return {
     assist_id: record.assist_id,
     user_id: record.user_id,
     route_id: record.route_id,
+    arrow_count: arrows.length,
+    total_arc_m: Number.isFinite(totalArcRaw) ? totalArcRaw : 0,
+    recorded_at: assistedRoute.recorded_at || assistedRoute.recordedAt || null,
     created_at: record.created_at,
     updated_at: record.updated_at,
   };
@@ -143,12 +149,24 @@ function assistedStoreKey(userId, routeId) {
   return `${String(userId)}:${String(routeId)}`;
 }
 
+function resolveCreatorUserId(store) {
+  if (store?.creatorUserId) {
+    return store.creatorUserId;
+  }
+  const creator = Array.isArray(store?.users) ? store.users.find((candidate) => candidate?.is_creator) : null;
+  return creator?.user_id || null;
+}
+
 export function getAssistedRouteMap(store, user, routeIdRaw) {
   const routeId = normalizeSupportedRouteId(routeIdRaw);
   if (!routeId) {
     return { status: 400, error: "invalid route_id" };
   }
-  const key = assistedStoreKey(user.user_id, routeId);
+  const creatorUserId = resolveCreatorUserId(store);
+  if (!creatorUserId) {
+    return { status: 404, error: "assisted route map not found" };
+  }
+  const key = assistedStoreKey(creatorUserId, routeId);
   const record = store.assistedRouteMaps?.get(key);
   if (!record) {
     return { status: 404, error: "assisted route map not found" };
@@ -163,6 +181,9 @@ export function getAssistedRouteMap(store, user, routeIdRaw) {
 }
 
 export function saveAssistedRouteMap(store, user, routeIdRaw, payload) {
+  if (!user?.is_creator) {
+    return { status: 403, error: "creator permissions required" };
+  }
   const normalized = normalizeAssistedRoutePayload(routeIdRaw, payload?.assisted_route ?? payload);
   if (normalized.error) {
     return { status: 400, error: normalized.error };
@@ -198,6 +219,25 @@ export function saveAssistedRouteMap(store, user, routeIdRaw, payload) {
       map: assistedMapMetadata(record),
       assisted_route: cloneJson(record.assisted_route),
       saved: true,
+    },
+  };
+}
+
+export function listAssistedRouteMaps(store, user, query = {}) {
+  if (!user?.is_creator) {
+    return { status: 403, error: "creator permissions required" };
+  }
+  const routeFilter = normalizeSupportedRouteId(query?.route_id || query?.routeId || "");
+  const creatorUserId = resolveCreatorUserId(store);
+  const records = Array.from(store?.assistedRouteMaps?.values?.() || [])
+    .filter((record) => record?.user_id === creatorUserId)
+    .filter((record) => !routeFilter || record?.route_id === routeFilter)
+    .sort((a, b) => new Date(b?.updated_at || 0).getTime() - new Date(a?.updated_at || 0).getTime());
+  return {
+    status: 200,
+    data: {
+      maps: records.map((record) => assistedMapMetadata(record)),
+      total: records.length,
     },
   };
 }

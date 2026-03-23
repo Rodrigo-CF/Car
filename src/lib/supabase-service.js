@@ -68,10 +68,16 @@ function mapMetadata(record) {
 }
 
 function assistedMapMetadata(record) {
+  const assistedRoute = record?.assisted_route && typeof record.assisted_route === "object" ? record.assisted_route : {};
+  const arrows = Array.isArray(assistedRoute.arrows) ? assistedRoute.arrows : [];
+  const totalArcRaw = Number(assistedRoute.total_arc_m ?? assistedRoute.totalArcM);
   return {
     assist_id: record.assist_id,
     user_id: record.user_id,
     route_id: record.route_id,
+    arrow_count: arrows.length,
+    total_arc_m: Number.isFinite(totalArcRaw) ? totalArcRaw : 0,
+    recorded_at: assistedRoute.recorded_at || assistedRoute.recordedAt || null,
     created_at: record.created_at,
     updated_at: record.updated_at,
   };
@@ -239,6 +245,17 @@ export function createSupabaseService(store) {
       map.set(row.user_id, row.username);
     }
     return map;
+  }
+
+  async function resolveCreatorUserId() {
+    const rows = await selectRows(
+      "app_users",
+      {
+        is_creator: "eq.true",
+      },
+      { select: "user_id,is_creator", limit: 1 },
+    );
+    return rows[0]?.user_id || null;
   }
 
   async function resolveRoute(routeId) {
@@ -929,10 +946,14 @@ export function createSupabaseService(store) {
         if (!routeId) {
           return { status: 400, error: "invalid route_id" };
         }
+        const creatorUserId = user?.is_creator ? user.user_id : await resolveCreatorUserId();
+        if (!creatorUserId) {
+          return { status: 404, error: "assisted route map not found" };
+        }
         const rows = await selectRows(
           "assisted_route_maps",
           {
-            user_id: `eq.${user.user_id}`,
+            user_id: `eq.${creatorUserId}`,
             route_id: `eq.${routeId}`,
           },
           { select: "*", limit: 1 },
@@ -955,6 +976,9 @@ export function createSupabaseService(store) {
 
     async saveAssistedRouteMap(user, routeIdRaw, payload = {}) {
       try {
+        if (!user?.is_creator) {
+          return { status: 403, error: "creator permissions required" };
+        }
         const normalized = normalizeAssistedRoutePayload(routeIdRaw, payload?.assisted_route ?? payload);
         if (normalized.error) {
           return { status: 400, error: normalized.error };
@@ -1005,6 +1029,35 @@ export function createSupabaseService(store) {
             map: assistedMapMetadata(record),
             assisted_route: cloneJson(record.assisted_route),
             saved: true,
+          },
+        };
+      } catch (error) {
+        return { status: Number(error.status) || 500, error: error.message || "internal server error" };
+      }
+    },
+
+    async listAssistedRouteMaps(user, query = {}) {
+      try {
+        if (!user?.is_creator) {
+          return { status: 403, error: "creator permissions required" };
+        }
+        const routeFilter = normalizeSupportedRouteId(query?.route_id || query?.routeId || "");
+        const filters = {
+          user_id: `eq.${user.user_id}`,
+        };
+        if (routeFilter) {
+          filters.route_id = `eq.${routeFilter}`;
+        }
+        const rows = await selectRows("assisted_route_maps", filters, {
+          select: "*",
+          order: "updated_at.desc",
+          limit: 120,
+        });
+        return {
+          status: 200,
+          data: {
+            maps: rows.map((record) => assistedMapMetadata(record)),
+            total: rows.length,
           },
         };
       } catch (error) {

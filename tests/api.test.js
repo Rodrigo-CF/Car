@@ -6,7 +6,7 @@ import { registerUser } from "../src/lib/auth.js";
 import { createExamAttempt, submitExamAttempt } from "../src/lib/exam.js";
 import { startSimSession, appendSimEvents, finishSimSession, cleanupSimActiveSessions } from "../src/lib/sim.js";
 import { publishRouteMap, saveRouteMap, activateRouteMap, listRouteMaps } from "../src/lib/maps.js";
-import { saveAssistedRouteMap, getAssistedRouteMap } from "../src/lib/assisted.js";
+import { saveAssistedRouteMap, getAssistedRouteMap, listAssistedRouteMaps } from "../src/lib/assisted.js";
 import {
   buildTheoryLeaderboard,
   buildSimulationLeaderboard,
@@ -326,10 +326,10 @@ test("stale sim active sessions are cleanup-able", () => {
   assert.equal(store.simActiveSessions.size, 0);
 });
 
-test("assisted route maps can be saved and loaded per user + route", () => {
+test("assisted route maps are creator-managed and globally loadable by route", () => {
   const store = createStore();
-  const userA = createAuthedUser(store, "assist_a", "assist_a@test.com");
-  const userB = createAuthedUser(store, "assist_b", "assist_b@test.com");
+  const creator = createAuthedUser(store, "assist_creator", "assist_creator@test.com");
+  const player = createAuthedUser(store, "assist_player", "assist_player@test.com");
 
   const payload = {
     assisted_route: {
@@ -348,19 +348,31 @@ test("assisted route maps can be saved and loaded per user + route", () => {
     },
   };
 
-  const savedA = saveAssistedRouteMap(store, userA, "A", payload);
-  assert.equal(savedA.status, 201);
-  assert.equal(savedA.data.assisted_route.route_id, "A");
-  assert.equal(savedA.data.assisted_route.arrows.length, 2);
+  const forbiddenSave = saveAssistedRouteMap(store, player, "A", payload);
+  assert.equal(forbiddenSave.status, 403);
 
-  const loadedA = getAssistedRouteMap(store, userA, "A");
-  assert.equal(loadedA.status, 200);
-  assert.equal(loadedA.data.assisted_route.total_arc_m, 42.5);
+  const saved = saveAssistedRouteMap(store, creator, "A", payload);
+  assert.equal(saved.status, 201);
+  assert.equal(saved.data.assisted_route.route_id, "A");
+  assert.equal(saved.data.assisted_route.arrows.length, 2);
 
-  const notFoundOtherUser = getAssistedRouteMap(store, userB, "A");
-  assert.equal(notFoundOtherUser.status, 404);
+  const loadedCreator = getAssistedRouteMap(store, creator, "A");
+  assert.equal(loadedCreator.status, 200);
+  assert.equal(loadedCreator.data.assisted_route.total_arc_m, 42.5);
 
-  const updated = saveAssistedRouteMap(store, userA, "A", {
+  const loadedPlayer = getAssistedRouteMap(store, player, "A");
+  assert.equal(loadedPlayer.status, 200);
+  assert.equal(loadedPlayer.data.map.user_id, creator.user_id);
+
+  const listedByCreator = listAssistedRouteMaps(store, creator);
+  assert.equal(listedByCreator.status, 200);
+  assert.equal(listedByCreator.data.maps.length, 1);
+  assert.equal(listedByCreator.data.maps[0].route_id, "A");
+
+  const listedByPlayer = listAssistedRouteMaps(store, player);
+  assert.equal(listedByPlayer.status, 403);
+
+  const updated = saveAssistedRouteMap(store, creator, "A", {
     assisted_route: {
       ...payload.assisted_route,
       total_arc_m: 55.2,
