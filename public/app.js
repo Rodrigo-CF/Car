@@ -14973,7 +14973,6 @@ function frame(now) {
       Math.min(routeBounds.maxY + ROUTE_BOUNDS_MARGIN_METERS, state.sim.car.y),
     );
 
-    const nowMs = Date.now();
     let bumpSupportTarget = 0;
     let bumpPitchTarget = 0;
     let bumpRollTarget = 0;
