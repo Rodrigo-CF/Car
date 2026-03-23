@@ -242,6 +242,10 @@ const ASSISTED_ARROW_SHOW_AHEAD_M = 58;
 const ASSISTED_PROGRESS_MAX_PATH_DIST_M = 2.0;
 const ASSISTED_PASS_SWITCH_MARGIN_M = 1.2;
 const ASSISTED_DEMO_SPEED_MPS = 6.4;
+const ASSISTED_DEMO_BLEND_ARC_M = 0.9;
+const ASSISTED_DEMO_LOOKAHEAD_M = 2.6;
+const ASSISTED_DEMO_MAX_TURN_DEG_PER_SEC = 170;
+const ASSISTED_DEMO_POS_SMOOTH_RATE = 14;
 const ASSISTED_ARROW_OVERLAP_OPACITY = 0.5;
 const ASSISTED_ARROW_BODY_RADIUS_M = 0.082;
 const ASSISTED_ARROW_BODY_LENGTH_M = 1.32;
@@ -1584,9 +1588,36 @@ function stepAssistedDemoMode(dt, nowMs = Date.now()) {
 
   const pose = assistedPoseAtArc(assisted.path, assisted.cumulativeArc, nextArc);
   if (pose) {
-    car.x = pose.x;
-    car.y = pose.y;
-    car.headingDeg = normalizeHeading((pose.headingRad * 180) / Math.PI);
+    const lookBehindArc = Math.max(0, nextArc - ASSISTED_DEMO_BLEND_ARC_M);
+    const lookAheadArc = Math.min(totalArc, nextArc + ASSISTED_DEMO_LOOKAHEAD_M);
+    const poseBehind = assistedPoseAtArc(assisted.path, assisted.cumulativeArc, lookBehindArc);
+    const poseAhead = assistedPoseAtArc(assisted.path, assisted.cumulativeArc, lookAheadArc);
+
+    let targetHeadingDeg = normalizeHeading((pose.headingRad * 180) / Math.PI);
+    if (poseBehind && poseAhead) {
+      const lookDx = poseAhead.x - poseBehind.x;
+      const lookDy = poseAhead.y - poseBehind.y;
+      if (Math.hypot(lookDx, lookDy) > 0.01) {
+        targetHeadingDeg = normalizeHeading((Math.atan2(lookDy, lookDx) * 180) / Math.PI);
+      }
+    }
+
+    if (!Number.isFinite(car.x) || !Number.isFinite(car.y)) {
+      car.x = pose.x;
+      car.y = pose.y;
+    } else {
+      car.x = smoothTowards(car.x, pose.x, ASSISTED_DEMO_POS_SMOOTH_RATE, dt);
+      car.y = smoothTowards(car.y, pose.y, ASSISTED_DEMO_POS_SMOOTH_RATE, dt);
+    }
+
+    if (!Number.isFinite(car.headingDeg)) {
+      car.headingDeg = targetHeadingDeg;
+    } else {
+      const maxTurnStepDeg = ASSISTED_DEMO_MAX_TURN_DEG_PER_SEC * dt;
+      const headingDeltaDeg = signedHeadingDeltaDeg(car.headingDeg, targetHeadingDeg);
+      const clampedHeadingStep = Math.max(-maxTurnStepDeg, Math.min(maxTurnStepDeg, headingDeltaDeg));
+      car.headingDeg = normalizeHeading(car.headingDeg + clampedHeadingStep);
+    }
     assisted.demoSegmentIndex = pose.segmentIndex;
   }
   car.speedKmh = 0;
@@ -1611,6 +1642,12 @@ function stepAssistedDemoMode(dt, nowMs = Date.now()) {
   }
 
   if (nextArc >= totalArc - 0.01) {
+    const finalPose = assistedPoseAtArc(assisted.path, assisted.cumulativeArc, totalArc);
+    if (finalPose) {
+      car.x = finalPose.x;
+      car.y = finalPose.y;
+      car.headingDeg = normalizeHeading((finalPose.headingRad * 180) / Math.PI);
+    }
     assisted.progressArcM = totalArc;
     stopAssistedDemoMode({ completed: true });
   }
